@@ -53,4 +53,4 @@ GPU 侧的 Shader Binary（DXBC / DXIL / SPIR-V）通常会移除符号信息，
 
 ### 1. 统一中间层（SPIR-V）
 
-无论输入为 **DXBC / DXIL / SPIR-V**，都会统一转换为 **SPIR-V** 进行处理，从而保证反编译逻辑的统一性与可扩展性。
+无论输入为 **DXBC / SPIR-V**，都会统一转换为 **SPIR-V** 进行处理，从而保证反编译逻辑的统一性与可扩展性。 已经决定不再支持DXIL 因为DXIL设计上的问题会把CB平坦化导致还原极其困难
