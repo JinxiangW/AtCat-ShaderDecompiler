@@ -9,7 +9,7 @@
 ## ✅ 待办事项（Roadmap）
 
 * [ ] **完善 Unity 支持**
-  当前已实现 UE 元数据解析，需补充 Unity ShaderLab / AssetBundle 的元数据提取。
+  当前已实现 UE 元数据解析，需补充 Unity ShaderLab / AssetBundle 的元数据提取。已经在私有仓库中用ClaudeMax 5天就实现出来了,但属于能跑就行的状态,要做的事情太多了暂时没空重构 
 
 * [ ] **统一反编译输出为 ShaderLab**
 
@@ -53,4 +53,4 @@ GPU 侧的 Shader Binary（DXBC / DXIL / SPIR-V）通常会移除符号信息，
 
 ### 1. 统一中间层（SPIR-V）
 
-无论输入为 **DXBC / SPIR-V**，都会统一转换为 **SPIR-V** 进行处理，从而保证反编译逻辑的统一性与可扩展性。 已经决定不再支持DXIL 因为DXIL设计上的问题会把CB平坦化导致还原极其困难
+无论输入为 **DXBC / SPIR-V**，都会统一转换为 **SPIR-V** 进行处理，从而保证反编译逻辑的统一性与可扩展性。 已经决定不再支持DXIL 因为DXIL设计上的问题会把CB平坦化导致转SPV的时候彻底丢失结构信息还原极其困难(据Claude所说是"不可能")
