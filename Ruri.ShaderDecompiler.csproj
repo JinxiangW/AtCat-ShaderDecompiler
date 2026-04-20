@@ -8,11 +8,22 @@
     <RootNamespace>Ruri.ShaderDecompiler</RootNamespace>
     <AssemblyName>Ruri.ShaderDecompiler</AssemblyName>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\FModel\CUE4Parse\CUE4Parse-Conversion\CUE4Parse-Conversion.csproj" />
     <ProjectReference Include="..\..\FModel\CUE4Parse\CUE4Parse\CUE4Parse.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="Tools\Compat\**\*.cs" />
+    <Compile Remove="Tools\src\**\*.cs" />
+    <Compile Remove="Tools\build\**\*.cs" />
+    <EmbeddedResource Remove="Tools\Compat\**\*.resx" />
+    <EmbeddedResource Remove="Tools\src\**\*.resx" />
+    <EmbeddedResource Remove="Tools\build\**\*.resx" />
   </ItemGroup>
 
 </Project>

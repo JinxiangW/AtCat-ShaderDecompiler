@@ -1,12 +1,12 @@
 using System;
-using System.IO;
-using System.Runtime.InteropServices;
-using Ruri.ShaderDecompiler.Native;
-using Ruri.ShaderDecompiler.Spirv;
-using Ruri.ShaderDecompiler.Utils;
-using Ruri.ShaderDecompiler.Intermediate;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
+using System.Text;
+using System.Text.RegularExpressions;
+using Ruri.ShaderDecompiler.Intermediate;
+using Ruri.ShaderDecompiler.Spirv;
 
 namespace Ruri.ShaderDecompiler;
 
@@ -34,226 +34,99 @@ public class DecompileResult
 }
 
 /// <summary>
-/// Main shader decompiler class. Pure C# with native interop (no CLI calls).
+/// Main shader decompiler class.
 /// </summary>
-public unsafe class ShaderDecompiler : IDisposable
+public sealed class ShaderDecompiler : IDisposable
 {
+    private const int DefaultPerStepTimeoutMs = 30000;
     private readonly SpirvPatcher _patcher = new();
-    private bool _disposed;
-    
-    // Paths to external tools for DXBC fallback
+    private readonly StructuredCBufferRewriter _structuredCBufferRewriter = new();
     private readonly string _baseDir;
-    private readonly string _dxbc2dxilPath;
-    
-    // Temp directory for intermediate files
+    private readonly string? _toolsDir;
+    private bool _disposed;
+
     public string TempDir { get; set; }
 
-    public ShaderDecompiler(string? tempDir = null)
+    public ShaderDecompiler(string? tempDir = null, string? toolsDir = null)
     {
         _baseDir = AppDomain.CurrentDomain.BaseDirectory;
-        _dxbc2dxilPath = Path.Combine(_baseDir, "dxbc2dxil.exe");
         TempDir = tempDir ?? _baseDir;
+        _toolsDir = FindToolsDirectory(toolsDir);
     }
 
-    /// <summary>
-    /// Decompiles a shader binary to HLSL with optional symbol injection.
-    /// </summary>
     public DecompileResult Decompile(
         byte[] binary,
-        ShaderFormat format,
-        ShaderSymbolMetadata? symbols = null,
-        uint shaderModel = 50)
+        ShaderFormat format = ShaderFormat.Unknown,
+        ShaderSymbolData? metadata = null,
+        uint shaderModel = 51)
     {
-        string? tempDxbc = null;
-        string? tempDxil = null;
-        string? tempSpv = null;
-        string? tempHlsl = null;
+        if (binary == null || binary.Length == 0)
+        {
+            return new DecompileResult
+            {
+                Success = false,
+                ErrorMessage = "Shader binary is empty."
+            };
+        }
+
+        if (_toolsDir == null)
+        {
+            return new DecompileResult
+            {
+                Success = false,
+                ErrorMessage = "Decompiler tools not found. Expected dxbc2dxil.exe, dxil-spirv.exe, and spirv-cross.exe."
+            };
+        }
+
+        string tempPrefix = $"temp_{Guid.NewGuid():N}";
+        string tempDxbc = Path.Combine(TempDir, $"{tempPrefix}.dxbc");
+        string tempDxil = Path.Combine(TempDir, $"{tempPrefix}.dxil");
+        string tempSpv = Path.Combine(TempDir, $"{tempPrefix}.spv");
+        string tempHlsl = Path.Combine(TempDir, $"{tempPrefix}.hlsl");
 
         try
         {
-            var bundle = Ruri.ShaderDecompiler.Unreal.UnrealShaderParser.Parse(binary);
+            var bundle = Unreal.UnrealShaderParser.Parse(binary);
             byte[] processingBinary = bundle.NativeCode;
-            
-            string? recoveredShaderName = null;
-            if (bundle.EngineMetadata is Ruri.ShaderDecompiler.Unreal.UnrealShaderParser.UnrealMetadata uMeta)
-            {
-                recoveredShaderName = uMeta.ShaderName;
-            }
+            string? recoveredShaderName = (bundle.EngineMetadata as Unreal.UnrealShaderParser.UnrealMetadata)?.ShaderName;
 
-            // Auto-detect format if unknown
             if (format == ShaderFormat.Unknown)
             {
-                if (bundle.Architecture == Ruri.ShaderDecompiler.Intermediate.ShaderArchitecture.Dxbc) format = ShaderFormat.Dxbc;
-                else if (bundle.Architecture == Ruri.ShaderDecompiler.Intermediate.ShaderArchitecture.Dxil) format = ShaderFormat.Dxil;
-                else if (bundle.Architecture == Ruri.ShaderDecompiler.Intermediate.ShaderArchitecture.SpirV) format = ShaderFormat.SpirV;
-            }
-
-            tempDxbc = Path.Combine(TempDir, $"temp_{Guid.NewGuid():N}.dxbc");
-            tempDxil = Path.Combine(TempDir, $"temp_{Guid.NewGuid():N}.dxil");
-            tempSpv = Path.Combine(TempDir, $"temp_{Guid.NewGuid():N}.spv");
-            tempHlsl = Path.Combine(TempDir, $"temp_{Guid.NewGuid():N}.hlsl");
-
-            byte[] spirv;
-
-            // Step 1: Normalize to SPIR-V using CLI tools
-            if (format == ShaderFormat.Dxbc)
-            {
-                byte[] repairedDxbc = DxbcRepair.ExtractAndRepairDxbc(processingBinary) ?? processingBinary;
-                File.WriteAllBytes(tempDxbc, repairedDxbc);
-
-                // DXBC -> DXIL (LLVM BC)
-                string args1 = $"\"{tempDxbc}\" -o \"{tempDxil}\" -emit-bc";
-                int res = ProcessUtils.RunProcess(Path.Combine(_baseDir, "dxbc2dxil.exe"), args1, out _, out var err);
-                if (res != 0) throw new Exception($"dxbc2dxil failed: {err}");
-
-                // DXIL -> SPIR-V
-                string args2 = $"\"{tempDxil}\" --output \"{tempSpv}\" --raw-llvm";
-                res = ProcessUtils.RunProcess(Path.Combine(_baseDir, "dxil-spirv.exe"), args2, out _, out err);
-                if (res != 0) throw new Exception($"dxil-spirv failed: {err}");
-
-                spirv = File.ReadAllBytes(tempSpv);
-            }
-            else if (format == ShaderFormat.Dxil)
-            {
-                File.WriteAllBytes(tempDxil, processingBinary);
-
-                // DXIL -> SPIR-V
-                string args = $"\"{tempDxil}\" --output \"{tempSpv}\"";
-                int res = ProcessUtils.RunProcess(Path.Combine(_baseDir, "dxil-spirv.exe"), args, out _, out var err);
-                if (res != 0) throw new Exception($"dxil-spirv failed: {err}");
-
-                spirv = File.ReadAllBytes(tempSpv);
-            }
-            else if (format == ShaderFormat.SpirV)
-            {
-                spirv = processingBinary;
-            }
-            else
-            {
-                throw new ArgumentException($"Unsupported shader format: {format}");
-            }
-
-            // Step 2: Patch SPIR-V with symbols
-            byte[] patchedSpirv = spirv;
-            
-            // MERGE STRATEGY: Combine default symbols (extracted from binary) with precise symbols (from JSON)
-            // Precise symbols (Texture names) should take precedence or just be added.
-            // Default symbols (CBuffer names like View) must be preserved.
-            var finalSymbols = bundle.Symbols ?? new Ruri.ShaderDecompiler.Intermediate.ShaderSymbolMetadata();
-            
-            if (symbols != null)
-            {
-                foreach (var r in symbols.Resources)
+                format = bundle.Architecture switch
                 {
-                    // Check if duplicate binding exists, if so, maybe overwrite? 
-                    // For now, let's just add. SpirvPatcher filters by binding anyway.
-                    // Or we could remove existing with same Binding/Set.
-                    finalSymbols.Resources.Add(r);
-                }
+                    ShaderArchitecture.Dxbc when LooksLikeDxilContainer(processingBinary) => ShaderFormat.Dxil,
+                    ShaderArchitecture.Dxbc => ShaderFormat.Dxbc,
+                    ShaderArchitecture.Dxil => ShaderFormat.Dxil,
+                    ShaderArchitecture.SpirV => ShaderFormat.SpirV,
+                    _ => SniffShaderFormat(processingBinary)
+                };
             }
 
-            if (finalSymbols != null && finalSymbols.Resources.Count > 0)
+            ShaderSymbolData finalMetadata = MergeMetadata(bundle.Symbols, metadata);
+
+            byte[] spirv = format switch
             {
-                Console.WriteLine($"[Debug] Attempting to patch {finalSymbols.Resources.Count} symbols...");
-                var detailedBindings = _patcher.AnalyzeBindingsDetailed(spirv);
-                var patches = new List<(uint Id, string Name)>();
+                ShaderFormat.Dxbc => ConvertDxbcToSpirv(processingBinary, tempDxbc, tempDxil, tempSpv),
+                ShaderFormat.Dxil => ConvertDxilToSpirv(processingBinary, tempDxil, tempSpv),
+                ShaderFormat.SpirV => processingBinary,
+                _ => throw new ArgumentException($"Unsupported shader format: {format}")
+            };
 
-                foreach (var r in finalSymbols.Resources)
-                {
-                    // Find matching binding(s)
-                    // We can have multiple variables for the same binding in some weird cases, 
-                    // but usually it's one. We filter by type to be sure.
-                    var matches = detailedBindings.Where(b => b.Set == r.Set && b.Binding == r.Binding).ToList();
-                    
-                    if (matches.Count == 0)
-                    {
-                        Console.WriteLine($"[Debug] Could not find SPIR-V binding for {r.Name} at (Set {r.Set}, Binding {r.Binding})");
-                        continue;
-                    }
-
-                    foreach (var m in matches)
-                    {
-                        bool typeMatch = false;
-                        switch(r.Type)
-                        {
-                            case ResourceType.UniformBuffer: typeMatch = m.DescriptorType == "UniformBuffer"; break;
-                            case ResourceType.StructuredBuffer: case ResourceType.RWBuffer: typeMatch = m.DescriptorType == "StorageBuffer"; break;
-                            case ResourceType.Sampler: typeMatch = m.DescriptorType == "Sampler" || m.DescriptorType == "SampledImage"; break;
-                            case ResourceType.Texture: typeMatch = m.DescriptorType == "SampledImage" || m.DescriptorType == "StorageImage" || m.DescriptorType == "Image"; break;
-                            case ResourceType.RWTexture: case ResourceType.UAV: typeMatch = m.DescriptorType == "StorageImage" || m.DescriptorType == "StorageBuffer"; break;
-                            default: typeMatch = true; break; // Unknown or other
-                        }
-
-                        if (typeMatch)
-                        {
-                            // If it's a UniformBuffer, we must be careful about naming collisions between Type and Variable
-                            if (m.DescriptorType == "UniformBuffer" && m.StructTypeId.HasValue && m.StructTypeId.Value != 0)
-                            {
-                                // Name the Block (Type) with a suffix to avoid collision, allowing Variable to have the clean name
-                                // The Regex post-processor will strip this suffix from the HLSL cbuffer declaration later.
-                                patches.Add((m.StructTypeId.Value, r.Name + "_Type"));
-                                
-                                // Name the Instance - this determines member prefixes (e.g. View_m0)
-                                Console.WriteLine($"[Debug] Mapping {r.Name} to Id {m.Id} (Var) and {r.Name}_Type to Id {m.StructTypeId.Value} (Type)");
-                                patches.Add((m.Id, r.Name));
-                            }
-                            else
-                            {
-                                Console.WriteLine($"[Debug] Mapping {r.Name} to Id {m.Id} ({m.DescriptorType})");
-                                patches.Add((m.Id, r.Name));
-                            }
-                        }
-                        else
-                        {
-                             Console.WriteLine($"[Debug] Skipping name {r.Name} for Id {m.Id} because type mismatch ({r.Type} vs {m.DescriptorType})");
-                        }
-                    }
-                }
-
-                if (patches.Count > 0)
-                {
-                    patchedSpirv = _patcher.PatchByIds(spirv, patches);
-                    Console.WriteLine($"[Debug] Patched {patches.Count} entries into SPIR-V.");
-                }
-            }
-
-            // Step 3: SPIR-V -> HLSL via CLI
-            File.WriteAllBytes(tempSpv, patchedSpirv);
-            string crossArgs = $"\"{tempSpv}\" --output \"{tempHlsl}\" --hlsl --shader-model {shaderModel}";
-            int crossRes = ProcessUtils.RunProcess(Path.Combine(_baseDir, "spirv-cross.exe"), crossArgs, out _, out var crossErr);
-            if (crossRes != 0) throw new Exception($"spirv-cross failed: {crossErr}");
-
-            string hlsl = File.ReadAllText(tempHlsl);
-
-            // Step 4: Fallback / Post-Process for CBuffers
-            // Native patching of Block names in SPIR-V is flaky with spirv-cross.
-            // We allow Regex fixups here to ensure "cbuffer View" appears instead of "cbuffer CB0UBO".
-            if (finalSymbols != null)
-            {
-                foreach (var r in finalSymbols.Resources.Where(x => x.Type == ResourceType.UniformBuffer))
-                {
-                    // Match: cbuffer Name : register(bX) OR cbuffer Name : register(bX, spaceY)
-                    // Group 1: OldName
-                    // Group 2: space part (optional)
-                    var pattern = $@"cbuffer\s+(\w+)\s*:\s*register\(\s*b{r.Binding}(?:,\s*space{r.Set})?\)";
-                    var regex = new System.Text.RegularExpressions.Regex(pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                    
-                    hlsl = regex.Replace(hlsl, (match) => 
-                    {
-                       // Keep the register part, replace the name
-                       var oldName = match.Groups[1].Value;
-                       var declaration = match.Value;
-                       return declaration.Replace(oldName, r.Name);
-                    });
-                }
-            }
+            spirv = _structuredCBufferRewriter.Rewrite(spirv, finalMetadata);
+            byte[] patchedSpirv = _structuredCBufferRewriter.LastRewriteApplied
+                ? spirv
+                : PatchSpirvSymbols(spirv, finalMetadata);
+            bool hasStructuredCbuffers = HasStructuredConstantBuffers(patchedSpirv, finalMetadata);
+            bool useStructuredPath = _structuredCBufferRewriter.LastRewriteApplied || hasStructuredCbuffers;
+            string hlsl = CompileSpirVToHlsl(patchedSpirv, shaderModel, tempSpv, tempHlsl, !useStructuredPath);
+            hlsl = PostProcessHlsl(hlsl, finalMetadata, useStructuredPath);
 
             return new DecompileResult
             {
                 Success = true,
                 HlslSource = hlsl,
                 IntermediateSpirv = patchedSpirv,
-                ShaderName = recoveredShaderName
+                ShaderName = recoveredShaderName ?? finalMetadata.DebugName
             };
         }
         catch (Exception ex)
@@ -266,25 +139,826 @@ public unsafe class ShaderDecompiler : IDisposable
         }
         finally
         {
-            // Cleanup temp files if they exist
-            if (tempDxbc != null && File.Exists(tempDxbc)) File.Delete(tempDxbc);
-            if (tempDxil != null && File.Exists(tempDxil)) File.Delete(tempDxil);
-            if (tempSpv != null && File.Exists(tempSpv)) File.Delete(tempSpv);
-            if (tempHlsl != null && File.Exists(tempHlsl)) File.Delete(tempHlsl);
+            DeleteIfExists(tempDxbc);
+            DeleteIfExists(tempDxil);
+            DeleteIfExists(tempSpv);
+            DeleteIfExists(tempHlsl);
         }
     }
 
-    private byte[] ConvertDxbcToSpirv(byte[] rawDxbc) => throw new NotImplementedException();
-    private byte[] ConvertDxilToSpirv(byte[] dxil) => throw new NotImplementedException();
-    private string CompileSpirVToHlsl(byte[] spirv, uint shaderModel) => throw new NotImplementedException();
-    private static void CheckResult(IntPtr context, SpirvCrossApi.SpvcResult result, string message) { }
+    public DecompileResult Decompile(
+        byte[] binary,
+        ShaderFormat format,
+        ShaderSymbolMetadata? symbols,
+        uint shaderModel = 50)
+    {
+        return Decompile(binary, format, ConvertMetadata(symbols), shaderModel);
+    }
+
+    private ShaderSymbolData MergeMetadata(ShaderSymbolMetadata? bundleSymbols, ShaderSymbolData? explicitMetadata)
+    {
+        var merged = new ShaderSymbolData();
+
+        if (bundleSymbols != null)
+        {
+            merged = ConvertMetadata(bundleSymbols);
+        }
+
+        if (explicitMetadata == null)
+        {
+            return merged;
+        }
+
+        if (!string.IsNullOrWhiteSpace(explicitMetadata.EntryPoint))
+        {
+            merged.EntryPoint = explicitMetadata.EntryPoint;
+        }
+
+        if (explicitMetadata.Stage != ShaderStage.Unknown)
+        {
+            merged.Stage = explicitMetadata.Stage;
+        }
+
+        if (!string.IsNullOrWhiteSpace(explicitMetadata.DebugName))
+        {
+            merged.DebugName = explicitMetadata.DebugName;
+        }
+
+        foreach (var resource in explicitMetadata.Resources)
+        {
+            merged.Resources.RemoveAll(r => r.Set == resource.Set && r.Binding == resource.Binding && NormalizeResourceType(r.Type) == NormalizeResourceType(resource.Type));
+            merged.Resources.Add(CloneResource(resource));
+        }
+
+        return merged;
+    }
+
+    private static ShaderSymbolData ConvertMetadata(ShaderSymbolMetadata? symbols)
+    {
+        var data = new ShaderSymbolData();
+        if (symbols == null)
+        {
+            return data;
+        }
+
+        if (!string.IsNullOrWhiteSpace(symbols.EntryPoint))
+        {
+            data.EntryPoint = symbols.EntryPoint;
+        }
+
+        foreach (var resource in symbols.Resources)
+        {
+            data.Resources.Add(new ResourceBinding
+            {
+                Name = resource.Name ?? string.Empty,
+                Set = resource.Set,
+                Binding = resource.Binding,
+                Type = ConvertResourceType(resource.Type),
+                RegisterType = GuessRegisterType(ConvertResourceType(resource.Type)),
+                Tag = resource.Slot ?? 0
+            });
+        }
+
+        return data;
+    }
+
+    private byte[] ConvertDxbcToSpirv(byte[] rawDxbc, string tempDxbc, string tempDxil, string tempSpv)
+    {
+        byte[] actualDxbc = ExtractDxbc(rawDxbc);
+        if (!LooksLikeDxbc(actualDxbc))
+        {
+            var packed = TryExtractPackedDxbc(rawDxbc);
+            if (packed?.psDxbc != null && LooksLikeDxbc(packed.Value.psDxbc))
+            {
+                actualDxbc = packed.Value.psDxbc;
+            }
+        }
+
+        if (!LooksLikeDxbc(actualDxbc))
+        {
+            throw new InvalidOperationException("Input does not contain a valid DXBC payload.");
+        }
+
+        File.WriteAllBytes(tempDxbc, actualDxbc);
+
+        try
+        {
+            RunTool(
+                new[]
+                {
+                    Path.Combine(_toolsDir!, "dxbc2dxil.exe"),
+                    tempDxbc,
+                    "-o",
+                    tempDxil,
+                    "-emit-bc"
+                },
+                DefaultPerStepTimeoutMs,
+                "dxbc2dxil");
+
+            if (!File.Exists(tempDxil))
+            {
+                throw new InvalidOperationException("dxbc2dxil did not produce a DXIL file.");
+            }
+
+            return ConvertDxilToSpirv(File.ReadAllBytes(tempDxil), tempDxil, tempSpv, true);
+        }
+        catch (Exception ex) when (IsDxbc2DxilUnavailable(ex))
+        {
+            // Some hosts expose dxilconv.dll without a usable converter registration.
+            // Fall back to dxil-spirv's built-in DXBC path so DXBC inputs still decompile.
+            RunTool(
+                new[]
+                {
+                    Path.Combine(_toolsDir!, "dxil-spirv.exe"),
+                    tempDxbc,
+                    "--output",
+                    tempSpv
+                },
+                DefaultPerStepTimeoutMs,
+                "dxil-spirv (DXBC fallback)");
+
+            if (!File.Exists(tempSpv))
+            {
+                throw new InvalidOperationException("dxil-spirv fallback did not produce a SPIR-V file.");
+            }
+
+            return File.ReadAllBytes(tempSpv);
+        }
+    }
+
+    private byte[] ConvertDxilToSpirv(byte[] dxil, string tempDxil, string tempSpv, bool rawLlvm = false)
+    {
+        File.WriteAllBytes(tempDxil, dxil);
+
+        var args = new List<string>
+        {
+            Path.Combine(_toolsDir!, "dxil-spirv.exe"),
+            tempDxil,
+            "--output",
+            tempSpv
+        };
+
+        if (rawLlvm)
+        {
+            args.Add("--raw-llvm");
+        }
+
+        RunTool(args.ToArray(), DefaultPerStepTimeoutMs, "dxil-spirv");
+
+        if (!File.Exists(tempSpv))
+        {
+            throw new InvalidOperationException("dxil-spirv did not produce a SPIR-V file.");
+        }
+
+        return File.ReadAllBytes(tempSpv);
+    }
+
+    private string CompileSpirVToHlsl(byte[] spirv, uint shaderModel, string tempSpv, string tempHlsl, bool flattenUbo)
+    {
+        File.WriteAllBytes(tempSpv, spirv);
+
+        var args = new List<string>
+        {
+            Path.Combine(_toolsDir!, "spirv-cross.exe"),
+            tempSpv,
+            "--output",
+            tempHlsl,
+            "--hlsl"
+        };
+
+        if (flattenUbo)
+        {
+            args.Add("--flatten-ubo");
+        }
+
+        args.Add("--shader-model");
+        args.Add(shaderModel.ToString());
+        args.Add("--force-zero-initialized-variables");
+
+        RunTool(args.ToArray(), DefaultPerStepTimeoutMs, "spirv-cross");
+
+        if (!File.Exists(tempHlsl))
+        {
+            throw new InvalidOperationException("spirv-cross did not produce an HLSL file.");
+        }
+
+        return File.ReadAllText(tempHlsl, Encoding.UTF8);
+    }
+
+    private byte[] PatchSpirvSymbols(byte[] spirv, ShaderSymbolData metadata)
+    {
+        if (metadata.Resources.Count == 0)
+        {
+            return spirv;
+        }
+
+        var detailedBindings = _patcher.AnalyzeBindingsDetailed(spirv);
+        var patches = new List<(uint Id, string Name)>();
+        var memberPatches = new List<(uint TypeId, uint MemberIndex, string Name)>();
+
+        foreach (var resource in metadata.Resources)
+        {
+            if (string.IsNullOrWhiteSpace(resource.Name))
+            {
+                continue;
+            }
+
+            var matches = detailedBindings.Where(b => b.Set == resource.Set && b.Binding == resource.Binding).ToList();
+            foreach (var match in matches)
+            {
+                if (!IsDescriptorTypeMatch(resource.Type, match.DescriptorType))
+                {
+                    continue;
+                }
+
+                if (match.DescriptorType == "UniformBuffer" && match.StructTypeId.HasValue && match.StructTypeId.Value != 0)
+                {
+                    patches.Add((match.StructTypeId.Value, resource.Name));
+
+                    if (resource.Members != null)
+                    {
+                        foreach (var member in resource.Members.Where(m => !string.IsNullOrWhiteSpace(m.Name) && m.Index >= 0 && m.Index < match.StructMemberCount))
+                        {
+                            memberPatches.Add((match.StructTypeId.Value, (uint)member.Index, member.Name));
+                        }
+                    }
+                }
+
+                patches.Add((match.Id, resource.Name));
+            }
+        }
+
+        if (patches.Count == 0 && memberPatches.Count == 0)
+        {
+            return spirv;
+        }
+
+        return _patcher.PatchByIds(spirv, patches, memberPatches);
+    }
+
+    private bool HasStructuredConstantBuffers(byte[] spirv, ShaderSymbolData metadata)
+    {
+        if (metadata.Resources.Count == 0)
+        {
+            return false;
+        }
+
+        var detailedBindings = _patcher.AnalyzeBindingsDetailed(spirv);
+        foreach (var resource in metadata.Resources.Where(r => NormalizeResourceType(r.Type) == ShaderResourceType.ConstantBuffer))
+        {
+            bool matchedStructuredBuffer = detailedBindings.Any(binding =>
+                binding.Set == resource.Set
+                && binding.Binding == resource.Binding
+                && string.Equals(binding.DescriptorType, "UniformBuffer", StringComparison.Ordinal)
+                && binding.StructMemberCount > 1);
+
+            if (matchedStructuredBuffer)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string PostProcessHlsl(string hlsl, ShaderSymbolData metadata, bool usedStructuredRewrite)
+    {
+        foreach (var resource in metadata.Resources.Where(r => NormalizeResourceType(r.Type) == ShaderResourceType.Texture))
+        {
+            string pattern = $@"Texture\w*<[^>]+>\s+(\w+)\s*:\s*register\(\s*t{resource.Binding}(?:,\s*space{resource.Set})?\)";
+            var regex = new Regex(pattern, RegexOptions.IgnoreCase);
+            hlsl = regex.Replace(hlsl, match =>
+            {
+                string oldName = match.Groups[1].Value;
+                return match.Value.Replace(oldName, resource.Name);
+            });
+        }
+
+        foreach (var resource in metadata.Resources.Where(r => NormalizeResourceType(r.Type) == ShaderResourceType.Sampler))
+        {
+            string pattern = $@"SamplerState\s+(\w+)\s*:\s*register\(\s*s{resource.Binding}(?:,\s*space{resource.Set})?\)";
+            var regex = new Regex(pattern, RegexOptions.IgnoreCase);
+            hlsl = regex.Replace(hlsl, match =>
+            {
+                string oldName = match.Groups[1].Value;
+                return match.Value.Replace(oldName, resource.Name);
+            });
+        }
+
+        foreach (var resource in metadata.Resources.Where(r => NormalizeResourceType(r.Type) == ShaderResourceType.ConstantBuffer))
+        {
+            string pattern = $@"cbuffer\s+(\w+)\s*:\s*register\(\s*b{resource.Binding}(?:,\s*space{resource.Set})?\)";
+            var regex = new Regex(pattern, RegexOptions.IgnoreCase);
+            hlsl = regex.Replace(hlsl, match =>
+            {
+                string oldName = match.Groups[1].Value;
+                return match.Value.Replace(oldName, resource.Name);
+            });
+
+            hlsl = Regex.Replace(hlsl, $@"\btype_{Regex.Escape(resource.Name)}\b", resource.Name);
+            hlsl = Regex.Replace(hlsl, $@"\b{Regex.Escape(resource.Name)}_(\w+)\b", "$1");
+
+            if (usedStructuredRewrite && resource.Members != null)
+            {
+                string? structuredBlockName = FindStructuredBlockName(hlsl, resource.Binding, resource.Set);
+                var declaredMemberNames = FindStructuredBlockMemberNames(hlsl, resource.Binding, resource.Set);
+                for (int i = 0; i < resource.Members.Count && i < declaredMemberNames.Count; i++)
+                {
+                    string declaredName = declaredMemberNames[i];
+                    string memberName = resource.Members[i].Name;
+                    if (!string.IsNullOrWhiteSpace(declaredName) && !string.Equals(declaredName, memberName, StringComparison.Ordinal))
+                    {
+                        hlsl = Regex.Replace(hlsl, $@"\b{Regex.Escape(declaredName)}\b", memberName);
+                    }
+                }
+
+                for (int i = 0; i < resource.Members.Count; i++)
+                {
+                    string memberName = resource.Members[i].Name;
+                    var machineNames = new List<string>
+                    {
+                        $"CB{resource.Binding}_1_m{i}",
+                        $"CB{resource.Binding}__m{i}",
+                        $"CB{resource.Binding}_m{i}",
+                        $"CB{resource.Binding}UBO_m{i}",
+                        $"_m{i}",
+                        $"{resource.Name}_{memberName}",
+                        $"{resource.Name}_1_{memberName}",
+                        $"{resource.Name}_0_{memberName}"
+                    };
+
+                    if (!string.IsNullOrWhiteSpace(structuredBlockName))
+                    {
+                        machineNames.Add($"{structuredBlockName}_m{i}");
+                    }
+
+                    foreach (string machineName in machineNames)
+                    {
+                        hlsl = Regex.Replace(hlsl, $@"\b{Regex.Escape(machineName)}\b", memberName);
+                    }
+                }
+            }
+
+            if (usedStructuredRewrite)
+            {
+                continue;
+            }
+
+            string flatPattern = $@"uniform\s+float4\s+({Regex.Escape(resource.Name)}|CB{resource.Binding}UBO|_\d+)\[(\d+)\]\s*;";
+            hlsl = Regex.Replace(hlsl, flatPattern, match =>
+            {
+                string oldName = match.Groups[1].Value;
+                if (!string.Equals(oldName, resource.Name, StringComparison.OrdinalIgnoreCase)
+                    && !IsLikelyMatchingFlatBufferName(oldName, resource.Binding))
+                {
+                    return match.Value;
+                }
+
+                int count = int.Parse(match.Groups[2].Value);
+                var builder = new StringBuilder();
+                builder.AppendLine($"uniform float4 {resource.Name}[{count}];");
+
+                if (resource.Members != null)
+                {
+                    foreach (var member in resource.Members.OrderBy(m => m.ByteOffset))
+                    {
+                        foreach (string alias in BuildFlatBufferAliases(resource.Name, member))
+                        {
+                            builder.AppendLine(alias);
+                        }
+                    }
+                }
+
+                return builder.ToString().TrimEnd();
+            }, RegexOptions.IgnoreCase);
+        }
+
+        return hlsl;
+    }
+
+    private static string? FindStructuredBlockName(string hlsl, int binding, int set)
+    {
+        string pattern = $@"cbuffer\s+(\w+)\s*:\s*register\(\s*b{binding}(?:,\s*space{set})?\)";
+        var match = Regex.Match(hlsl, pattern, RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups[1].Value : null;
+    }
+
+    private static List<string> FindStructuredBlockMemberNames(string hlsl, int binding, int set)
+    {
+        string pattern = $@"cbuffer\s+\w+\s*:\s*register\(\s*b{binding}(?:,\s*space{set})?\s*\)\s*\{{(?<body>[\s\S]*?)\}};";
+        var match = Regex.Match(hlsl, pattern, RegexOptions.IgnoreCase);
+        if (!match.Success)
+        {
+            return new List<string>();
+        }
+
+        var result = new List<string>();
+        foreach (Match memberMatch in Regex.Matches(match.Groups["body"].Value, @"^\s*(?:row_major|column_major\s+)?(?:\w+<[^>]+>|\w+)\s+(\w+)\s*:\s*packoffset\(", RegexOptions.Multiline))
+        {
+            result.Add(memberMatch.Groups[1].Value);
+        }
+
+        return result;
+    }
+
+    private static bool IsLikelyMatchingFlatBufferName(string candidate, int binding)
+    {
+        if (candidate.StartsWith($"CB{binding}UBO", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return Regex.IsMatch(candidate, $@"^(CB{binding}UBO|_\d+)$", RegexOptions.IgnoreCase);
+    }
+
+    private static IEnumerable<string> BuildFlatBufferAliases(string bufferName, StructMember member)
+    {
+        if (member.ByteOffset < 0)
+        {
+            yield break;
+        }
+
+        int startRegister = member.ByteOffset / 16;
+        int registerCount = Math.Max(1, (member.ByteSize + 15) / 16);
+
+        if (registerCount == 1)
+        {
+            yield return $"#define {member.Name} {bufferName}[{startRegister}]";
+            yield break;
+        }
+
+        yield return $"#define {member.Name} {bufferName}[{startRegister}] /* spans {registerCount} x float4 slots */";
+    }
+
+    public static string? FindToolsDirectory(string? overridePath = null)
+    {
+        if (!string.IsNullOrWhiteSpace(overridePath) && Directory.Exists(overridePath) && HasDirectTools(overridePath))
+        {
+            return overridePath;
+        }
+
+        string[] candidates =
+        {
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Tools"),
+            AppDomain.CurrentDomain.BaseDirectory,
+            Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "Tools")),
+            Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "Tools")),
+            Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "Tools")),
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "x64", "ShaderTools"),
+            Path.Combine(Path.GetDirectoryName(Process.GetCurrentProcess().MainModule?.FileName ?? string.Empty) ?? string.Empty, "x64", "ShaderTools")
+        };
+
+        foreach (string candidate in candidates.Where(c => !string.IsNullOrWhiteSpace(c)).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (Directory.Exists(candidate) && HasDirectTools(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    public static bool HasDirectTools(string dir)
+    {
+        return File.Exists(Path.Combine(dir, "dxbc2dxil.exe"))
+            && File.Exists(Path.Combine(dir, "dxil-spirv.exe"))
+            && File.Exists(Path.Combine(dir, "spirv-cross.exe"));
+    }
+
+    public static byte[] ExtractDxbc(byte[] data)
+    {
+        for (int i = 0; i <= data.Length - 4; i++)
+        {
+            if (data[i] == (byte)'D' && data[i + 1] == (byte)'X' && data[i + 2] == (byte)'B' && data[i + 3] == (byte)'C')
+            {
+                if (i == 0)
+                {
+                    return data;
+                }
+
+                var result = new byte[data.Length - i];
+                Buffer.BlockCopy(data, i, result, 0, result.Length);
+                return result;
+            }
+        }
+
+        return data;
+    }
+
+    public static (byte[] psDxbc, byte[] vsDxbc)? TryExtractPackedDxbc(byte[] programData)
+    {
+        if (programData == null || programData.Length < 180)
+        {
+            return null;
+        }
+
+        int block1Len = BitConverter.ToInt32(programData, 4);
+        int block2Len = BitConverter.ToInt32(programData, 8);
+        int dxbcOffset = BitConverter.ToInt32(programData, 12);
+
+        if (block1Len + block2Len != programData.Length || dxbcOffset != 176 || block1Len < 180 || block2Len < 4)
+        {
+            return null;
+        }
+
+        bool hasDxbc1 = dxbcOffset + 4 <= programData.Length
+            && programData[dxbcOffset] == 0x44 && programData[dxbcOffset + 1] == 0x58
+            && programData[dxbcOffset + 2] == 0x42 && programData[dxbcOffset + 3] == 0x43;
+        bool hasDxbc2 = block1Len + 4 <= programData.Length
+            && programData[block1Len] == 0x44 && programData[block1Len + 1] == 0x58
+            && programData[block1Len + 2] == 0x42 && programData[block1Len + 3] == 0x43;
+
+        if (!hasDxbc1 && !hasDxbc2)
+        {
+            return null;
+        }
+
+        byte[]? psDxbc = null;
+        if (hasDxbc1)
+        {
+            int psLen = block1Len - dxbcOffset;
+            psDxbc = new byte[psLen];
+            Buffer.BlockCopy(programData, dxbcOffset, psDxbc, 0, psLen);
+        }
+
+        byte[]? vsDxbc = null;
+        if (hasDxbc2)
+        {
+            vsDxbc = new byte[block2Len];
+            Buffer.BlockCopy(programData, block1Len, vsDxbc, 0, block2Len);
+        }
+
+        if (psDxbc == null || vsDxbc == null)
+        {
+            return null;
+        }
+
+        return (psDxbc, vsDxbc);
+    }
+
+    private void RunTool(string[] args, int timeoutMs, string toolDisplayName)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = args[0],
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = _toolsDir
+        };
+
+        for (int i = 1; i < args.Length; i++)
+        {
+            psi.ArgumentList.Add(args[i]);
+        }
+
+        psi.Environment["PATH"] = _toolsDir + Path.PathSeparator + (psi.Environment.ContainsKey("PATH") ? psi.Environment["PATH"] : string.Empty);
+
+        using var process = Process.Start(psi);
+        if (process == null)
+        {
+            throw new InvalidOperationException($"Failed to start {toolDisplayName}.");
+        }
+
+        var stderr = new StringBuilder();
+        string stdout = string.Empty;
+        process.ErrorDataReceived += (_, e) =>
+        {
+            if (e.Data != null)
+            {
+                stderr.AppendLine(e.Data);
+            }
+        };
+
+        process.BeginErrorReadLine();
+        stdout = process.StandardOutput.ReadToEnd();
+
+        if (!process.WaitForExit(timeoutMs))
+        {
+            try
+            {
+                process.Kill(true);
+            }
+            catch
+            {
+            }
+
+            throw new TimeoutException($"{toolDisplayName} timed out after {timeoutMs}ms.");
+        }
+
+        if (process.ExitCode != 0)
+        {
+            string details = string.Join(Environment.NewLine, new[]
+            {
+                Truncate(stderr.ToString(), 1000),
+                Truncate(stdout, 1000)
+            }.Where(s => !string.IsNullOrWhiteSpace(s)));
+            throw new InvalidOperationException($"{toolDisplayName} failed: {details}");
+        }
+    }
+
+    private static ShaderFormat SniffShaderFormat(byte[] data)
+    {
+        if (data.Length < 4)
+        {
+            return ShaderFormat.Unknown;
+        }
+
+        if (LooksLikeDxilContainer(data))
+        {
+            return ShaderFormat.Dxil;
+        }
+
+        if (LooksLikeDxbc(data))
+        {
+            return ShaderFormat.Dxbc;
+        }
+
+        if (data.Length >= 4 && data[0] == (byte)'D' && data[1] == (byte)'X' && data[2] == (byte)'I' && data[3] == (byte)'L')
+        {
+            return ShaderFormat.Dxil;
+        }
+
+        uint magic = BitConverter.ToUInt32(data, 0);
+        return magic == 0x07230203 ? ShaderFormat.SpirV : ShaderFormat.Unknown;
+    }
+
+    private static bool LooksLikeDxbc(byte[] data)
+    {
+        return data.Length >= 4 && data[0] == (byte)'D' && data[1] == (byte)'X' && data[2] == (byte)'B' && data[3] == (byte)'C';
+    }
+
+    private static bool LooksLikeDxilContainer(byte[] data)
+    {
+        if (!LooksLikeDxbc(data) || data.Length < 32)
+        {
+            return false;
+        }
+
+        int chunkCount = BitConverter.ToInt32(data, 28);
+        if (chunkCount <= 0 || chunkCount > 256)
+        {
+            return false;
+        }
+
+        int chunkTableOffset = 32;
+        if (chunkTableOffset + (chunkCount * 4) > data.Length)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < chunkCount; i++)
+        {
+            int chunkOffset = BitConverter.ToInt32(data, chunkTableOffset + (i * 4));
+            if (chunkOffset < 0 || chunkOffset + 8 > data.Length)
+            {
+                continue;
+            }
+
+            if (data[chunkOffset] == (byte)'D'
+                && data[chunkOffset + 1] == (byte)'X'
+                && data[chunkOffset + 2] == (byte)'I'
+                && data[chunkOffset + 3] == (byte)'L')
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static ShaderResourceType ConvertResourceType(ResourceType type)
+    {
+        return type switch
+        {
+            ResourceType.UniformBuffer => ShaderResourceType.ConstantBuffer,
+            ResourceType.Texture => ShaderResourceType.Texture,
+            ResourceType.Sampler => ShaderResourceType.Sampler,
+            ResourceType.UAV => ShaderResourceType.UAV,
+            ResourceType.StructuredBuffer => ShaderResourceType.StructuredBuffer,
+            ResourceType.RWTexture => ShaderResourceType.RWTexture2D,
+            ResourceType.RWBuffer => ShaderResourceType.RWBuffer,
+            _ => ShaderResourceType.Unknown
+        };
+    }
+
+    private static char GuessRegisterType(ShaderResourceType type)
+    {
+        return NormalizeResourceType(type) switch
+        {
+            ShaderResourceType.ConstantBuffer => 'b',
+            ShaderResourceType.Sampler => 's',
+            ShaderResourceType.UAV => 'u',
+            ShaderResourceType.RWBuffer => 'u',
+            ShaderResourceType.StorageBuffer => 'u',
+            ShaderResourceType.StorageImage => 'u',
+            _ => 't'
+        };
+    }
+
+    private static ShaderResourceType NormalizeResourceType(ShaderResourceType type)
+    {
+        return type switch
+        {
+            ShaderResourceType.ConstantBuffer => ShaderResourceType.ConstantBuffer,
+            ShaderResourceType.Sampler => ShaderResourceType.Sampler,
+            ShaderResourceType.SamplerComparison => ShaderResourceType.Sampler,
+            ShaderResourceType.UAV => ShaderResourceType.UAV,
+            ShaderResourceType.RWBuffer => ShaderResourceType.RWBuffer,
+            ShaderResourceType.RWStructuredBuffer => ShaderResourceType.RWBuffer,
+            ShaderResourceType.RWByteAddressBuffer => ShaderResourceType.RWBuffer,
+            ShaderResourceType.StorageBuffer => ShaderResourceType.StorageBuffer,
+            ShaderResourceType.StorageImage => ShaderResourceType.StorageImage,
+            ShaderResourceType.StructuredBuffer => ShaderResourceType.StructuredBuffer,
+            ShaderResourceType.Texture => ShaderResourceType.Texture,
+            ShaderResourceType.SampledImage => ShaderResourceType.Texture,
+            ShaderResourceType.SRV => ShaderResourceType.Texture,
+            ShaderResourceType.Buffer => ShaderResourceType.Texture,
+            ShaderResourceType.ByteAddressBuffer => ShaderResourceType.Texture,
+            ShaderResourceType.Texture2D => ShaderResourceType.Texture,
+            ShaderResourceType.Texture2DArray => ShaderResourceType.Texture,
+            ShaderResourceType.Texture3D => ShaderResourceType.Texture,
+            ShaderResourceType.TextureCube => ShaderResourceType.Texture,
+            ShaderResourceType.TextureCubeArray => ShaderResourceType.Texture,
+            ShaderResourceType.Texture2DMS => ShaderResourceType.Texture,
+            ShaderResourceType.RWTexture2D => ShaderResourceType.UAV,
+            ShaderResourceType.RWTexture2DArray => ShaderResourceType.UAV,
+            ShaderResourceType.RWTexture3D => ShaderResourceType.UAV,
+            _ => ShaderResourceType.Unknown
+        };
+    }
+
+    private static bool IsDescriptorTypeMatch(ShaderResourceType resourceType, string? descriptorType)
+    {
+        ShaderResourceType normalized = NormalizeResourceType(resourceType);
+        return descriptorType switch
+        {
+            "UniformBuffer" => normalized == ShaderResourceType.ConstantBuffer,
+            "StorageBuffer" => normalized == ShaderResourceType.StorageBuffer || normalized == ShaderResourceType.RWBuffer || normalized == ShaderResourceType.StructuredBuffer || normalized == ShaderResourceType.UAV,
+            "Sampler" => normalized == ShaderResourceType.Sampler,
+            "SampledImage" => normalized == ShaderResourceType.Texture || normalized == ShaderResourceType.Sampler,
+            "StorageImage" => normalized == ShaderResourceType.UAV || normalized == ShaderResourceType.StorageImage,
+            _ => true
+        };
+    }
+
+    private static ResourceBinding CloneResource(ResourceBinding resource)
+    {
+        return new ResourceBinding
+        {
+            Name = resource.Name,
+            Binding = resource.Binding,
+            Set = resource.Set,
+            Type = resource.Type,
+            Tag = resource.Tag,
+            RegisterType = resource.RegisterType,
+            Members = resource.Members?.Select(member => new StructMember
+            {
+                Name = member.Name,
+                Index = member.Index,
+                ByteOffset = member.ByteOffset,
+                ByteSize = member.ByteSize,
+                TypeName = member.TypeName
+            }).ToList()
+        };
+    }
+
+    private static string Truncate(string text, int maxLength)
+    {
+        if (string.IsNullOrEmpty(text) || text.Length <= maxLength)
+        {
+            return text;
+        }
+
+        return text.Substring(0, maxLength);
+    }
+
+    private static void DeleteIfExists(string path)
+    {
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
+    }
+
+    private static bool IsDxbc2DxilUnavailable(Exception ex)
+    {
+        string message = ex.ToString();
+        return message.Contains("REGDB_E_CLASSNOTREG", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Class not registered", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("类未注册", StringComparison.OrdinalIgnoreCase);
+    }
 
     public void Dispose()
     {
-        if (!_disposed)
+        if (_disposed)
         {
-            _disposed = true;
-            GC.SuppressFinalize(this);
+            return;
         }
+
+        _disposed = true;
+        GC.SuppressFinalize(this);
     }
 }

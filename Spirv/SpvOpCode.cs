@@ -33,6 +33,12 @@ public static class SpvOpCode
     public const ushort OpTypeOpaque = 31;
     public const ushort OpTypePointer = 32;
     public const ushort OpConstant = 43;
+    public const ushort OpConstantComposite = 44;
+    public const ushort OpCompositeExtract = 81;
+    public const ushort OpAccessChain = 65;
+    public const ushort OpInBoundsAccessChain = 66;
+    public const ushort OpLoad = 61;
+    public const ushort OpStore = 62;
     public const ushort OpVariable = 59;
     public const ushort OpDecorate = 71;
     public const ushort OpMemberDecorate = 72;
@@ -41,6 +47,19 @@ public static class SpvOpCode
     public const uint DecorationBinding = 33;
     public const uint DecorationDescriptorSet = 34;
     public const uint DecorationLocation = 30;
+    public const uint DecorationOffset = 35;
+    public const uint DecorationBlock = 2;
+    public const uint DecorationArrayStride = 6;
+    public const uint DecorationMatrixStride = 7;
+    public const uint DecorationColMajor = 5;
+    public const uint DecorationRowMajor = 4;
+
+    // Storage classes
+    public const uint StorageClassUniformConstant = 0;
+    public const uint StorageClassInput = 1;
+    public const uint StorageClassUniform = 2;
+    public const uint StorageClassOutput = 3;
+    public const uint StorageClassFunction = 7;
 
     /// <summary>
     /// Extracts OpCode from an instruction word.

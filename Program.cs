@@ -6,6 +6,7 @@ using Ruri.ShaderDecompiler.Utils;
 using System.Linq;
 using Newtonsoft.Json;
 using Ruri.ShaderDecompiler.Intermediate;
+using Ruri.ShaderDecompiler.Testing.SelfTest;
 using Ruri.ShaderDecompiler.Unreal;
 
 namespace Ruri.ShaderDecompiler
@@ -14,6 +15,14 @@ namespace Ruri.ShaderDecompiler
     {
         static int Main(string[] args)
         {
+            if (args.Length >= 1 && string.Equals(args[0], "--selftest", StringComparison.OrdinalIgnoreCase))
+            {
+                string outputRoot = args.Length > 1
+                    ? Path.GetFullPath(args[1])
+                    : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "SelfTestOutput");
+                return SelfTestRunner.Run(outputRoot);
+            }
+
             if (args.Length < 1)
             {
                 Console.WriteLine("Usage: ShaderDecompiler.exe <input> [mode] [output] [--keep-temps] [--mapping <path>]");
@@ -21,15 +30,21 @@ namespace Ruri.ShaderDecompiler
             }
 
             string inputPath = Path.GetFullPath(args[0]);
-            string mode = args.Length > 1 ? args[1] : "";
-            string? outputPath = args.Length > 2 ? args[2] : null;
+            string mode = args.Length > 1 && !args[1].StartsWith("--", StringComparison.Ordinal) ? args[1] : "";
+            string? outputPath = args.Length > 2 && !args[2].StartsWith("--", StringComparison.Ordinal) ? args[2] : null;
             bool keepTemps = false;
             string? scanAssetsPath = null;
             string? mappingPath = null;
+            string? symbolsPath = null;
 
             var nameMap = new Dictionary<int, string>();
             for (int i = 1; i < args.Length; i++)
             {
+                if (i <= 2 && !args[i].StartsWith("--", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
                 if (args[i] == "--keep-temps") keepTemps = true;
                 else if (args[i] == "--scan-assets" && i + 1 < args.Length)
                 {
@@ -41,6 +56,11 @@ namespace Ruri.ShaderDecompiler
                     mappingPath = args[i + 1];
                     i++; 
                 }
+                else if (args[i] == "--symbols" && i + 1 < args.Length)
+                {
+                    symbolsPath = args[i + 1];
+                    i++;
+                }
                 else if (args[i] == "--restore-symbols" && i + 2 < args.Length)
                 {
                     string matDir = args[i+1];
@@ -48,9 +68,6 @@ namespace Ruri.ShaderDecompiler
                     nameMap = ShaderBindingExtractor.ScanAndRestore(matDir, arcDir);
                     i += 2;
                 }
-                else if (args[i].StartsWith("-")) mode = args[i];
-
-                else if (args[i] != inputPath) outputPath = args[i];
             }
 
             if (!File.Exists(inputPath))
@@ -76,10 +93,11 @@ namespace Ruri.ShaderDecompiler
             {
                 var format = ParseFormat(mode);
                 var binary = File.ReadAllBytes(inputPath);
+                var symbols = LoadShaderSymbols(inputPath, symbolsPath);
                 
                 using var decompiler = new ShaderDecompiler(); 
                 
-                var result = decompiler.Decompile(binary, format, null, 50);
+                var result = decompiler.Decompile(binary, format, symbols, 50);
                 
                 if (result.Success)
                 {
@@ -253,7 +271,7 @@ namespace Ruri.ShaderDecompiler
 
                     try 
                     {
-                        var res = decompiler.Decompile(code, ShaderFormat.Unknown, null, 50);
+                        var res = decompiler.Decompile(code, ShaderFormat.Unknown, (ShaderSymbolData?)null, 50);
                         if (res.Success)
                         {
                             string finalName = "";
@@ -398,6 +416,11 @@ namespace Ruri.ShaderDecompiler
         static ShaderFormat ParseFormat(string mode)
         {
              return mode.ToLower() switch {
+                 "dxbc" => ShaderFormat.Dxbc,
+                 "dxil" => ShaderFormat.Dxil,
+                 "spv" => ShaderFormat.SpirV,
+                 "spirv" => ShaderFormat.SpirV,
+                 "hlsl" => ShaderFormat.Unknown,
                  "-dxbc" => ShaderFormat.Dxbc,
                  "-dxil" => ShaderFormat.Dxil,
                  "-spv" => ShaderFormat.SpirV,
@@ -405,6 +428,51 @@ namespace Ruri.ShaderDecompiler
                  "-unknown" => ShaderFormat.Unknown,
                  _ => ShaderFormat.Unknown
              };
+        }
+
+        static bool IsLikelyMode(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            string lower = value.ToLowerInvariant();
+            return lower is "hlsl" or "dxbc" or "dxil" or "spv" or "spirv"
+                or "-dxbc" or "-dxil" or "-spv" or "-spirv" or "-unknown";
+        }
+
+        static ShaderSymbolData? LoadShaderSymbols(string inputPath, string? explicitSymbolsPath)
+        {
+            string? symbolsPath = explicitSymbolsPath;
+            if (string.IsNullOrWhiteSpace(symbolsPath))
+            {
+                string sidecar = Path.ChangeExtension(inputPath, ".symbols.json");
+                if (File.Exists(sidecar))
+                {
+                    symbolsPath = sidecar;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(symbolsPath))
+            {
+                return null;
+            }
+
+            string fullPath = Path.GetFullPath(symbolsPath);
+            if (!File.Exists(fullPath))
+            {
+                throw new FileNotFoundException($"Symbols file not found: {fullPath}");
+            }
+
+            var json = File.ReadAllText(fullPath);
+            var symbols = JsonConvert.DeserializeObject<ShaderSymbolData>(json);
+            if (symbols == null)
+            {
+                throw new InvalidOperationException($"Failed to deserialize shader symbols: {fullPath}");
+            }
+
+            return symbols;
         }
 
         static (ShaderFormat format, int offset) SniffFormat(byte[] data)

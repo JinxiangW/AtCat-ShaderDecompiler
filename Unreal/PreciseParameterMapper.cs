@@ -258,6 +258,42 @@ namespace Ruri.ShaderDecompiler.Unreal
         }
 
         /// <summary>
+        /// Convert mapping to the stronger ShaderSymbolData model.
+        /// </summary>
+        public ShaderSymbolData GetSymbolData(MaterialMapping mapping)
+        {
+            var data = new ShaderSymbolData();
+
+            if (mapping == null)
+            {
+                return data;
+            }
+
+            foreach (var param in mapping.TextureParameters)
+            {
+                data.Resources.Add(new ResourceBinding
+                {
+                    Name = param.Name,
+                    Binding = param.Index,
+                    Set = 0,
+                    Type = ShaderResourceType.Texture,
+                    RegisterType = 't'
+                });
+
+                data.Resources.Add(new ResourceBinding
+                {
+                    Name = param.Name + "_Sampler",
+                    Binding = param.Index,
+                    Set = 0,
+                    Type = ShaderResourceType.Sampler,
+                    RegisterType = 's'
+                });
+            }
+
+            return data;
+        }
+
+        /// <summary>
         /// Generate inline comments for shader declarations.
         /// </summary>
         public Dictionary<string, string> BuildBindingToNameMap(MaterialMapping mapping)
