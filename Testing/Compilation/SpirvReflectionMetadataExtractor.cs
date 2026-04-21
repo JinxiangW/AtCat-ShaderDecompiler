@@ -264,7 +264,7 @@ internal static class SpirvReflectionMetadataExtractor
 
         return typeName switch
         {
-            "float" or "uint" or "int" => 4,
+            "float" or "uint" or "int" or "bool" => 4,
             "float2" or "uint2" or "int2" => 8,
             "float3" or "uint3" or "int3" => 12,
             "float4" or "uint4" or "int4" => 16,
@@ -291,6 +291,7 @@ internal static class SpirvReflectionMetadataExtractor
             "ivec2" => "int2",
             "ivec3" => "int3",
             "ivec4" => "int4",
+            "bool" => "bool",
             _ => typeName,
         };
     }

@@ -7,6 +7,7 @@ internal static class D3DCompiler
 {
     private const uint D3DCompileEnableStrictness = 1u << 11;
     private const uint D3DCompileOptimizationLevel3 = 1u << 15;
+    private static readonly IntPtr D3DCompileStandardFileInclude = new(1);
 
     public static byte[] Compile(string source, string entryPoint, string profile)
     {
@@ -14,6 +15,47 @@ internal static class D3DCompiler
     }
 
     public static byte[] Compile(string source, string entryPoint, string profile, params (string Name, string Value)[] defines)
+    {
+        return CompileCore(delegate (IntPtr definesPtr, out IntPtr codeBlob, out IntPtr errorBlob)
+        {
+            return D3DCompile(
+                source,
+                new UIntPtr((uint)source.Length),
+                null,
+                definesPtr,
+                IntPtr.Zero,
+                entryPoint,
+                profile,
+                D3DCompileEnableStrictness | D3DCompileOptimizationLevel3,
+                0,
+                out codeBlob,
+                out errorBlob);
+        }, defines);
+    }
+
+    public static byte[] CompileFile(string filePath, string entryPoint, string profile)
+    {
+        return CompileFile(filePath, entryPoint, profile, Array.Empty<(string Name, string Value)>());
+    }
+
+    public static byte[] CompileFile(string filePath, string entryPoint, string profile, params (string Name, string Value)[] defines)
+    {
+        return CompileCore(delegate (IntPtr definesPtr, out IntPtr codeBlob, out IntPtr errorBlob)
+        {
+            return D3DCompileFromFile(
+                filePath,
+                definesPtr,
+                D3DCompileStandardFileInclude,
+                entryPoint,
+                profile,
+                D3DCompileEnableStrictness | D3DCompileOptimizationLevel3,
+                0,
+                out codeBlob,
+                out errorBlob);
+        }, defines);
+    }
+
+    private static byte[] CompileCore(CompileInvoker invoker, (string Name, string Value)[] defines)
     {
         IntPtr definesPtr = IntPtr.Zero;
         IntPtr[] allocatedStrings = Array.Empty<IntPtr>();
@@ -41,18 +83,7 @@ internal static class D3DCompiler
             Marshal.StructureToPtr(new D3DShaderMacro(), IntPtr.Add(definesPtr, defines.Length * macroSize), false);
         }
 
-        int hr = D3DCompile(
-            source,
-            new UIntPtr((uint)source.Length),
-            null,
-            definesPtr,
-            IntPtr.Zero,
-            entryPoint,
-            profile,
-            D3DCompileEnableStrictness | D3DCompileOptimizationLevel3,
-            0,
-            out IntPtr codeBlob,
-            out IntPtr errorBlob);
+        int hr = invoker(definesPtr, out IntPtr codeBlob, out IntPtr errorBlob);
 
         try
         {
@@ -98,6 +129,8 @@ internal static class D3DCompiler
         public IntPtr Definition;
     }
 
+    private delegate int CompileInvoker(IntPtr definesPtr, out IntPtr codeBlob, out IntPtr errorBlob);
+
     private static unsafe byte[] ReadBlobAsBytes(IntPtr blob)
     {
         if (blob == IntPtr.Zero)
@@ -131,6 +164,18 @@ internal static class D3DCompiler
         [MarshalAs(UnmanagedType.LPStr)] string srcData,
         UIntPtr srcDataSize,
         [MarshalAs(UnmanagedType.LPStr)] string? sourceName,
+        IntPtr defines,
+        IntPtr include,
+        [MarshalAs(UnmanagedType.LPStr)] string entryPoint,
+        [MarshalAs(UnmanagedType.LPStr)] string target,
+        uint flags1,
+        uint flags2,
+        out IntPtr code,
+        out IntPtr errorMsgs);
+
+    [DllImport("d3dcompiler_47.dll", CallingConvention = CallingConvention.StdCall, CharSet = CharSet.Unicode)]
+    private static extern int D3DCompileFromFile(
+        [MarshalAs(UnmanagedType.LPWStr)] string fileName,
         IntPtr defines,
         IntPtr include,
         [MarshalAs(UnmanagedType.LPStr)] string entryPoint,

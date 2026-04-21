@@ -29,21 +29,7 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint clampedLightIndex = encodedLightIndex % lightCount;
     float4 lightData = ClusterLightData[clampedLightIndex];
     float luminance = dot(lightData.rgb, ComputeWeights.xyz) + ComputeWeights.w;
-    uint2 tileCoord = dispatchThreadId.xy & 7u;
-    uint packedFlags = (clampedLightIndex << 16) | (encodedLightIndex & 65535u);
-    uint bitCount = countbits(packedFlags);
-    int signedIndex = (int)(clampedLightIndex & 127u) - 64;
-
-    float2 remappedTile = float2(tileCoord);
-    float3 remappedColor = lightData.rgb;
-    float adjust = (tileCoord.x + tileCoord.y) * 0.0001f;
-    adjust += remappedTile.x * 0.0001f;
-    if ((bitCount & 1u) != 0u)
-    {
-        adjust += signedIndex * 0.00001f;
-    }
-
     DebugOutput[dispatchThreadId.xy] = float4(lightData.rgb * luminance, 1.0);
-    ReductionBuffer[flatIndex] = float4(remappedColor + adjust.xxx, luminance + adjust);
-    CounterBuffer.Store(flatIndex * 4u, asuint(luminance + adjust));
+    ReductionBuffer[flatIndex] = float4(lightData.rgb, luminance);
+    CounterBuffer.Store(flatIndex * 4u, asuint(luminance));
 }

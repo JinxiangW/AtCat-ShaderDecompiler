@@ -479,7 +479,7 @@ namespace Ruri.ShaderDecompiler
             {
                 string shaderPath = ResolveSelfTestShaderPath(stage);
                 string shaderSource = File.ReadAllText(shaderPath);
-                byte[] dxbc = D3DCompiler.Compile(shaderSource, stage.EntryPoint, stage.DxbcProfile);
+                byte[] dxbc = D3DCompiler.CompileFile(shaderPath, stage.EntryPoint, stage.DxbcProfile);
                 string dxbcPath = Path.Combine(compiledRoot, $"{stage.Name}.dxbc");
                 string dxilPath = Path.Combine(compiledRoot, $"{stage.Name}.dxil");
                 string spvPath = Path.Combine(compiledRoot, $"{stage.Name}.spv");

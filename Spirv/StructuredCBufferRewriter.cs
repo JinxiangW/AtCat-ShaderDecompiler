@@ -474,6 +474,7 @@ internal sealed class StructuredCBufferRewriter
             "int2" => int2TypeId,
             "int3" => int3TypeId,
             "int4" => int4TypeId,
+            "bool" => types.UIntTypeId,
             "uint" => types.UIntTypeId,
             "uint2" => uint2TypeId,
             "uint3" => uint3TypeId,

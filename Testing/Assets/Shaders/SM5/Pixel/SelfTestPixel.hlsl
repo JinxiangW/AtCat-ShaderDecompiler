@@ -40,15 +40,7 @@ float4 PSMain(GeometryOutput input) : SV_Target0
     float3 normalMap = NormalTexture.Sample(PixelLinearSampler, input.TexCoord).xyz * 2.0 - 1.0;
     float4 layered = LayeredTexture.Sample(PixelLinearSampler, float3(input.TexCoord, 0.0));
     float4 volume = VolumeTexture.Sample(PixelLinearSampler, float3(input.TexCoord, 0.5));
-    float3 reflection = ReflectionProbe.SampleLevel(PixelLinearSampler, reflect(-normalize(PixelLightDirection_Intensity.xyz), SafeNormalize(input.Normal)), 0.0).rgb;
-
     float3 n = SafeNormalize(input.Normal + normalMap * SurfaceParams.zzz);
-    n = SafeNormalize(mul(PixelMatrix3, n + PixelFloat3 * 0.001f));
-    float3 l = SafeNormalize(-PixelLightDirection_Intensity.xyz);
-    float ndl = saturate(dot(n, l));
-    int mode = (int)round(SurfaceParams.w * 3.0);
-    uint flags = asuint(ClearCoat_Wetness.x);
-    bool alphaTest = PixelBool || ((flags & 1u) != 0u);
     float2 shiftedUv = mul(PixelMatrix2, input.TexCoord + PixelFloat2 * 0.01f);
 
     templateData.TemplateBool1 = PixelBool;
@@ -77,55 +69,6 @@ float4 PSMain(GeometryOutput input) : SV_Target0
     templateData.TemplateFloat4x3 = float4x3(PixelMatrix3[0], PixelMatrix3[1], PixelMatrix3[2], n);
     templateData.TemplateFloat4x4 = float4x4(float4(PixelMatrix3[0], 0.0f), float4(PixelMatrix3[1], 0.0f), float4(PixelMatrix3[2], 0.0f), float4(0.0f, 0.0f, 0.0f, 1.0f));
     templateAccumulator.Value = SelfTestTemplateEval(templateData);
-    templateAccumulator.Color = float4(templateAccumulator.Value.xxx, 1.0f);
-    float2 offsets[2] = { float2(-0.125, 0.125), float2(0.125, -0.125) };
-    float edge = AlbedoTexture.Sample(PixelLinearSampler, shiftedUv + offsets[mode & 1]).a;
-    float3 combined = albedo.rgb * BaseColorFactor.rgb;
-    combined += layered.rgb * PixelLightColor_RoughnessBias.xyz * ndl;
-    combined += volume.rgb * ClearCoat_Wetness.yyy;
-    combined += reflection * EmissiveColor_AlphaCutoff.xxx;
 
-    float3 accumulated = 0.0.xxx;
-    float3 taps[3] =
-    {
-        albedo.rgb,
-        layered.rgb,
-        volume.rgb
-    };
-
-    [unroll]
-    for (int tapIndex = 0; tapIndex < 3; tapIndex++)
-    {
-        accumulated += taps[tapIndex] * (0.125f * (tapIndex + 1));
-    }
-
-    switch (mode)
-    {
-        case 0:
-            combined += accumulated * 0.25f;
-            break;
-        case 1:
-            combined += abs(accumulated) * 0.125f;
-            break;
-        default:
-            combined += sqrt(saturate(accumulated)) * 0.0625f;
-            break;
-    }
-
-    int2 pixelCoord = int2(input.Position.xy);
-    uint2 pixelCoordU = uint2(max(pixelCoord, 0));
-    float2 parity = float2(pixelCoordU & 1u);
-    float scalarMix = PixelScalar + PixelUInt * 0.0001f + PixelInt * 0.0001f;
-    scalarMix += (PixelInt2.x + PixelInt3.y + PixelInt4.z) * 0.0001f;
-    scalarMix += (PixelUInt2.x + PixelUInt3.y + PixelUInt4.z) * 0.0001f;
-    scalarMix += templateAccumulator.Value * 0.000001f;
-    combined += parity.xxy * 0.005f;
-    combined += scalarMix.xxx * 0.01f;
-    combined = lerp(combined, PixelFogColor_Density.xyz, saturate(PixelFogColor_Density.w * length(input.Position.xy) * 0.01));
-    combined = 1.0 - exp(-combined * PixelCameraPosition_Exposure.w);
-    if (alphaTest)
-    {
-        clip(edge * albedo.a * BaseColorFactor.a - EmissiveColor_AlphaCutoff.w);
-    }
-    return float4(combined * input.Color.rgb, albedo.a * BaseColorFactor.a);
+    return float4((albedo.rgb + layered.rgb + volume.rgb) * (0.1f + templateAccumulator.Value * 0.000001f), 1.0f);
 }
