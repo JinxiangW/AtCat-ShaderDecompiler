@@ -134,10 +134,8 @@ public class SpirvPatcher
                     }
                     else if (samplerTypeIds.Contains(pointedType))
                         info.DescriptorType = "Sampler";
-                    else if (sampledImageTypeIds.Contains(pointedType))
+                    else if (sampledImageTypeIds.Contains(pointedType) || imageTypeIds.Contains(pointedType))
                         info.DescriptorType = "SampledImage";
-                    else if (imageTypeIds.Contains(pointedType))
-                        info.DescriptorType = "StorageImage";
                     else
                         info.DescriptorType = "Unknown";
                 }
@@ -160,6 +158,51 @@ public class SpirvPatcher
         uint[] words = BytesToWords(spirvBytes);
         if (words[0] != SpvOpCode.MagicNumber)
             throw new ArgumentException("Invalid SPIR-V magic");
+
+        var replacedIds = names.Select(x => x.Id).ToHashSet();
+        var replacedMembers = memberNames?
+            .Select(x => (x.TypeId, x.MemberIndex))
+            .ToHashSet() ?? new HashSet<(uint TypeId, uint MemberIndex)>();
+
+        var filteredWords = new List<uint>(words.Length);
+        for (int i = 0; i < SpvOpCode.HeaderWordCount; i++)
+        {
+            filteredWords.Add(words[i]);
+        }
+
+        int offset = SpvOpCode.HeaderWordCount;
+        while (offset < words.Length)
+        {
+            uint instrWord = words[offset];
+            ushort opCode = SpvOpCode.GetOpCode(instrWord);
+            ushort wordCount = SpvOpCode.GetWordCount(instrWord);
+            if (wordCount == 0)
+            {
+                break;
+            }
+
+            bool skip = false;
+            if (opCode == SpvOpCode.OpName && wordCount >= 2)
+            {
+                skip = replacedIds.Contains(words[offset + 1]);
+            }
+            else if (opCode == SpvOpCode.OpMemberName && wordCount >= 3)
+            {
+                skip = replacedMembers.Contains((words[offset + 1], words[offset + 2]));
+            }
+
+            if (!skip)
+            {
+                for (int i = 0; i < wordCount; i++)
+                {
+                    filteredWords.Add(words[offset + i]);
+                }
+            }
+
+            offset += wordCount;
+        }
+
+        words = filteredWords.ToArray();
 
         var instructions = new List<uint[]>();
         foreach (var (id, name) in names)

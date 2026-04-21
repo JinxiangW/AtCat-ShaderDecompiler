@@ -113,13 +113,10 @@ public sealed class ShaderDecompiler : IDisposable
             };
 
             spirv = _structuredCBufferRewriter.Rewrite(spirv, finalMetadata);
-            byte[] patchedSpirv = _structuredCBufferRewriter.LastRewriteApplied
-                ? spirv
-                : PatchSpirvSymbols(spirv, finalMetadata);
+            byte[] patchedSpirv = PatchSpirvSymbols(spirv, finalMetadata);
             bool hasStructuredCbuffers = HasStructuredConstantBuffers(patchedSpirv, finalMetadata);
             bool useStructuredPath = _structuredCBufferRewriter.LastRewriteApplied || hasStructuredCbuffers;
             string hlsl = CompileSpirVToHlsl(patchedSpirv, shaderModel, tempSpv, tempHlsl, !useStructuredPath);
-            hlsl = PostProcessHlsl(hlsl, finalMetadata, useStructuredPath);
 
             return new DecompileResult
             {
@@ -373,8 +370,6 @@ public sealed class ShaderDecompiler : IDisposable
 
                 if (match.DescriptorType == "UniformBuffer" && match.StructTypeId.HasValue && match.StructTypeId.Value != 0)
                 {
-                    patches.Add((match.StructTypeId.Value, resource.Name));
-
                     if (resource.Members != null)
                     {
                         foreach (var member in resource.Members.Where(m => !string.IsNullOrWhiteSpace(m.Name) && m.Index >= 0 && m.Index < match.StructMemberCount))
@@ -421,174 +416,6 @@ public sealed class ShaderDecompiler : IDisposable
         return false;
     }
 
-    private static string PostProcessHlsl(string hlsl, ShaderSymbolData metadata, bool usedStructuredRewrite)
-    {
-        foreach (var resource in metadata.Resources.Where(r => NormalizeResourceType(r.Type) == ShaderResourceType.Texture))
-        {
-            string pattern = $@"Texture\w*<[^>]+>\s+(\w+)\s*:\s*register\(\s*t{resource.Binding}(?:,\s*space{resource.Set})?\)";
-            var regex = new Regex(pattern, RegexOptions.IgnoreCase);
-            hlsl = regex.Replace(hlsl, match =>
-            {
-                string oldName = match.Groups[1].Value;
-                return match.Value.Replace(oldName, resource.Name);
-            });
-        }
-
-        foreach (var resource in metadata.Resources.Where(r => NormalizeResourceType(r.Type) == ShaderResourceType.Sampler))
-        {
-            string pattern = $@"SamplerState\s+(\w+)\s*:\s*register\(\s*s{resource.Binding}(?:,\s*space{resource.Set})?\)";
-            var regex = new Regex(pattern, RegexOptions.IgnoreCase);
-            hlsl = regex.Replace(hlsl, match =>
-            {
-                string oldName = match.Groups[1].Value;
-                return match.Value.Replace(oldName, resource.Name);
-            });
-        }
-
-        foreach (var resource in metadata.Resources.Where(r => NormalizeResourceType(r.Type) == ShaderResourceType.ConstantBuffer))
-        {
-            string pattern = $@"cbuffer\s+(\w+)\s*:\s*register\(\s*b{resource.Binding}(?:,\s*space{resource.Set})?\)";
-            var regex = new Regex(pattern, RegexOptions.IgnoreCase);
-            hlsl = regex.Replace(hlsl, match =>
-            {
-                string oldName = match.Groups[1].Value;
-                return match.Value.Replace(oldName, resource.Name);
-            });
-
-            hlsl = Regex.Replace(hlsl, $@"\btype_{Regex.Escape(resource.Name)}\b", resource.Name);
-            hlsl = Regex.Replace(hlsl, $@"\b{Regex.Escape(resource.Name)}_(\w+)\b", "$1");
-
-            if (usedStructuredRewrite && resource.Members != null)
-            {
-                string? structuredBlockName = FindStructuredBlockName(hlsl, resource.Binding, resource.Set);
-                var declaredMemberNames = FindStructuredBlockMemberNames(hlsl, resource.Binding, resource.Set);
-                for (int i = 0; i < resource.Members.Count && i < declaredMemberNames.Count; i++)
-                {
-                    string declaredName = declaredMemberNames[i];
-                    string memberName = resource.Members[i].Name;
-                    if (!string.IsNullOrWhiteSpace(declaredName) && !string.Equals(declaredName, memberName, StringComparison.Ordinal))
-                    {
-                        hlsl = Regex.Replace(hlsl, $@"\b{Regex.Escape(declaredName)}\b", memberName);
-                    }
-                }
-
-                for (int i = 0; i < resource.Members.Count; i++)
-                {
-                    string memberName = resource.Members[i].Name;
-                    var machineNames = new List<string>
-                    {
-                        $"CB{resource.Binding}_1_m{i}",
-                        $"CB{resource.Binding}__m{i}",
-                        $"CB{resource.Binding}_m{i}",
-                        $"CB{resource.Binding}UBO_m{i}",
-                        $"_m{i}",
-                        $"{resource.Name}_{memberName}",
-                        $"{resource.Name}_1_{memberName}",
-                        $"{resource.Name}_0_{memberName}"
-                    };
-
-                    if (!string.IsNullOrWhiteSpace(structuredBlockName))
-                    {
-                        machineNames.Add($"{structuredBlockName}_m{i}");
-                    }
-
-                    foreach (string machineName in machineNames)
-                    {
-                        hlsl = Regex.Replace(hlsl, $@"\b{Regex.Escape(machineName)}\b", memberName);
-                    }
-                }
-            }
-
-            if (usedStructuredRewrite)
-            {
-                continue;
-            }
-
-            string flatPattern = $@"uniform\s+float4\s+({Regex.Escape(resource.Name)}|CB{resource.Binding}UBO|_\d+)\[(\d+)\]\s*;";
-            hlsl = Regex.Replace(hlsl, flatPattern, match =>
-            {
-                string oldName = match.Groups[1].Value;
-                if (!string.Equals(oldName, resource.Name, StringComparison.OrdinalIgnoreCase)
-                    && !IsLikelyMatchingFlatBufferName(oldName, resource.Binding))
-                {
-                    return match.Value;
-                }
-
-                int count = int.Parse(match.Groups[2].Value);
-                var builder = new StringBuilder();
-                builder.AppendLine($"uniform float4 {resource.Name}[{count}];");
-
-                if (resource.Members != null)
-                {
-                    foreach (var member in resource.Members.OrderBy(m => m.ByteOffset))
-                    {
-                        foreach (string alias in BuildFlatBufferAliases(resource.Name, member))
-                        {
-                            builder.AppendLine(alias);
-                        }
-                    }
-                }
-
-                return builder.ToString().TrimEnd();
-            }, RegexOptions.IgnoreCase);
-        }
-
-        return hlsl;
-    }
-
-    private static string? FindStructuredBlockName(string hlsl, int binding, int set)
-    {
-        string pattern = $@"cbuffer\s+(\w+)\s*:\s*register\(\s*b{binding}(?:,\s*space{set})?\)";
-        var match = Regex.Match(hlsl, pattern, RegexOptions.IgnoreCase);
-        return match.Success ? match.Groups[1].Value : null;
-    }
-
-    private static List<string> FindStructuredBlockMemberNames(string hlsl, int binding, int set)
-    {
-        string pattern = $@"cbuffer\s+\w+\s*:\s*register\(\s*b{binding}(?:,\s*space{set})?\s*\)\s*\{{(?<body>[\s\S]*?)\}};";
-        var match = Regex.Match(hlsl, pattern, RegexOptions.IgnoreCase);
-        if (!match.Success)
-        {
-            return new List<string>();
-        }
-
-        var result = new List<string>();
-        foreach (Match memberMatch in Regex.Matches(match.Groups["body"].Value, @"^\s*(?:row_major|column_major\s+)?(?:\w+<[^>]+>|\w+)\s+(\w+)\s*:\s*packoffset\(", RegexOptions.Multiline))
-        {
-            result.Add(memberMatch.Groups[1].Value);
-        }
-
-        return result;
-    }
-
-    private static bool IsLikelyMatchingFlatBufferName(string candidate, int binding)
-    {
-        if (candidate.StartsWith($"CB{binding}UBO", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        return Regex.IsMatch(candidate, $@"^(CB{binding}UBO|_\d+)$", RegexOptions.IgnoreCase);
-    }
-
-    private static IEnumerable<string> BuildFlatBufferAliases(string bufferName, StructMember member)
-    {
-        if (member.ByteOffset < 0)
-        {
-            yield break;
-        }
-
-        int startRegister = member.ByteOffset / 16;
-        int registerCount = Math.Max(1, (member.ByteSize + 15) / 16);
-
-        if (registerCount == 1)
-        {
-            yield return $"#define {member.Name} {bufferName}[{startRegister}]";
-            yield break;
-        }
-
-        yield return $"#define {member.Name} {bufferName}[{startRegister}] /* spans {registerCount} x float4 slots */";
-    }
 
     public static string? FindToolsDirectory(string? overridePath = null)
     {
@@ -898,7 +725,7 @@ public sealed class ShaderDecompiler : IDisposable
             "UniformBuffer" => normalized == ShaderResourceType.ConstantBuffer,
             "StorageBuffer" => normalized == ShaderResourceType.StorageBuffer || normalized == ShaderResourceType.RWBuffer || normalized == ShaderResourceType.StructuredBuffer || normalized == ShaderResourceType.UAV,
             "Sampler" => normalized == ShaderResourceType.Sampler,
-            "SampledImage" => normalized == ShaderResourceType.Texture || normalized == ShaderResourceType.Sampler,
+            "SampledImage" => normalized == ShaderResourceType.Texture,
             "StorageImage" => normalized == ShaderResourceType.UAV || normalized == ShaderResourceType.StorageImage,
             _ => true
         };

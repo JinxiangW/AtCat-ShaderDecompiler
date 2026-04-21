@@ -381,7 +381,7 @@ internal sealed class StructuredCBufferRewriter
 
     private static void InsertStructuredNames(SpirvModule module, FlatUniformBufferInfo flatBuffer, uint newStructTypeId)
     {
-        module.InsertDebugName(newStructTypeId, flatBuffer.Metadata.Name);
+        module.InsertDebugName(newStructTypeId, $"type.{flatBuffer.Metadata.Name}");
         module.InsertDebugName(flatBuffer.VariableId, flatBuffer.Metadata.Name);
 
         for (int i = 0; i < flatBuffer.Metadata.Members!.Count; i++)
