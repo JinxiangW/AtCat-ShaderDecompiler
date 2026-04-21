@@ -303,7 +303,13 @@ public class SpirvPatcher
         var detailed = AnalyzeBindingsDetailed(spirvBytes);
         foreach (var resource in symbols.Resources)
         {
-            if (resource.Members == null || resource.Members.Count == 0)
+            if (resource.RegisterType != 'b')
+            {
+                continue;
+            }
+
+            ConstantBuffer? constantBuffer = symbols.ConstantBuffers.FirstOrDefault(cb => string.Equals(cb.Name, resource.Name, StringComparison.Ordinal));
+            if (constantBuffer == null || constantBuffer.CBParams.Count == 0)
             {
                 continue;
             }
@@ -314,15 +320,15 @@ public class SpirvPatcher
                 continue;
             }
 
-            foreach (var member in resource.Members.Where(m => !string.IsNullOrWhiteSpace(m.Name)))
+            foreach (var parameter in constantBuffer.CBParams.Where(p => !string.IsNullOrWhiteSpace(p.ParamName)))
             {
                 int? targetIndex = null;
 
-                if (member.ByteOffset >= 0 && match.MemberOffsets.Count > 0)
+                if (parameter.Index >= 0 && match.MemberOffsets.Count > 0)
                 {
                     foreach (var offsetKvp in match.MemberOffsets)
                     {
-                        if (offsetKvp.Value == (uint)member.ByteOffset)
+                        if (offsetKvp.Value == (uint)parameter.Index)
                         {
                             targetIndex = offsetKvp.Key;
                             break;
@@ -330,14 +336,14 @@ public class SpirvPatcher
                     }
                 }
 
-                if (!targetIndex.HasValue && member.Index >= 0 && member.Index < match.StructMemberCount)
+                if (!targetIndex.HasValue && parameter.Index >= 0 && parameter.Index < match.StructMemberCount)
                 {
-                    targetIndex = member.Index;
+                    targetIndex = parameter.Index;
                 }
 
                 if (targetIndex.HasValue)
                 {
-                    memberNames.Add((match.StructTypeId.Value, (uint)targetIndex.Value, member.Name));
+                    memberNames.Add((match.StructTypeId.Value, (uint)targetIndex.Value, parameter.ParamName));
                 }
             }
         }

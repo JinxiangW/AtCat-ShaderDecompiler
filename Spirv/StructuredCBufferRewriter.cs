@@ -11,7 +11,7 @@ internal sealed class StructuredCBufferRewriter
         var summary = new List<string>();
         var module = SpirvModule.Parse(spirv);
         var analysis = AnalyzeModule(module);
-        summary.Add($"Metadata resources={metadata.Resources.Count}, constantBuffers={metadata.Resources.Count(IsMetadataConstantBuffer)}");
+        summary.Add($"Metadata resources={metadata.Resources.Count}, constantBuffers={metadata.ConstantBuffers.Count}");
         summary.Add($"Analyzed decoratedIds={analysis.SetBindingById.Count}, variables={analysis.VariablePointerTypes.Count}, pointers={analysis.PointerTypes.Count}, structs={analysis.StructMembers.Count}, arrays={analysis.ArrayTypes.Count}");
         var flatBuffers = BuildFlatUniformBufferMap(metadata, analysis, summary);
         if (flatBuffers.Count == 0)
@@ -28,7 +28,7 @@ internal sealed class StructuredCBufferRewriter
 
         foreach (FlatUniformBufferInfo flatBuffer in flatBuffers.Values)
         {
-            StructuredBufferLayout? layout = BuildStructuredLayout(flatBuffer.Metadata);
+            StructuredBufferLayout? layout = BuildStructuredLayout(flatBuffer);
             if (layout == null)
             {
                 summary.Add($"[{flatBuffer.Metadata.Name}] layout build failed");
@@ -159,8 +159,15 @@ internal sealed class StructuredCBufferRewriter
     private static Dictionary<(int Set, int Binding), FlatUniformBufferInfo> BuildFlatUniformBufferMap(ShaderSymbolData metadata, ModuleAnalysis analysis, List<string> summary)
     {
         var result = new Dictionary<(int Set, int Binding), FlatUniformBufferInfo>();
-        foreach (ResourceBinding resource in metadata.Resources.Where(IsMetadataConstantBuffer))
+        foreach (ResourceBinding resource in metadata.Resources.Where(r => r.RegisterType == 'b'))
         {
+            ConstantBuffer? constantBuffer = metadata.ConstantBuffers.FirstOrDefault(cb => string.Equals(cb.Name, resource.Name, StringComparison.Ordinal));
+            if (constantBuffer == null)
+            {
+                summary.Add($"[{resource.Name}] no USC constant buffer metadata found");
+                continue;
+            }
+
             var candidateIds = analysis.SetBindingById
                 .Where(kvp => kvp.Value.Set == resource.Set && kvp.Value.Binding == resource.Binding)
                 .Select(kvp => kvp.Key)
@@ -212,7 +219,8 @@ internal sealed class StructuredCBufferRewriter
                     ElementTypeId = arrayInfo.ElementTypeId,
                     ArrayLength = checked((int)arrayLength),
                     ArrayStride = arrayStride,
-                    Metadata = resource
+                    Metadata = resource,
+                    ConstantBuffer = constantBuffer
                 };
 
                 matched = true;
@@ -312,34 +320,34 @@ internal sealed class StructuredCBufferRewriter
         return layout.RequiredRegisterCount == flatBuffer.ArrayLength;
     }
 
-    private static StructuredBufferLayout? BuildStructuredLayout(ResourceBinding resource)
+    private static StructuredBufferLayout? BuildStructuredLayout(FlatUniformBufferInfo flatBuffer)
     {
-        if (resource.Members == null || resource.Members.Count == 0)
+        List<ConstantBufferParameter> allParameters = GetAllConstantBufferParameters(flatBuffer.ConstantBuffer);
+        if (allParameters.Count == 0)
         {
             return null;
         }
 
-        var orderedMembers = resource.Members
-            .OrderBy(m => m.ByteOffset)
-            .ThenBy(m => m.Index)
+        var orderedMembers = allParameters
+            .OrderBy(p => p.Index)
             .ToList();
 
         var layout = new StructuredBufferLayout();
-        foreach (StructMember metadataMember in orderedMembers)
+        foreach (ConstantBufferParameter metadataParameter in orderedMembers)
         {
-            MemberLogicalType? logicalType = TryCreateLogicalTypeFromUscLayout(metadataMember);
+            MemberLogicalType? logicalType = TryCreateLogicalTypeFromUscLayout(metadataParameter);
             if (logicalType == null)
             {
                 return null;
             }
 
-            int registerCount = GetRequiredRegisterCount(metadataMember.ByteOffset, logicalType);
+            int registerCount = GetRequiredRegisterCount(metadataParameter.Index, logicalType);
             var member = new StructuredMemberLayout
             {
-                Metadata = metadataMember,
+                Metadata = metadataParameter,
                 LogicalType = logicalType,
                 RegisterCount = registerCount,
-                RegisterOffset = metadataMember.ByteOffset / 16
+                RegisterOffset = metadataParameter.Index / 16
             };
 
             layout.Members.Add(member);
@@ -349,33 +357,33 @@ internal sealed class StructuredCBufferRewriter
         return layout;
     }
 
-    private static MemberLogicalType? TryCreateLogicalTypeFromUscLayout(StructMember metadataMember)
+    private static MemberLogicalType? TryCreateLogicalTypeFromUscLayout(ConstantBufferParameter metadataParameter)
     {
-        if (metadataMember.Rows <= 0 || metadataMember.Columns <= 0)
+        if (metadataParameter.Rows <= 0 || metadataParameter.Columns <= 0)
         {
             return null;
         }
 
-        ScalarKind? scalarKind = TryResolveScalarKind(metadataMember.ParamType);
+        ScalarKind? scalarKind = TryResolveScalarKind(metadataParameter.ParamType);
         if (scalarKind == null)
         {
             return null;
         }
 
-        int declaredByteSize = GetDeclaredByteSize(metadataMember);
+        int declaredByteSize = GetDeclaredByteSize(metadataParameter);
 
         return new MemberLogicalType
         {
-            Kind = metadataMember.IsMatrix
+            Kind = metadataParameter.IsMatrix
                 ? LogicalTypeKind.Matrix
-                : metadataMember.Rows == 1 ? LogicalTypeKind.Scalar : LogicalTypeKind.Vector,
+                : metadataParameter.Rows == 1 ? LogicalTypeKind.Scalar : LogicalTypeKind.Vector,
             ScalarKind = scalarKind.Value,
-            Rows = metadataMember.Rows,
-            Columns = metadataMember.Columns,
-            ArrayLength = Math.Max(metadataMember.ArraySize, 1),
+            Rows = metadataParameter.Rows,
+            Columns = metadataParameter.Columns,
+            ArrayLength = Math.Max(metadataParameter.ArraySize, 1),
             DeclaredByteSize = declaredByteSize,
-            UscIndex = metadataMember.Index,
-            IsMatrix = metadataMember.IsMatrix
+            UscIndex = metadataParameter.Index,
+            IsMatrix = metadataParameter.IsMatrix
         };
     }
 
@@ -391,11 +399,11 @@ internal sealed class StructuredCBufferRewriter
         };
     }
 
-    private static int GetDeclaredByteSize(StructMember metadataMember)
+    private static int GetDeclaredByteSize(ConstantBufferParameter metadataParameter)
     {
-        int elementCount = metadataMember.Rows * metadataMember.Columns * Math.Max(metadataMember.ArraySize, 1);
-        return metadataMember.IsMatrix
-            ? metadataMember.Columns * 16 * Math.Max(metadataMember.ArraySize, 1)
+        int elementCount = metadataParameter.Rows * metadataParameter.Columns * Math.Max(metadataParameter.ArraySize, 1);
+        return metadataParameter.IsMatrix
+            ? metadataParameter.Columns * 16 * Math.Max(metadataParameter.ArraySize, 1)
             : elementCount * 4;
     }
 
@@ -612,7 +620,7 @@ internal sealed class StructuredCBufferRewriter
                     rewrite.NewStructTypeId,
                     (uint)i,
                     SpvOpCode.DecorationOffset,
-                    (uint)member.Metadata.ByteOffset
+                    (uint)member.Metadata.Index
                 ]
             });
 
@@ -675,7 +683,7 @@ internal sealed class StructuredCBufferRewriter
 
         for (int i = 0; i < rewrite.Layout.Members.Count; i++)
         {
-            string memberName = rewrite.Layout.Members[i].Metadata.Name;
+            string memberName = rewrite.Layout.Members[i].Metadata.ParamName;
             if (string.IsNullOrWhiteSpace(memberName))
             {
                 continue;
@@ -902,7 +910,18 @@ internal sealed class StructuredCBufferRewriter
 
     private static bool IsMetadataConstantBuffer(ResourceBinding resource)
     {
-        return resource.RegisterType == 'b' && resource.Members is { Count: > 0 };
+        return resource.RegisterType == 'b';
+    }
+
+    private static List<ConstantBufferParameter> GetAllConstantBufferParameters(ConstantBuffer constantBuffer)
+    {
+        var result = new List<ConstantBufferParameter>(constantBuffer.CBParams);
+        foreach (StructParameter structParameter in constantBuffer.StructParams)
+        {
+            result.AddRange(structParameter.CBParams);
+        }
+
+        return result;
     }
 
     private sealed class ModuleAnalysis
@@ -962,7 +981,7 @@ internal sealed class StructuredCBufferRewriter
 
     private sealed class StructuredMemberLayout
     {
-        public StructMember Metadata { get; set; } = null!;
+        public ConstantBufferParameter Metadata { get; set; } = null!;
         public MemberLogicalType LogicalType { get; set; } = null!;
         public int RegisterOffset { get; set; }
         public int RegisterCount { get; set; }
@@ -1012,5 +1031,6 @@ internal sealed class StructuredCBufferRewriter
         public int ArrayLength { get; set; }
         public int ArrayStride { get; set; }
         public ResourceBinding Metadata { get; set; } = null!;
+        public ConstantBuffer ConstantBuffer { get; set; } = null!;
     }
 }

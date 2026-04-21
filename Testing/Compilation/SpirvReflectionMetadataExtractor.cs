@@ -117,15 +117,23 @@ internal static class SpirvReflectionMetadataExtractor
             string typeId = ubo.TryGetProperty("type", out JsonElement typeElement) ? typeElement.GetString() ?? string.Empty : string.Empty;
             string reflectedName = ubo.TryGetProperty("name", out JsonElement nameElement) ? nameElement.GetString() ?? string.Empty : string.Empty;
             string resourceName = NormalizeTypePrefixedName(reflectedName);
-            var binding = new ResourceBinding
+            var cbuffer = new ConstantBuffer
+            {
+                Name = resourceName,
+                UsedSize = ReadIntProperty(ubo, "block_size"),
+                Partial = false,
+                CBParams = new List<ConstantBufferParameter>(),
+            };
+
+            int binding = ReadIntProperty(ubo, "binding");
+            metadata.Resources.Add(new ResourceBinding
             {
                 Name = resourceName,
                 Set = 0,
-                Binding = ReadIntProperty(ubo, "binding"),
+                Binding = binding,
                 Type = ShaderResourceType.ConstantBuffer,
                 RegisterType = 'b',
-                Members = new List<StructMember>(),
-            };
+            });
 
             if (types.TryGetValue(typeId, out JsonElement typeInfo) && typeInfo.TryGetProperty("members", out JsonElement members) && members.ValueKind == JsonValueKind.Array)
             {
@@ -135,11 +143,10 @@ internal static class SpirvReflectionMetadataExtractor
                     int offset = ReadIntProperty(member, "offset");
                     string typeName = NormalizeMemberTypeName(member.TryGetProperty("type", out JsonElement memberType) ? memberType.GetString() ?? string.Empty : string.Empty);
                     ParseUscLayout(typeName, out ShaderParamType paramType, out int rows, out int columns, out bool isMatrix, out int arraySize);
-                    binding.Members.Add(new StructMember
+                    cbuffer.CBParams.Add(new ConstantBufferParameter
                     {
-                        Name = member.TryGetProperty("name", out JsonElement memberName) ? memberName.GetString() ?? $"Member{index}" : $"Member{index}",
+                        ParamName = member.TryGetProperty("name", out JsonElement memberName) ? memberName.GetString() ?? $"Member{index}" : $"Member{index}",
                         Index = offset,
-                        ByteOffset = offset,
                         ParamType = paramType,
                         Rows = rows,
                         Columns = columns,
@@ -150,7 +157,7 @@ internal static class SpirvReflectionMetadataExtractor
                 }
             }
 
-            metadata.Resources.Add(binding);
+            metadata.ConstantBuffers.Add(cbuffer);
         }
     }
 

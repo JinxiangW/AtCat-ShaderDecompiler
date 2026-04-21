@@ -567,55 +567,65 @@ namespace Ruri.ShaderDecompiler
                 failures.Add($"[{stage.Name}/{caseName}] Missing main entry point.");
             }
 
-            if (metadata.Resources.Count == 0)
-            {
-                failures.Add($"[{stage.Name}/{caseName}] Reflected metadata contains no resources.");
-                return failures;
-            }
+             if (metadata.Resources.Count == 0 && metadata.ConstantBuffers.Count == 0)
+             {
+                 failures.Add($"[{stage.Name}/{caseName}] Reflected metadata contains no resources.");
+                 return failures;
+             }
 
-            foreach (ResourceBinding resource in metadata.Resources)
-            {
-                if (!ContainsSelfTestToken(hlsl, spirv, resource.Name))
-                {
-                    failures.Add($"[{stage.Name}/{caseName}] Missing reflected resource symbol: {resource.Name}");
-                }
+             foreach (ConstantBuffer constantBuffer in metadata.ConstantBuffers)
+             {
+                 if (!ContainsSelfTestToken(hlsl, spirv, constantBuffer.Name))
+                 {
+                     failures.Add($"[{stage.Name}/{caseName}] Missing reflected resource symbol: {constantBuffer.Name}");
+                 }
 
-                if (resource.Members == null || resource.Members.Count == 0)
-                {
-                    continue;
-                }
+                 List<ConstantBufferParameter> allParameters = GetAllConstantBufferParameters(constantBuffer);
+                 if (allParameters.Count == 0)
+                 {
+                     continue;
+                 }
 
-                if (ShouldAllowCompressedMatrixMembers(resource))
-                {
-                    bool hasAnyMember = resource.Members.Any(member => ContainsSelfTestToken(hlsl, spirv, member.Name));
-                    if (!hasAnyMember)
-                    {
-                        failures.Add($"[{stage.Name}/{caseName}] Missing reflected member symbols for compressed matrix buffer: {resource.Name}");
-                    }
+                 if (ShouldAllowCompressedMatrixMembers(constantBuffer))
+                 {
+                     bool hasAnyMember = allParameters.Any(parameter => ContainsSelfTestToken(hlsl, spirv, parameter.ParamName));
+                     if (!hasAnyMember)
+                     {
+                         failures.Add($"[{stage.Name}/{caseName}] Missing reflected member symbols for compressed matrix buffer: {constantBuffer.Name}");
+                     }
 
-                    continue;
-                }
+                     continue;
+                 }
 
-                foreach (StructMember member in resource.Members)
-                {
-                    if (!ContainsSelfTestToken(hlsl, spirv, member.Name))
-                    {
-                        failures.Add($"[{stage.Name}/{caseName}] Missing reflected member symbol: {resource.Name}.{member.Name}");
-                    }
-                }
-            }
+                 foreach (ConstantBufferParameter parameter in allParameters)
+                 {
+                     if (!ContainsSelfTestToken(hlsl, spirv, parameter.ParamName))
+                     {
+                         failures.Add($"[{stage.Name}/{caseName}] Missing reflected member symbol: {constantBuffer.Name}.{parameter.ParamName}");
+                     }
+                 }
+             }
+
+             foreach (ResourceBinding resource in metadata.Resources.Where(r => r.RegisterType != 'b'))
+             {
+                 if (!ContainsSelfTestToken(hlsl, spirv, resource.Name))
+                 {
+                     failures.Add($"[{stage.Name}/{caseName}] Missing reflected resource symbol: {resource.Name}");
+                 }
+             }
 
             return failures;
         }
 
-        static bool ShouldAllowCompressedMatrixMembers(ResourceBinding resource)
+        static bool ShouldAllowCompressedMatrixMembers(ConstantBuffer constantBuffer)
         {
-            if (resource.Members == null || resource.Members.Count == 0)
+            List<ConstantBufferParameter> allParameters = GetAllConstantBufferParameters(constantBuffer);
+            if (allParameters.Count == 0)
             {
                 return false;
             }
 
-            return resource.Members.All(member => member.IsMatrix && member.Rows == 4 && member.Columns == 4);
+            return allParameters.All(parameter => parameter.IsMatrix && parameter.Rows == 4 && parameter.Columns == 4);
         }
 
         static bool ContainsSelfTestToken(string hlsl, byte[]? spirv, string token)
@@ -860,45 +870,46 @@ namespace Ruri.ShaderDecompiler
 
         static void NormalizeMetadataToUscLayout(ShaderSymbolData metadata)
         {
-            foreach (ResourceBinding resource in metadata.Resources)
+            foreach (ConstantBuffer constantBuffer in metadata.ConstantBuffers)
             {
-                if (resource.Members == null)
+                foreach (ConstantBufferParameter parameter in GetAllConstantBufferParameters(constantBuffer))
                 {
-                    continue;
-                }
-
-                foreach (StructMember member in resource.Members)
-                {
-                    ValidateUscLayout(member);
+                    ValidateUscLayout(parameter);
                 }
             }
         }
 
-        static void ValidateUscLayout(StructMember member)
+        static List<ConstantBufferParameter> GetAllConstantBufferParameters(ConstantBuffer constantBuffer)
         {
-            if (member == null)
+            var result = new List<ConstantBufferParameter>(constantBuffer.CBParams);
+            foreach (StructParameter structParameter in constantBuffer.StructParams)
+            {
+                result.AddRange(structParameter.CBParams);
+            }
+
+            return result;
+        }
+
+        static void ValidateUscLayout(ConstantBufferParameter parameter)
+        {
+            if (parameter == null)
             {
                 return;
             }
 
-            if (member.Rows <= 0 || member.Columns <= 0)
+            if (parameter.Rows <= 0 || parameter.Columns <= 0)
             {
-                throw new InvalidOperationException($"Missing USC metadata dimensions for member '{member.Name}'.");
+                throw new InvalidOperationException($"Missing USC metadata dimensions for parameter '{parameter.ParamName}'.");
             }
 
-            if (member.Index < 0)
+            if (parameter.Index < 0)
             {
-                throw new InvalidOperationException($"Missing USC metadata byte index for member '{member.Name}'.");
+                throw new InvalidOperationException($"Missing USC metadata byte index for parameter '{parameter.ParamName}'.");
             }
 
-            if (member.ArraySize <= 0)
+            if (parameter.ArraySize <= 0)
             {
-                member.ArraySize = 1;
-            }
-
-            if (member.ByteOffset != member.Index)
-            {
-                throw new InvalidOperationException($"USC metadata mismatch for member '{member.Name}': ByteOffset {member.ByteOffset} != Index {member.Index}.");
+                parameter.ArraySize = 1;
             }
         }
 

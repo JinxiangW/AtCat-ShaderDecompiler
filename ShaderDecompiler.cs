@@ -197,6 +197,12 @@ public sealed class ShaderDecompiler : IDisposable
             merged.Resources.Add(CloneResource(resource));
         }
 
+        foreach (var constantBuffer in explicitMetadata.ConstantBuffers)
+        {
+            merged.ConstantBuffers.RemoveAll(cb => string.Equals(cb.Name, constantBuffer.Name, StringComparison.Ordinal));
+            merged.ConstantBuffers.Add(CloneConstantBuffer(constantBuffer));
+        }
+
         return merged;
     }
 
@@ -388,30 +394,32 @@ public sealed class ShaderDecompiler : IDisposable
                     patches.Add((match.StructTypeId.Value, resource.Name));
                     patches.Add((match.Id, resource.Name));
 
-                    if (resource.Members != null)
+                    ConstantBuffer? constantBuffer = metadata.ConstantBuffers.FirstOrDefault(cb => string.Equals(cb.Name, resource.Name, StringComparison.Ordinal));
+                    if (constantBuffer != null)
                     {
+                        List<ConstantBufferParameter> allParameters = GetAllConstantBufferParameters(constantBuffer);
                         bool isCompressedMatrixBuffer =
                             match.StructMemberCount == 1 &&
-                            resource.Members.Count > 0 &&
-                            resource.Members.All(m => m.IsMatrix && m.Rows == 4 && m.Columns == 4);
+                            allParameters.Count > 0 &&
+                            allParameters.All(p => p.IsMatrix && p.Rows == 4 && p.Columns == 4);
 
                         if (isCompressedMatrixBuffer)
                         {
-                            string combinedName = string.Join("_", resource.Members.Select(m => m.Name));
+                            string combinedName = string.Join("_", allParameters.Select(p => p.ParamName));
                             memberPatches.Add((match.StructTypeId.Value, 0, combinedName));
                             continue;
                         }
 
                         bool patchedAnyMember = false;
-                        foreach (var member in resource.Members.Where(m => !string.IsNullOrWhiteSpace(m.Name)))
+                        foreach (var parameter in allParameters.Where(p => !string.IsNullOrWhiteSpace(p.ParamName)))
                         {
                             int? targetIndex = null;
 
-                            if (member.ByteOffset >= 0 && match.MemberOffsets.Count > 0)
+                            if (parameter.Index >= 0 && match.MemberOffsets.Count > 0)
                             {
                                 foreach (var offsetKvp in match.MemberOffsets)
                                 {
-                                    if (offsetKvp.Value == (uint)member.ByteOffset)
+                                    if (offsetKvp.Value == (uint)parameter.Index)
                                     {
                                         targetIndex = offsetKvp.Key;
                                         break;
@@ -419,14 +427,14 @@ public sealed class ShaderDecompiler : IDisposable
                                 }
                             }
 
-                            if (!targetIndex.HasValue && member.Index >= 0 && member.Index < match.StructMemberCount)
+                            if (!targetIndex.HasValue && parameter.Index >= 0 && parameter.Index < match.StructMemberCount)
                             {
-                                targetIndex = member.Index;
+                                targetIndex = parameter.Index;
                             }
 
                             if (targetIndex.HasValue)
                             {
-                                memberPatches.Add((match.StructTypeId.Value, (uint)targetIndex.Value, member.Name));
+                                memberPatches.Add((match.StructTypeId.Value, (uint)targetIndex.Value, parameter.ParamName));
                                 patchedAnyMember = true;
                             }
                         }
@@ -472,7 +480,7 @@ public sealed class ShaderDecompiler : IDisposable
 
     private static bool IsMetadataConstantBuffer(ResourceBinding resource)
     {
-        return resource.RegisterType == 'b' && resource.Members is { Count: > 0 };
+        return resource.RegisterType == 'b';
     }
 
     private static bool IsRegisterTypeMatch(char registerType, string? descriptorType)
@@ -497,7 +505,7 @@ public sealed class ShaderDecompiler : IDisposable
 
         return descriptorType switch
         {
-            "UniformBuffer" => resource.RegisterType == 'b' && resource.Members is { Count: > 0 },
+            "UniformBuffer" => resource.RegisterType == 'b',
             "Sampler" => resource.RegisterType == 's',
             "StorageImage" => resource.RegisterType == 'u',
             "StorageBuffer" => resource.RegisterType == 'u',
@@ -831,18 +839,55 @@ public sealed class ShaderDecompiler : IDisposable
             Type = resource.Type,
             Tag = resource.Tag,
             RegisterType = resource.RegisterType,
-            Members = resource.Members?.Select(member => new StructMember
+        };
+    }
+
+    private static ConstantBuffer CloneConstantBuffer(ConstantBuffer constantBuffer)
+    {
+        return new ConstantBuffer
+        {
+            Name = constantBuffer.Name,
+            UsedSize = constantBuffer.UsedSize,
+            Partial = constantBuffer.Partial,
+            CBParams = constantBuffer.CBParams.Select(parameter => new ConstantBufferParameter
             {
-                Name = member.Name,
-                Index = member.Index,
-                ByteOffset = member.ByteOffset,
-                ParamType = member.ParamType,
-                Rows = member.Rows,
-                Columns = member.Columns,
-                IsMatrix = member.IsMatrix,
-                ArraySize = member.ArraySize
+                ParamName = parameter.ParamName,
+                Index = parameter.Index,
+                ParamType = parameter.ParamType,
+                Rows = parameter.Rows,
+                Columns = parameter.Columns,
+                IsMatrix = parameter.IsMatrix,
+                ArraySize = parameter.ArraySize
+            }).ToList(),
+            StructParams = constantBuffer.StructParams.Select(structParameter => new StructParameter
+            {
+                Name = structParameter.Name,
+                Index = structParameter.Index,
+                ArraySize = structParameter.ArraySize,
+                Size = structParameter.Size,
+                CBParams = structParameter.CBParams.Select(parameter => new ConstantBufferParameter
+                {
+                    ParamName = parameter.ParamName,
+                    Index = parameter.Index,
+                    ParamType = parameter.ParamType,
+                    Rows = parameter.Rows,
+                    Columns = parameter.Columns,
+                    IsMatrix = parameter.IsMatrix,
+                    ArraySize = parameter.ArraySize
+                }).ToList()
             }).ToList()
         };
+    }
+
+    private static List<ConstantBufferParameter> GetAllConstantBufferParameters(ConstantBuffer constantBuffer)
+    {
+        var result = new List<ConstantBufferParameter>(constantBuffer.CBParams);
+        foreach (StructParameter structParameter in constantBuffer.StructParams)
+        {
+            result.AddRange(structParameter.CBParams);
+        }
+
+        return result;
     }
 
     private static string Truncate(string text, int maxLength)

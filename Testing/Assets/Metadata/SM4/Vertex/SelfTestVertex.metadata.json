@@ -1,14 +1,44 @@
 {
+  "ConstantBuffers": [
+    {
+      "Name": "VertexMatrices",
+      "UsedSize": 96,
+      "Partial": false,
+      "CBParams": [
+        { "ParamName": "VertexObjectToClip", "Index": 0, "ParamType": 0, "Rows": 4, "Columns": 4, "IsMatrix": true, "ArraySize": 1 },
+        { "ParamName": "VertexPrevObjectToClip", "Index": 64, "ParamType": 0, "Rows": 4, "Columns": 4, "IsMatrix": true, "ArraySize": 1 }
+      ],
+      "StructParams": []
+    },
+    {
+      "Name": "VertexScalars",
+      "UsedSize": 32,
+      "Partial": false,
+      "CBParams": [
+        { "ParamName": "VertexColorScale_Time", "Index": 0, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "ParamName": "VertexMorphWeights", "Index": 16, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 }
+      ],
+      "StructParams": []
+    },
+    {
+      "Name": "VertexMaterial",
+      "UsedSize": 64,
+      "Partial": false,
+      "CBParams": [
+        { "ParamName": "VertexBoundsMin", "Index": 0, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "ParamName": "VertexBoundsMax", "Index": 16, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "ParamName": "VertexTint_Roughness", "Index": 32, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "ParamName": "VertexUvScale_Bias", "Index": 48, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 }
+      ],
+      "StructParams": []
+    }
+  ],
   "Resources": [
     {
       "Name": "VertexMatrices",
       "Binding": 0,
       "Set": 0,
       "Type": 18,
-      "Members": [
-        { "Name": "VertexObjectToClip", "Index": 0, "ByteOffset": 0, "ParamType": 0, "Rows": 4, "Columns": 4, "IsMatrix": true, "ArraySize": 1 },
-        { "Name": "VertexPrevObjectToClip", "Index": 64, "ByteOffset": 64, "ParamType": 0, "Rows": 4, "Columns": 4, "IsMatrix": true, "ArraySize": 1 }
-      ],
       "Tag": 0,
       "RegisterType": "b"
     },
@@ -17,10 +47,6 @@
       "Binding": 1,
       "Set": 0,
       "Type": 18,
-      "Members": [
-        { "Name": "VertexColorScale_Time", "Index": 0, "ByteOffset": 0, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
-        { "Name": "VertexMorphWeights", "Index": 16, "ByteOffset": 16, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 }
-      ],
       "Tag": 0,
       "RegisterType": "b"
     },
@@ -29,12 +55,6 @@
       "Binding": 2,
       "Set": 0,
       "Type": 18,
-      "Members": [
-        { "Name": "VertexBoundsMin", "Index": 0, "ByteOffset": 0, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
-        { "Name": "VertexBoundsMax", "Index": 16, "ByteOffset": 16, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
-        { "Name": "VertexTint_Roughness", "Index": 32, "ByteOffset": 32, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
-        { "Name": "VertexUvScale_Bias", "Index": 48, "ByteOffset": 48, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 }
-      ],
       "Tag": 0,
       "RegisterType": "b"
     },

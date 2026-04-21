@@ -1,16 +1,24 @@
 {
+  "ConstantBuffers": [
+    {
+      "Name": "ComputeParams",
+      "UsedSize": 64,
+      "Partial": false,
+      "CBParams": [
+        { "ParamName": "ComputeOutputExtent", "Index": 0, "ParamType": 5, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "ParamName": "ComputeClusterStride", "Index": 16, "ParamType": 5, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "ParamName": "ComputeActiveLightCount", "Index": 32, "ParamType": 5, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "ParamName": "ComputeWeights", "Index": 48, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 }
+      ],
+      "StructParams": []
+    }
+  ],
   "Resources": [
     {
       "Name": "ComputeParams",
       "Binding": 0,
       "Set": 0,
       "Type": 18,
-      "Members": [
-        { "Name": "ComputeOutputExtent", "Index": 0, "ByteOffset": 0, "ParamType": 5, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
-        { "Name": "ComputeClusterStride", "Index": 16, "ByteOffset": 16, "ParamType": 5, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
-        { "Name": "ComputeActiveLightCount", "Index": 32, "ByteOffset": 32, "ParamType": 5, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
-        { "Name": "ComputeWeights", "Index": 48, "ByteOffset": 48, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 }
-      ],
       "Tag": 0,
       "RegisterType": "b"
     },

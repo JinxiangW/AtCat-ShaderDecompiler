@@ -71,11 +71,6 @@ public class ResourceBinding
     public ShaderResourceType Type { get; set; } = ShaderResourceType.Unknown;
 
     /// <summary>
-    /// For ConstantBuffer: member names and their offsets.
-    /// </summary>
-    public List<StructMember>? Members { get; set; }
-
-    /// <summary>
     /// Optional tag for storing extra info (e.g., SPIR-V ID).
     /// </summary>
     public int Tag { get; set; }
@@ -87,19 +82,35 @@ public class ResourceBinding
 }
 
 /// <summary>
-/// A member of a struct/cbuffer.
+/// USC-equivalent constant buffer parameter metadata.
 /// </summary>
-public class StructMember
+public class ConstantBufferParameter
 {
-    public string Name { get; set; } = string.Empty;
-    // USC ConstantBufferParameter.Index: byte address inside the cbuffer.
-    public int Index { get; set; }
-    public int ByteOffset { get; set; }
-    public ShaderParamType ParamType { get; set; } = ShaderParamType.Float;
-    public int Rows { get; set; }
-    public int Columns { get; set; }
-    public bool IsMatrix { get; set; }
-    public int ArraySize { get; set; }
+    public string ParamName = string.Empty;
+    public ShaderParamType ParamType;
+    public int Rows;
+    public int Columns;
+    public bool IsMatrix;
+    public int ArraySize;
+    public int Index;
+}
+
+public class ConstantBuffer
+{
+    public string Name = string.Empty;
+    public int UsedSize;
+    public bool Partial;
+    public List<ConstantBufferParameter> CBParams = new();
+    public List<StructParameter> StructParams = new();
+}
+
+public class StructParameter
+{
+    public string Name = string.Empty;
+    public int Index;
+    public int ArraySize;
+    public int Size;
+    public List<ConstantBufferParameter> CBParams = new();
 }
 
 public enum ShaderParamType
@@ -120,6 +131,8 @@ public enum ShaderParamType
 /// </summary>
 public class ShaderSymbolData
 {
+    public List<ConstantBuffer> ConstantBuffers { get; set; } = new();
+
     /// <summary>
     /// List of resource bindings (textures, CBs, UAVs, etc.).
     /// </summary>
