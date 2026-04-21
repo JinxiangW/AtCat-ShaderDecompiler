@@ -490,17 +490,19 @@ namespace Ruri.ShaderDecompiler
                 RunSelfTestProcess(dxcExe, $"-T {stage.DxcProfile} -E {stage.EntryPoint} -Fo \"{dxilPath}\" \"{shaderPath}\"", dxilPath);
                 RunSelfTestProcess(dxcExe, $"-spirv -fspv-target-env=vulkan1.1 -T {stage.DxcProfile} -E {stage.EntryPoint} -Fo \"{spvPath}\" \"{shaderPath}\"", spvPath);
 
-                ShaderSymbolData metadata = SpirvReflectionMetadataExtractor.Extract(spvPath, Path.Combine(toolsDir, "spirv-cross.exe"));
+                ShaderSymbolData metadata = LoadSelfTestMetadata(stage, spvPath, toolsDir);
                 File.WriteAllText(Path.Combine(stageRoot, $"{stage.Name}.symbols.json"), JsonConvert.SerializeObject(metadata, Formatting.Indented));
 
                 var previewRewriter = new StructuredCBufferRewriter();
                 byte[] previewStructuredSpv = previewRewriter.Rewrite(File.ReadAllBytes(spvPath), metadata);
                 File.WriteAllBytes(Path.Combine(decompiledRoot, $"Preview.Structured.{stage.Name}.DirectSpirv.spv"), previewStructuredSpv);
+                File.WriteAllText(Path.Combine(decompiledRoot, $"Preview.Structured.{stage.Name}.DirectSpirv.txt"), previewRewriter.LastRewriteSummary);
 
                 RunSelfTestProcess(Path.Combine(toolsDir, "dxbc2dxil.exe"), $"\"{dxbcPath}\" -o \"{dxbcRouteDxilPath}\" -emit-bc", dxbcRouteDxilPath);
                 RunSelfTestProcess(Path.Combine(toolsDir, "dxil-spirv.exe"), $"\"{dxbcRouteDxilPath}\" --output \"{dxbcRouteSpvPath}\" --raw-llvm", dxbcRouteSpvPath);
                 byte[] dxbcRouteStructuredSpv = previewRewriter.Rewrite(File.ReadAllBytes(dxbcRouteSpvPath), metadata);
                 File.WriteAllBytes(Path.Combine(decompiledRoot, $"Preview.Structured.{stage.Name}.DxbcRoute.spv"), dxbcRouteStructuredSpv);
+                File.WriteAllText(Path.Combine(decompiledRoot, $"Preview.Structured.{stage.Name}.DxbcRoute.txt"), previewRewriter.LastRewriteSummary);
 
                 var cases = new[]
                 {
@@ -613,7 +615,7 @@ namespace Ruri.ShaderDecompiler
                 return false;
             }
 
-            return resource.Members.All(member => string.Equals(member.TypeName, "float4x4", StringComparison.Ordinal));
+            return resource.Members.All(member => member.IsMatrix && member.Rows == 4 && member.Columns == 4);
         }
 
         static bool ContainsSelfTestToken(string hlsl, byte[]? spirv, string token)
@@ -835,6 +837,92 @@ namespace Ruri.ShaderDecompiler
             }
 
             throw new FileNotFoundException($"Self-test shader file not found for {stage.Name}.", candidates.Last());
+        }
+
+        static ShaderSymbolData LoadSelfTestMetadata(SelfTestStageSpec stage, string spirvPath, string toolsDir)
+        {
+            string? metadataPath = ResolveSelfTestMetadataPath(stage);
+            if (!string.IsNullOrWhiteSpace(metadataPath) && File.Exists(metadataPath))
+            {
+                string json = File.ReadAllText(metadataPath);
+                ShaderSymbolData? parsed = JsonConvert.DeserializeObject<ShaderSymbolData>(json);
+                if (parsed != null)
+                {
+                    NormalizeMetadataToUscLayout(parsed);
+                    return parsed;
+                }
+            }
+
+            ShaderSymbolData extracted = SpirvReflectionMetadataExtractor.Extract(spirvPath, Path.Combine(toolsDir, "spirv-cross.exe"));
+            NormalizeMetadataToUscLayout(extracted);
+            return extracted;
+        }
+
+        static void NormalizeMetadataToUscLayout(ShaderSymbolData metadata)
+        {
+            foreach (ResourceBinding resource in metadata.Resources)
+            {
+                if (resource.Members == null)
+                {
+                    continue;
+                }
+
+                foreach (StructMember member in resource.Members)
+                {
+                    ValidateUscLayout(member);
+                }
+            }
+        }
+
+        static void ValidateUscLayout(StructMember member)
+        {
+            if (member == null)
+            {
+                return;
+            }
+
+            if (member.Rows <= 0 || member.Columns <= 0)
+            {
+                throw new InvalidOperationException($"Missing USC metadata dimensions for member '{member.Name}'.");
+            }
+
+            if (member.Index < 0)
+            {
+                throw new InvalidOperationException($"Missing USC metadata byte index for member '{member.Name}'.");
+            }
+
+            if (member.ArraySize <= 0)
+            {
+                member.ArraySize = 1;
+            }
+
+            if (member.ByteOffset != member.Index)
+            {
+                throw new InvalidOperationException($"USC metadata mismatch for member '{member.Name}': ByteOffset {member.ByteOffset} != Index {member.Index}.");
+            }
+        }
+
+        static string? ResolveSelfTestMetadataPath(SelfTestStageSpec stage)
+        {
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string relativePath = Path.Combine("Testing", "Assets", "Metadata", stage.ShaderModelFolder, stage.Name, stage.ShaderFileName.Replace(".hlsl", ".metadata.json", StringComparison.OrdinalIgnoreCase));
+            string[] roots =
+            {
+                Path.GetFullPath(Path.Combine(baseDir, "..", "..")),
+                baseDir,
+                Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..")),
+            };
+
+            foreach (string root in roots.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                string candidate = Path.Combine(root, relativePath);
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            return null;
         }
 
         static ShaderFormat ParseFormat(string mode)

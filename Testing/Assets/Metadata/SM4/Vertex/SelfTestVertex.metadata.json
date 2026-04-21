@@ -1,0 +1,47 @@
+{
+  "Resources": [
+    {
+      "Name": "VertexMatrices",
+      "Binding": 0,
+      "Set": 0,
+      "Type": 18,
+      "Members": [
+        { "Name": "VertexObjectToClip", "Index": 0, "ByteOffset": 0, "ParamType": 0, "Rows": 4, "Columns": 4, "IsMatrix": true, "ArraySize": 1 },
+        { "Name": "VertexPrevObjectToClip", "Index": 64, "ByteOffset": 64, "ParamType": 0, "Rows": 4, "Columns": 4, "IsMatrix": true, "ArraySize": 1 }
+      ],
+      "Tag": 0,
+      "RegisterType": "b"
+    },
+    {
+      "Name": "VertexScalars",
+      "Binding": 1,
+      "Set": 0,
+      "Type": 18,
+      "Members": [
+        { "Name": "VertexColorScale_Time", "Index": 0, "ByteOffset": 0, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "VertexMorphWeights", "Index": 16, "ByteOffset": 16, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 }
+      ],
+      "Tag": 0,
+      "RegisterType": "b"
+    },
+    {
+      "Name": "VertexMaterial",
+      "Binding": 2,
+      "Set": 0,
+      "Type": 18,
+      "Members": [
+        { "Name": "VertexBoundsMin", "Index": 0, "ByteOffset": 0, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "VertexBoundsMax", "Index": 16, "ByteOffset": 16, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "VertexTint_Roughness", "Index": 32, "ByteOffset": 32, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "VertexUvScale_Bias", "Index": 48, "ByteOffset": 48, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 }
+      ],
+      "Tag": 0,
+      "RegisterType": "b"
+    },
+    { "Name": "VertexNoiseTexture", "Binding": 0, "Set": 0, "Type": 29, "Members": null, "Tag": 0, "RegisterType": "t" },
+    { "Name": "VertexLinearSampler", "Binding": 0, "Set": 0, "Type": 16, "Members": null, "Tag": 0, "RegisterType": "s" }
+  ],
+  "EntryPoint": "VSMain",
+  "Stage": 1,
+  "DebugName": "SelfTest.SM4.Vertex"
+}

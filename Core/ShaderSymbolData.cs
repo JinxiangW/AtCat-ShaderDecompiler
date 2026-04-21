@@ -92,10 +92,26 @@ public class ResourceBinding
 public class StructMember
 {
     public string Name { get; set; } = string.Empty;
+    // USC ConstantBufferParameter.Index: byte address inside the cbuffer.
     public int Index { get; set; }
     public int ByteOffset { get; set; }
-    public int ByteSize { get; set; }
-    public string TypeName { get; set; } = string.Empty;
+    public ShaderParamType ParamType { get; set; } = ShaderParamType.Float;
+    public int Rows { get; set; }
+    public int Columns { get; set; }
+    public bool IsMatrix { get; set; }
+    public int ArraySize { get; set; }
+}
+
+public enum ShaderParamType
+{
+    Float = 0,
+    Int = 1,
+    Bool = 2
+    ,
+    Half = 3,
+    Short = 4,
+    UInt = 5,
+    TypeCount = 6
 }
 
 /// <summary>

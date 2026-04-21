@@ -134,13 +134,17 @@ internal static class SpirvReflectionMetadataExtractor
                 {
                     int offset = ReadIntProperty(member, "offset");
                     string typeName = NormalizeMemberTypeName(member.TryGetProperty("type", out JsonElement memberType) ? memberType.GetString() ?? string.Empty : string.Empty);
+                    ParseUscLayout(typeName, out ShaderParamType paramType, out int rows, out int columns, out bool isMatrix, out int arraySize);
                     binding.Members.Add(new StructMember
                     {
                         Name = member.TryGetProperty("name", out JsonElement memberName) ? memberName.GetString() ?? $"Member{index}" : $"Member{index}",
-                        Index = index,
+                        Index = offset,
                         ByteOffset = offset,
-                        ByteSize = EstimateByteSize(member, typeName, index < members.GetArrayLength() - 1 ? ReadIntProperty(members[index + 1], "offset") : -1),
-                        TypeName = typeName,
+                        ParamType = paramType,
+                        Rows = rows,
+                        Columns = columns,
+                        IsMatrix = isMatrix,
+                        ArraySize = arraySize,
                     });
                     index++;
                 }
@@ -250,29 +254,51 @@ internal static class SpirvReflectionMetadataExtractor
         return valueElement.ValueKind == JsonValueKind.Number ? valueElement.GetInt32() : 0;
     }
 
-    private static int EstimateByteSize(JsonElement member, string typeName, int nextOffset)
+    private static void ParseUscLayout(string typeName, out ShaderParamType paramType, out int rows, out int columns, out bool isMatrix, out int arraySize)
     {
-        if (nextOffset > 0)
+        paramType = ShaderParamType.Float;
+        rows = 0;
+        columns = 0;
+        isMatrix = false;
+        arraySize = 1;
+
+        if (typeName.StartsWith("float", StringComparison.Ordinal))
         {
-            int offset = ReadIntProperty(member, "offset");
-            int span = nextOffset - offset;
-            if (span > 0)
+            string suffix = typeName.Substring("float".Length);
+            int separatorIndex = suffix.IndexOf('x');
+            if (separatorIndex > 0)
             {
-                return span;
+                rows = int.Parse(suffix.Substring(0, separatorIndex));
+                columns = int.Parse(suffix[(separatorIndex + 1)..]);
+                isMatrix = true;
+                return;
             }
+
+            rows = suffix.Length == 0 ? 1 : int.Parse(suffix);
+            columns = 1;
+            return;
         }
 
-        return typeName switch
+        if (typeName.StartsWith("int", StringComparison.Ordinal))
         {
-            "float" or "uint" or "int" or "bool" => 4,
-            "float2" or "uint2" or "int2" => 8,
-            "float3" or "uint3" or "int3" => 12,
-            "float4" or "uint4" or "int4" => 16,
-            "float2x2" => 32,
-            "float3x3" => 48,
-            "float4x4" => 64,
-            _ => 16,
-        };
+            paramType = ShaderParamType.Int;
+            string suffix = typeName.Substring("int".Length);
+            rows = suffix.Length == 0 ? 1 : int.Parse(suffix);
+            columns = 1;
+            return;
+        }
+
+        if (typeName.StartsWith("uint", StringComparison.Ordinal) || typeName.StartsWith("bool", StringComparison.Ordinal))
+        {
+            paramType = typeName.StartsWith("bool", StringComparison.Ordinal) ? ShaderParamType.Bool : ShaderParamType.UInt;
+            string prefix = typeName.StartsWith("bool", StringComparison.Ordinal) ? "bool" : "uint";
+            string suffix = typeName.Substring(prefix.Length);
+            rows = suffix.Length == 0 ? 1 : int.Parse(suffix);
+            columns = 1;
+            return;
+        }
+
+        throw new InvalidOperationException($"Unsupported reflected USC type '{typeName}'.");
     }
 
     private static string NormalizeMemberTypeName(string typeName)
@@ -280,7 +306,13 @@ internal static class SpirvReflectionMetadataExtractor
         return typeName switch
         {
             "mat2" => "float2x2",
+            "mat2x3" => "float2x3",
+            "mat2x4" => "float2x4",
+            "mat3x2" => "float3x2",
             "mat3" => "float3x3",
+            "mat3x4" => "float3x4",
+            "mat4x2" => "float4x2",
+            "mat4x3" => "float4x3",
             "mat4" => "float4x4",
             "vec2" => "float2",
             "vec3" => "float3",

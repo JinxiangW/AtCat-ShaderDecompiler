@@ -34,6 +34,7 @@ public class SpirvPatcher
         var variableTypeMap = new Dictionary<uint, uint>();
         var structTypeIds = new HashSet<uint>();
         var structMemberCounts = new Dictionary<uint, int>();
+        var structMemberOffsets = new Dictionary<uint, Dictionary<int, uint>>();
         var imageTypeIds = new HashSet<uint>();
         var samplerTypeIds = new HashSet<uint>();
         var sampledImageTypeIds = new HashSet<uint>();
@@ -69,6 +70,24 @@ public class SpirvPatcher
                             else
                                 idToSetBinding[targetId] = (idToSetBinding[targetId].Set, binding);
                         }
+                        break;
+                    }
+                case SpvOpCode.OpMemberDecorate when wordCount >= 5:
+                    {
+                        uint structId = words[offset + 1];
+                        int memberIndex = (int)words[offset + 2];
+                        uint decoration = words[offset + 3];
+                        if (decoration == SpvOpCode.DecorationOffset)
+                        {
+                            if (!structMemberOffsets.TryGetValue(structId, out Dictionary<int, uint>? memberOffsets))
+                            {
+                                memberOffsets = new Dictionary<int, uint>();
+                                structMemberOffsets[structId] = memberOffsets;
+                            }
+
+                            memberOffsets[memberIndex] = words[offset + 4];
+                        }
+
                         break;
                     }
                 case SpvOpCode.OpTypePointer when wordCount >= 4:
@@ -149,6 +168,10 @@ public class SpirvPatcher
                         info.DescriptorType = ptrInfo.StorageClass == 2 ? "UniformBuffer" : "StorageBuffer";
                         info.StructTypeId = pointedType;
                         info.StructMemberCount = structMemberCounts.TryGetValue(pointedType, out int memberCount) ? memberCount : 0;
+                        if (structMemberOffsets.TryGetValue(pointedType, out Dictionary<int, uint>? offsets))
+                        {
+                            info.MemberOffsets = offsets;
+                        }
                     }
                     else if (samplerTypeIds.Contains(pointedType))
                         info.DescriptorType = "Sampler";

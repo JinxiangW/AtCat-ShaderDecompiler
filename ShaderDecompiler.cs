@@ -375,7 +375,7 @@ public sealed class ShaderDecompiler : IDisposable
             var matches = detailedBindings.Where(b => b.Set == resource.Set && b.Binding == resource.Binding).ToList();
             foreach (var match in matches)
             {
-                if (!IsDescriptorTypeMatch(resource.Type, match.DescriptorType))
+                if (!IsMetadataResourceMatch(resource, match.DescriptorType))
                 {
                     continue;
                 }
@@ -411,7 +411,7 @@ public sealed class ShaderDecompiler : IDisposable
         }
 
         var detailedBindings = _patcher.AnalyzeBindingsDetailed(spirv);
-        foreach (var resource in metadata.Resources.Where(r => NormalizeResourceType(r.Type) == ShaderResourceType.ConstantBuffer))
+        foreach (var resource in metadata.Resources.Where(IsMetadataConstantBuffer))
         {
             bool matchedStructuredBuffer = detailedBindings.Any(binding =>
                 binding.Set == resource.Set
@@ -426,6 +426,42 @@ public sealed class ShaderDecompiler : IDisposable
         }
 
         return false;
+    }
+
+    private static bool IsMetadataConstantBuffer(ResourceBinding resource)
+    {
+        return resource.RegisterType == 'b' && resource.Members is { Count: > 0 };
+    }
+
+    private static bool IsRegisterTypeMatch(char registerType, string? descriptorType)
+    {
+        return descriptorType switch
+        {
+            "UniformBuffer" => registerType == 'b',
+            "Sampler" => registerType == 's',
+            "SampledImage" => registerType is 't' or 'u',
+            "StorageBuffer" => registerType is 't' or 'u',
+            "StorageImage" => registerType == 'u',
+            _ => true
+        };
+    }
+
+    private static bool IsMetadataResourceMatch(ResourceBinding resource, string? descriptorType)
+    {
+        if (!IsRegisterTypeMatch(resource.RegisterType, descriptorType))
+        {
+            return false;
+        }
+
+        return descriptorType switch
+        {
+            "UniformBuffer" => resource.RegisterType == 'b' && resource.Members is { Count: > 0 },
+            "Sampler" => resource.RegisterType == 's',
+            "StorageImage" => resource.RegisterType == 'u',
+            "StorageBuffer" => resource.RegisterType == 'u',
+            "SampledImage" => resource.RegisterType is 't' or 'u',
+            _ => IsDescriptorTypeMatch(resource.Type, descriptorType)
+        };
     }
 
 
@@ -758,8 +794,11 @@ public sealed class ShaderDecompiler : IDisposable
                 Name = member.Name,
                 Index = member.Index,
                 ByteOffset = member.ByteOffset,
-                ByteSize = member.ByteSize,
-                TypeName = member.TypeName
+                ParamType = member.ParamType,
+                Rows = member.Rows,
+                Columns = member.Columns,
+                IsMatrix = member.IsMatrix,
+                ArraySize = member.ArraySize
             }).ToList()
         };
     }

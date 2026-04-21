@@ -1,0 +1,55 @@
+{
+  "Resources": [
+    {
+      "Name": "PixelViewData",
+      "Binding": 0,
+      "Set": 0,
+      "Type": 18,
+      "Members": [
+        { "Name": "PixelCameraPosition_Exposure", "Index": 0, "ByteOffset": 0, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "PixelLightDirection_Intensity", "Index": 16, "ByteOffset": 16, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "PixelLightColor_RoughnessBias", "Index": 32, "ByteOffset": 32, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "PixelFogColor_Density", "Index": 48, "ByteOffset": 48, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 }
+      ],
+      "Tag": 0,
+      "RegisterType": "b"
+    },
+    {
+      "Name": "PixelMaterialData",
+      "Binding": 1,
+      "Set": 0,
+      "Type": 18,
+      "Members": [
+        { "Name": "PixelScalar", "Index": 0, "ByteOffset": 0, "ParamType": 0, "Rows": 1, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "PixelFloat2", "Index": 16, "ByteOffset": 16, "ParamType": 0, "Rows": 2, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "PixelFloat3", "Index": 32, "ByteOffset": 32, "ParamType": 0, "Rows": 3, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "PixelBool", "Index": 64, "ByteOffset": 64, "ParamType": 2, "Rows": 1, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "PixelInt", "Index": 80, "ByteOffset": 80, "ParamType": 1, "Rows": 1, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "PixelInt2", "Index": 96, "ByteOffset": 96, "ParamType": 1, "Rows": 2, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "PixelInt3", "Index": 112, "ByteOffset": 112, "ParamType": 1, "Rows": 3, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "PixelInt4", "Index": 128, "ByteOffset": 128, "ParamType": 1, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "PixelUInt", "Index": 144, "ByteOffset": 144, "ParamType": 5, "Rows": 1, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "PixelUInt2", "Index": 160, "ByteOffset": 160, "ParamType": 5, "Rows": 2, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "PixelUInt3", "Index": 176, "ByteOffset": 176, "ParamType": 5, "Rows": 3, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "PixelUInt4", "Index": 192, "ByteOffset": 192, "ParamType": 5, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "PixelMatrix2", "Index": 208, "ByteOffset": 208, "ParamType": 0, "Rows": 2, "Columns": 2, "IsMatrix": true, "ArraySize": 1 },
+        { "Name": "PixelMatrix3", "Index": 240, "ByteOffset": 240, "ParamType": 0, "Rows": 3, "Columns": 3, "IsMatrix": true, "ArraySize": 1 },
+        { "Name": "BaseColorFactor", "Index": 288, "ByteOffset": 288, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "SurfaceParams", "Index": 304, "ByteOffset": 304, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "EmissiveColor_AlphaCutoff", "Index": 320, "ByteOffset": 320, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "ClearCoat_Wetness", "Index": 336, "ByteOffset": 336, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 }
+      ],
+      "Tag": 0,
+      "RegisterType": "b"
+    },
+    { "Name": "AlbedoTexture", "Binding": 2, "Set": 0, "Type": 29, "Members": null, "Tag": 0, "RegisterType": "t" },
+    { "Name": "NormalTexture", "Binding": 3, "Set": 0, "Type": 29, "Members": null, "Tag": 0, "RegisterType": "t" },
+    { "Name": "LayeredTexture", "Binding": 4, "Set": 0, "Type": 30, "Members": null, "Tag": 0, "RegisterType": "t" },
+    { "Name": "VolumeTexture", "Binding": 5, "Set": 0, "Type": 31, "Members": null, "Tag": 0, "RegisterType": "t" },
+    { "Name": "ReflectionProbe", "Binding": 6, "Set": 0, "Type": 32, "Members": null, "Tag": 0, "RegisterType": "t" },
+    { "Name": "PixelLinearSampler", "Binding": 2, "Set": 0, "Type": 16, "Members": null, "Tag": 0, "RegisterType": "s" }
+  ],
+  "EntryPoint": "PSMain",
+  "Stage": 2,
+  "DebugName": "SelfTest.SM4.Pixel"
+}

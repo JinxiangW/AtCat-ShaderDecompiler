@@ -1,0 +1,26 @@
+{
+  "Resources": [
+    {
+      "Name": "ComputeParams",
+      "Binding": 0,
+      "Set": 0,
+      "Type": 18,
+      "Members": [
+        { "Name": "ComputeOutputExtent", "Index": 0, "ByteOffset": 0, "ParamType": 5, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "ComputeClusterStride", "Index": 16, "ByteOffset": 16, "ParamType": 5, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "ComputeActiveLightCount", "Index": 32, "ByteOffset": 32, "ParamType": 5, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "Name": "ComputeWeights", "Index": 48, "ByteOffset": 48, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 }
+      ],
+      "Tag": 0,
+      "RegisterType": "b"
+    },
+    { "Name": "ClusterLightData", "Binding": 7, "Set": 0, "Type": 22, "Members": null, "Tag": 0, "RegisterType": "t" },
+    { "Name": "ClusterIndices", "Binding": 8, "Set": 0, "Type": 23, "Members": null, "Tag": 0, "RegisterType": "t" },
+    { "Name": "DebugOutput", "Binding": 0, "Set": 0, "Type": 37, "Members": null, "Tag": 0, "RegisterType": "u" },
+    { "Name": "ReductionBuffer", "Binding": 1, "Set": 0, "Type": 25, "Members": null, "Tag": 0, "RegisterType": "u" },
+    { "Name": "CounterBuffer", "Binding": 2, "Set": 0, "Type": 26, "Members": null, "Tag": 0, "RegisterType": "u" }
+  ],
+  "EntryPoint": "CSMain",
+  "Stage": 3,
+  "DebugName": "SelfTest.SM5.Compute"
+}
