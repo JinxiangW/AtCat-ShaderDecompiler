@@ -322,18 +322,13 @@ internal sealed class StructuredCBufferRewriter
 
     private static StructuredBufferLayout? BuildStructuredLayout(FlatUniformBufferInfo flatBuffer)
     {
-        List<ConstantBufferParameter> allParameters = GetAllConstantBufferParameters(flatBuffer.ConstantBuffer);
-        if (allParameters.Count == 0)
+        if (flatBuffer.ConstantBuffer.CBParams.Count == 0 && flatBuffer.ConstantBuffer.StructParams.Count == 0)
         {
             return null;
         }
 
-        var orderedMembers = allParameters
-            .OrderBy(p => p.Index)
-            .ToList();
-
         var layout = new StructuredBufferLayout();
-        foreach (ConstantBufferParameter metadataParameter in orderedMembers)
+        foreach (ConstantBufferParameter metadataParameter in flatBuffer.ConstantBuffer.CBParams.OrderBy(p => p.Index))
         {
             MemberLogicalType? logicalType = TryCreateLogicalTypeFromUscLayout(metadataParameter);
             if (logicalType == null)
@@ -351,6 +346,63 @@ internal sealed class StructuredCBufferRewriter
             };
 
             layout.Members.Add(member);
+        }
+
+        foreach (StructParameter structParameter in flatBuffer.ConstantBuffer.StructParams.OrderBy(s => s.Index))
+        {
+            if (structParameter.CBParams.Count == 0)
+            {
+                continue;
+            }
+
+            var structMember = new StructuredMemberLayout
+            {
+                Metadata = new ConstantBufferParameter
+                {
+                    ParamName = structParameter.Name,
+                    Index = structParameter.Index,
+                    ParamType = ShaderParamType.Float,
+                    Rows = 1,
+                    Columns = 1,
+                    IsMatrix = false,
+                    ArraySize = Math.Max(structParameter.ArraySize, 1)
+                },
+                LogicalType = new MemberLogicalType
+                {
+                    Kind = LogicalTypeKind.Struct,
+                    ScalarKind = ScalarKind.Float,
+                    Rows = 1,
+                    Columns = 1,
+                    ArrayLength = Math.Max(structParameter.ArraySize, 1),
+                    DeclaredByteSize = Math.Max(structParameter.Size, 16),
+                    UscIndex = structParameter.Index,
+                    IsMatrix = false
+                },
+                RegisterOffset = structParameter.Index / 16,
+                RegisterCount = Math.Max(1, (Math.Max(structParameter.Size, 16) + 15) / 16),
+                StructName = structParameter.Name,
+                ParentBufferName = flatBuffer.ConstantBuffer.Name
+            };
+
+            foreach (ConstantBufferParameter childParameter in structParameter.CBParams.OrderBy(p => p.Index))
+            {
+                MemberLogicalType? childLogicalType = TryCreateLogicalTypeFromUscLayout(childParameter);
+                if (childLogicalType == null)
+                {
+                    return null;
+                }
+
+                structMember.Children.Add(new StructuredMemberLayout
+                {
+                    Metadata = childParameter,
+                    LogicalType = childLogicalType,
+                    RegisterOffset = childParameter.Index / 16,
+                    RegisterCount = GetRequiredRegisterCount(childParameter.Index, childLogicalType),
+                    RelativeOffset = childParameter.Index - structParameter.Index
+                });
+            }
+
+            layout.Members.Add(structMember);
         }
 
         layout.RequiredRegisterCount = layout.Members.Max(m => m.RegisterOffset + m.RegisterCount);
@@ -428,8 +480,78 @@ internal sealed class StructuredCBufferRewriter
             LogicalTypeKind.Scalar => EnsureScalarType(module, types, logicalType.ScalarKind),
             LogicalTypeKind.Vector => EnsureVectorType(module, types, logicalType.ScalarKind, logicalType.Rows),
             LogicalTypeKind.Matrix => EnsureMatrixType(module, types, logicalType.Rows, logicalType.Columns),
+            LogicalTypeKind.Struct => EnsureStructType(module, types, member),
             _ => 0
         };
+    }
+
+    private static uint EnsureStructType(SpirvModule module, TypeInfo types, StructuredMemberLayout member)
+    {
+        if (string.IsNullOrWhiteSpace(member.StructName) || member.Children.Count == 0)
+        {
+            return 0;
+        }
+
+        var childTypeIds = new List<uint>(member.Children.Count);
+        foreach (StructuredMemberLayout child in member.Children)
+        {
+            uint childTypeId = ResolveMemberTypeId(module, types, child);
+            if (childTypeId == 0)
+            {
+                return 0;
+            }
+
+            child.ResolvedTypeId = childTypeId;
+            childTypeIds.Add(childTypeId);
+        }
+
+        uint structTypeId = module.AllocateId();
+        int decorationInsertIndex = module.FindFirstTypeInstructionIndex();
+        while (decorationInsertIndex > 0 &&
+               (module.Instructions[decorationInsertIndex - 1].OpCode == SpvOpCode.OpDecorate ||
+                module.Instructions[decorationInsertIndex - 1].OpCode == SpvOpCode.OpMemberDecorate))
+        {
+            decorationInsertIndex--;
+        }
+
+        var decorations = new List<SpirvInstruction>();
+        for (int i = 0; i < member.Children.Count; i++)
+        {
+            StructuredMemberLayout child = member.Children[i];
+            decorations.Add(new SpirvInstruction
+            {
+                OpCode = SpvOpCode.OpMemberDecorate,
+                Words =
+                [
+                    SpvOpCode.MakeInstructionWord(SpvOpCode.OpMemberDecorate, 5),
+                    structTypeId,
+                    (uint)i,
+                    SpvOpCode.DecorationOffset,
+                    (uint)child.RelativeOffset
+                ]
+            });
+        }
+
+        module.Instructions.InsertRange(decorationInsertIndex, decorations);
+        module.Instructions.Insert(module.FindTypeSectionEndIndex(), new SpirvInstruction
+        {
+            OpCode = SpvOpCode.OpTypeStruct,
+            Words = new[] { SpvOpCode.MakeInstructionWord(SpvOpCode.OpTypeStruct, (ushort)(2 + childTypeIds.Count)), structTypeId }
+                .Concat(childTypeIds)
+                .ToArray()
+        });
+
+        module.InsertDebugName(structTypeId, member.StructName);
+        for (int i = 0; i < member.Children.Count; i++)
+        {
+            string leafName = member.Children[i].Metadata.ParamName.Split('.').Last();
+            string fullName = string.IsNullOrWhiteSpace(member.ParentBufferName)
+                ? $"{member.StructName}.{leafName}"
+                : $"{member.ParentBufferName}.{member.StructName}.{leafName}";
+            module.InsertDebugMemberName(structTypeId, (uint)i, fullName);
+        }
+
+        return structTypeId;
     }
 
     private static uint EnsureScalarType(SpirvModule module, TypeInfo types, ScalarKind scalarKind)
@@ -805,6 +927,49 @@ internal sealed class StructuredCBufferRewriter
                 continue;
             }
 
+            if (member.LogicalType.Kind == LogicalTypeKind.Struct)
+            {
+                for (int childIndex = 0; childIndex < member.Children.Count; childIndex++)
+                {
+                    StructuredMemberLayout child = member.Children[childIndex];
+                    if (absoluteRegister < child.RegisterOffset || absoluteRegister >= child.RegisterOffset + child.RegisterCount)
+                    {
+                        continue;
+                    }
+
+                    List<int>? childLogicalIndices = TranslateMemberAccess(child, absoluteRegister, componentIndex, accessPath.ExtraIndices);
+                    if (childLogicalIndices == null)
+                    {
+                        return null;
+                    }
+
+                    if (!TryGetConstantId(constants, (uint)layout.Members.IndexOf(member), out uint parentIndexConstId) ||
+                        !TryGetConstantId(constants, (uint)childIndex, out uint childIndexConstId))
+                    {
+                        return null;
+                    }
+
+                    var nestedIndices = new List<uint> { parentIndexConstId, childIndexConstId };
+                    foreach (int logicalIndex in childLogicalIndices)
+                    {
+                        if (!TryGetConstantId(constants, (uint)logicalIndex, out uint logicalIndexConstId))
+                        {
+                            return null;
+                        }
+
+                        nestedIndices.Add(logicalIndexConstId);
+                    }
+
+                    return new StructuredAccessTranslation
+                    {
+                        Indices = nestedIndices,
+                        MemberTypeId = child.ResolvedTypeId
+                    };
+                }
+
+                continue;
+            }
+
             List<int>? logicalIndices = TranslateMemberAccess(member, absoluteRegister, componentIndex, accessPath.ExtraIndices);
             if (logicalIndices == null)
             {
@@ -964,7 +1129,8 @@ internal sealed class StructuredCBufferRewriter
     {
         Scalar,
         Vector,
-        Matrix
+        Matrix,
+        Struct
     }
 
     private sealed class MemberLogicalType
@@ -986,6 +1152,10 @@ internal sealed class StructuredCBufferRewriter
         public int RegisterOffset { get; set; }
         public int RegisterCount { get; set; }
         public uint ResolvedTypeId { get; set; }
+        public string? StructName { get; set; }
+        public string? ParentBufferName { get; set; }
+        public List<StructuredMemberLayout> Children { get; } = new();
+        public int RelativeOffset { get; set; }
     }
 
     private sealed class StructuredBufferLayout
