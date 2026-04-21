@@ -11,10 +11,17 @@ cbuffer PixelViewData : register(b0)
 cbuffer PixelMaterialData : register(b1)
 {
     SELFTEST_TYPE_COVERAGE_MEMBERS(Pixel)
-    float4 BaseColorFactor : packoffset(c18);
-    float4 SurfaceParams : packoffset(c19);
-    float4 EmissiveColor_AlphaCutoff : packoffset(c20);
-    float4 ClearCoat_Wetness : packoffset(c21);
+    struct PixelSurfaceStruct
+    {
+        float4 LayerWeights;
+        float3 DetailNormalScale;
+        float RoughnessBias;
+    };
+    PixelSurfaceStruct PixelSurface : packoffset(c18);
+    float4 BaseColorFactor : packoffset(c20);
+    float4 SurfaceParams : packoffset(c21);
+    float4 EmissiveColor_AlphaCutoff : packoffset(c22);
+    float4 ClearCoat_Wetness : packoffset(c23);
 };
 
 Texture2D AlbedoTexture : register(t2);
@@ -81,7 +88,7 @@ float4 PSMain(GeometryOutput input) : SV_Target0
     float2 offsets[2] = { float2(-0.125, 0.125), float2(0.125, -0.125) };
     float edge = AlbedoTexture.Sample(PixelLinearSampler, shiftedUv + offsets[mode & 1]).a;
     float3 combined = albedo.rgb * BaseColorFactor.rgb;
-    combined += layered.rgb * PixelLightColor_RoughnessBias.xyz * ndl;
+    combined += layered.rgb * (PixelLightColor_RoughnessBias.xyz + PixelSurface.LayerWeights.xyz) * ndl;
     combined += volume.rgb * ClearCoat_Wetness.yyy;
     combined += reflection * EmissiveColor_AlphaCutoff.xxx;
 
@@ -118,6 +125,7 @@ float4 PSMain(GeometryOutput input) : SV_Target0
     float scalarMix = PixelScalar + PixelUInt * 0.0001f + PixelInt * 0.0001f;
     scalarMix += (PixelInt2.x + PixelInt3.y + PixelInt4.z) * 0.0001f;
     scalarMix += (PixelUInt2.x + PixelUInt3.y + PixelUInt4.z) * 0.0001f;
+    scalarMix += PixelSurface.RoughnessBias + dot(PixelSurface.DetailNormalScale, 0.01.xxx);
     scalarMix += templateAccumulator.Value * 0.000001f;
     combined += parity.xxy * 0.005f;
     combined += scalarMix.xxx * 0.01f;

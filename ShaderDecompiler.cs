@@ -398,6 +398,7 @@ public sealed class ShaderDecompiler : IDisposable
                     if (constantBuffer != null)
                     {
                         List<ConstantBufferParameter> allParameters = GetAllConstantBufferParameters(constantBuffer);
+                        var skippedParentParameters = new HashSet<ConstantBufferParameter>();
                         bool isCompressedMatrixBuffer =
                             match.StructMemberCount == 1 &&
                             allParameters.Count > 0 &&
@@ -410,9 +411,45 @@ public sealed class ShaderDecompiler : IDisposable
                             continue;
                         }
 
+                        foreach (StructParameter structParameter in constantBuffer.StructParams.Where(s => !string.IsNullOrWhiteSpace(s.Name)))
+                        {
+                            int? structMemberIndex = null;
+                            foreach (var offsetKvp in match.MemberOffsets)
+                            {
+                                if (offsetKvp.Value == (uint)structParameter.Index)
+                                {
+                                    structMemberIndex = offsetKvp.Key;
+                                    break;
+                                }
+                            }
+
+                            if (structMemberIndex.HasValue)
+                            {
+                                memberPatches.Add((match.StructTypeId.Value, (uint)structMemberIndex.Value, structParameter.Name));
+
+                                bool directNestedStruct = structParameter.CBParams.Count > 0 &&
+                                    structParameter.CBParams.All(parameter =>
+                                        parameter.Index == structParameter.Index ||
+                                        !match.MemberOffsets.Values.Contains((uint)parameter.Index));
+
+                                if (directNestedStruct)
+                                {
+                                    foreach (ConstantBufferParameter parameter in structParameter.CBParams)
+                                    {
+                                        skippedParentParameters.Add(parameter);
+                                    }
+                                }
+                            }
+                        }
+
                         bool patchedAnyMember = false;
                         foreach (var parameter in allParameters.Where(p => !string.IsNullOrWhiteSpace(p.ParamName)))
                         {
+                            if (skippedParentParameters.Contains(parameter))
+                            {
+                                continue;
+                            }
+
                             int? targetIndex = null;
 
                             if (parameter.Index >= 0 && match.MemberOffsets.Count > 0)

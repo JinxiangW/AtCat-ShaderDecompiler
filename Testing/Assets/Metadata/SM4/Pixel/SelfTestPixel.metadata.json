@@ -31,12 +31,24 @@
         { "ParamName": "PixelUInt4", "Index": 192, "ParamType": 5, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
         { "ParamName": "PixelMatrix2", "Index": 208, "ParamType": 0, "Rows": 2, "Columns": 2, "IsMatrix": true, "ArraySize": 1 },
         { "ParamName": "PixelMatrix3", "Index": 240, "ParamType": 0, "Rows": 3, "Columns": 3, "IsMatrix": true, "ArraySize": 1 },
-        { "ParamName": "BaseColorFactor", "Index": 288, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
-        { "ParamName": "SurfaceParams", "Index": 304, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
-        { "ParamName": "EmissiveColor_AlphaCutoff", "Index": 320, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
-        { "ParamName": "ClearCoat_Wetness", "Index": 336, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 }
+        { "ParamName": "BaseColorFactor", "Index": 320, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "ParamName": "SurfaceParams", "Index": 336, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "ParamName": "EmissiveColor_AlphaCutoff", "Index": 352, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+        { "ParamName": "ClearCoat_Wetness", "Index": 368, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 }
       ],
-      "StructParams": []
+      "StructParams": [
+        {
+          "Name": "PixelSurface",
+          "Index": 288,
+          "ArraySize": 0,
+          "Size": 32,
+          "CBParams": [
+            { "ParamName": "PixelSurface.LayerWeights", "Index": 288, "ParamType": 0, "Rows": 4, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+            { "ParamName": "PixelSurface.DetailNormalScale", "Index": 304, "ParamType": 0, "Rows": 3, "Columns": 1, "IsMatrix": false, "ArraySize": 1 },
+            { "ParamName": "PixelSurface.RoughnessBias", "Index": 316, "ParamType": 0, "Rows": 1, "Columns": 1, "IsMatrix": false, "ArraySize": 1 }
+          ]
+        }
+      ]
     }
   ],
   "Resources": [
