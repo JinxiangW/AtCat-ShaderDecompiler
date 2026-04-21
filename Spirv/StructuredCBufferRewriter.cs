@@ -31,11 +31,24 @@ internal sealed class StructuredCBufferRewriter
                 continue;
             }
 
-            uint mat4TypeId = EnsureMatrixType(module, types, 4);
+            uint float2TypeId = EnsureFloatVectorType(module, types, 2);
+            uint float3TypeId = EnsureFloatVectorType(module, types, 3);
+            uint float4TypeId = EnsureFloatVectorType(module, types, 4);
+            uint intTypeId = EnsureIntType(module, types);
+            uint int2TypeId = EnsureIntVectorType(module, types, intTypeId, 2);
+            uint int3TypeId = EnsureIntVectorType(module, types, intTypeId, 3);
+            uint int4TypeId = EnsureIntVectorType(module, types, intTypeId, 4);
+            uint uintTypeId = EnsureUIntType(module, types);
+            uint uint2TypeId = EnsureUIntVectorType(module, types, uintTypeId, 2);
+            uint uint3TypeId = EnsureUIntVectorType(module, types, uintTypeId, 3);
+            uint uint4TypeId = EnsureUIntVectorType(module, types, uintTypeId, 4);
+            uint mat2TypeId = EnsureMatrixType(module, types, float2TypeId, 2);
+            uint mat3TypeId = EnsureMatrixType(module, types, float3TypeId, 3);
+            uint mat4TypeId = EnsureMatrixType(module, types, float4TypeId, 4);
             var memberTypeIds = new List<uint>();
             foreach (var member in flatBuffer.Metadata.Members.OrderBy(m => m.ByteOffset))
             {
-                uint typeId = ResolveMemberTypeId(member, types, mat4TypeId);
+                uint typeId = ResolveMemberTypeId(member, types, float2TypeId, float3TypeId, float4TypeId, intTypeId, int2TypeId, int3TypeId, int4TypeId, mat2TypeId, mat3TypeId, mat4TypeId, uint2TypeId, uint3TypeId, uint4TypeId);
                 if (typeId == 0)
                 {
                     memberTypeIds.Clear();
@@ -235,17 +248,44 @@ internal sealed class StructuredCBufferRewriter
                 case SpvOpCode.OpTypeFloat when instruction.Words.Length >= 3 && instruction[2] == 32:
                     info.FloatTypeId = instruction[1];
                     break;
+                case SpvOpCode.OpTypeInt when instruction.Words.Length >= 4 && instruction[2] == 32 && instruction[3] == 1:
+                    info.IntTypeId = instruction[1];
+                    break;
                 case SpvOpCode.OpTypeInt when instruction.Words.Length >= 4 && instruction[2] == 32 && instruction[3] == 0:
                     info.UIntTypeId = instruction[1];
+                    break;
+                case SpvOpCode.OpTypeVector when instruction.Words.Length >= 4 && instruction[2] == info.FloatTypeId && instruction[3] == 2:
+                    info.Float2TypeId = instruction[1];
+                    break;
+                case SpvOpCode.OpTypeVector when instruction.Words.Length >= 4 && instruction[2] == info.FloatTypeId && instruction[3] == 3:
+                    info.Float3TypeId = instruction[1];
                     break;
                 case SpvOpCode.OpTypeVector when instruction.Words.Length >= 4 && instruction[2] == info.FloatTypeId && instruction[3] == 4:
                     info.Float4TypeId = instruction[1];
                     break;
+                case SpvOpCode.OpTypeVector when instruction.Words.Length >= 4 && instruction[2] == info.IntTypeId && instruction[3] == 2:
+                    info.Int2TypeId = instruction[1];
+                    break;
+                case SpvOpCode.OpTypeVector when instruction.Words.Length >= 4 && instruction[2] == info.IntTypeId && instruction[3] == 3:
+                    info.Int3TypeId = instruction[1];
+                    break;
+                case SpvOpCode.OpTypeVector when instruction.Words.Length >= 4 && instruction[2] == info.IntTypeId && instruction[3] == 4:
+                    info.Int4TypeId = instruction[1];
+                    break;
                 case SpvOpCode.OpTypeVector when instruction.Words.Length >= 4 && instruction[2] == info.UIntTypeId && instruction[3] == 2:
                     info.UInt2TypeId = instruction[1];
                     break;
+                case SpvOpCode.OpTypeVector when instruction.Words.Length >= 4 && instruction[2] == info.UIntTypeId && instruction[3] == 3:
+                    info.UInt3TypeId = instruction[1];
+                    break;
                 case SpvOpCode.OpTypeVector when instruction.Words.Length >= 4 && instruction[2] == info.UIntTypeId && instruction[3] == 4:
                     info.UInt4TypeId = instruction[1];
+                    break;
+                case SpvOpCode.OpTypeMatrix when instruction.Words.Length >= 4 && instruction[2] == info.Float2TypeId && instruction[3] == 2:
+                    info.Float2x2TypeId = instruction[1];
+                    break;
+                case SpvOpCode.OpTypeMatrix when instruction.Words.Length >= 4 && instruction[2] == info.Float3TypeId && instruction[3] == 3:
+                    info.Float3x3TypeId = instruction[1];
                     break;
                 case SpvOpCode.OpTypeMatrix when instruction.Words.Length >= 4 && instruction[2] == info.Float4TypeId && instruction[3] == 4:
                     info.Float4x4TypeId = instruction[1];
@@ -256,12 +296,37 @@ internal sealed class StructuredCBufferRewriter
         return info;
     }
 
-    private static uint EnsureMatrixType(SpirvModule module, TypeInfo types, uint columnCount)
+    private static uint EnsureFloatVectorType(SpirvModule module, TypeInfo types, uint componentCount)
     {
-        if (types.Float4x4TypeId != 0)
+        if (componentCount == 2 && types.Float2TypeId != 0) return types.Float2TypeId;
+        if (componentCount == 3 && types.Float3TypeId != 0) return types.Float3TypeId;
+        if (componentCount == 4 && types.Float4TypeId != 0) return types.Float4TypeId;
+
+        uint resultId = module.AllocateId();
+        int insertIndex = module.FindTypeSectionEndIndex();
+        module.Instructions.Insert(insertIndex, new SpirvInstruction
         {
-            return types.Float4x4TypeId;
-        }
+            OpCode = SpvOpCode.OpTypeVector,
+            Words = new uint[]
+            {
+                SpvOpCode.MakeInstructionWord(SpvOpCode.OpTypeVector, 4),
+                resultId,
+                types.FloatTypeId,
+                componentCount
+            }
+        });
+
+        if (componentCount == 2) types.Float2TypeId = resultId;
+        else if (componentCount == 3) types.Float3TypeId = resultId;
+        else if (componentCount == 4) types.Float4TypeId = resultId;
+        return resultId;
+    }
+
+    private static uint EnsureMatrixType(SpirvModule module, TypeInfo types, uint vectorTypeId, uint columnCount)
+    {
+        if (columnCount == 2 && types.Float2x2TypeId != 0) return types.Float2x2TypeId;
+        if (columnCount == 3 && types.Float3x3TypeId != 0) return types.Float3x3TypeId;
+        if (columnCount == 4 && types.Float4x4TypeId != 0) return types.Float4x4TypeId;
 
         uint resultId = module.AllocateId();
         int insertIndex = module.FindTypeSectionEndIndex();
@@ -272,24 +337,147 @@ internal sealed class StructuredCBufferRewriter
             {
                 SpvOpCode.MakeInstructionWord(SpvOpCode.OpTypeMatrix, 4),
                 resultId,
-                types.Float4TypeId,
+                vectorTypeId,
                 columnCount
             }
         });
 
-        types.Float4x4TypeId = resultId;
+        if (columnCount == 2) types.Float2x2TypeId = resultId;
+        else if (columnCount == 3) types.Float3x3TypeId = resultId;
+        else if (columnCount == 4) types.Float4x4TypeId = resultId;
         return resultId;
     }
 
-    private static uint ResolveMemberTypeId(StructMember member, TypeInfo types, uint mat4TypeId)
+    private static uint EnsureIntType(SpirvModule module, TypeInfo types)
+    {
+        if (types.IntTypeId != 0) return types.IntTypeId;
+
+        uint resultId = module.AllocateId();
+        int insertIndex = module.FindTypeSectionEndIndex();
+        module.Instructions.Insert(insertIndex, new SpirvInstruction
+        {
+            OpCode = SpvOpCode.OpTypeInt,
+            Words = new uint[]
+            {
+                SpvOpCode.MakeInstructionWord(SpvOpCode.OpTypeInt, 4),
+                resultId,
+                32,
+                1
+            }
+        });
+
+        types.IntTypeId = resultId;
+        return resultId;
+    }
+
+    private static uint EnsureIntVectorType(SpirvModule module, TypeInfo types, uint intTypeId, uint componentCount)
+    {
+        if (componentCount == 2 && types.Int2TypeId != 0) return types.Int2TypeId;
+        if (componentCount == 3 && types.Int3TypeId != 0) return types.Int3TypeId;
+        if (componentCount == 4 && types.Int4TypeId != 0) return types.Int4TypeId;
+
+        uint resultId = module.AllocateId();
+        int insertIndex = module.FindTypeSectionEndIndex();
+        module.Instructions.Insert(insertIndex, new SpirvInstruction
+        {
+            OpCode = SpvOpCode.OpTypeVector,
+            Words = new uint[]
+            {
+                SpvOpCode.MakeInstructionWord(SpvOpCode.OpTypeVector, 4),
+                resultId,
+                intTypeId,
+                componentCount
+            }
+        });
+
+        if (componentCount == 2) types.Int2TypeId = resultId;
+        else if (componentCount == 3) types.Int3TypeId = resultId;
+        else if (componentCount == 4) types.Int4TypeId = resultId;
+        return resultId;
+    }
+
+    private static uint EnsureUIntType(SpirvModule module, TypeInfo types)
+    {
+        if (types.UIntTypeId != 0)
+        {
+            return types.UIntTypeId;
+        }
+
+        uint resultId = module.AllocateId();
+        int insertIndex = module.FindTypeSectionEndIndex();
+        module.Instructions.Insert(insertIndex, new SpirvInstruction
+        {
+            OpCode = SpvOpCode.OpTypeInt,
+            Words = new uint[]
+            {
+                SpvOpCode.MakeInstructionWord(SpvOpCode.OpTypeInt, 4),
+                resultId,
+                32,
+                0
+            }
+        });
+
+        types.UIntTypeId = resultId;
+        return resultId;
+    }
+
+    private static uint EnsureUIntVectorType(SpirvModule module, TypeInfo types, uint uintTypeId, uint componentCount)
+    {
+        if (componentCount == 2 && types.UInt2TypeId != 0)
+        {
+            return types.UInt2TypeId;
+        }
+
+        if (componentCount == 4 && types.UInt4TypeId != 0)
+        {
+            return types.UInt4TypeId;
+        }
+
+        uint resultId = module.AllocateId();
+        int insertIndex = module.FindTypeSectionEndIndex();
+        module.Instructions.Insert(insertIndex, new SpirvInstruction
+        {
+            OpCode = SpvOpCode.OpTypeVector,
+            Words = new uint[]
+            {
+                SpvOpCode.MakeInstructionWord(SpvOpCode.OpTypeVector, 4),
+                resultId,
+                uintTypeId,
+                componentCount
+            }
+        });
+
+        if (componentCount == 2)
+        {
+            types.UInt2TypeId = resultId;
+        }
+        else if (componentCount == 4)
+        {
+            types.UInt4TypeId = resultId;
+        }
+
+        return resultId;
+    }
+
+    private static uint ResolveMemberTypeId(StructMember member, TypeInfo types, uint float2TypeId, uint float3TypeId, uint float4TypeId, uint intTypeId, uint int2TypeId, uint int3TypeId, uint int4TypeId, uint mat2TypeId, uint mat3TypeId, uint mat4TypeId, uint uint2TypeId, uint uint3TypeId, uint uint4TypeId)
     {
         return member.TypeName switch
         {
-            "float4" => types.Float4TypeId,
+            "float" => types.FloatTypeId,
+            "float2" => float2TypeId,
+            "float3" => float3TypeId,
+            "float4" => float4TypeId,
+            "float2x2" => mat2TypeId,
+            "float3x3" => mat3TypeId,
             "float4x4" => mat4TypeId,
+            "int" => intTypeId,
+            "int2" => int2TypeId,
+            "int3" => int3TypeId,
+            "int4" => int4TypeId,
             "uint" => types.UIntTypeId,
-            "uint2" => types.UInt2TypeId,
-            "uint4" => types.UInt4TypeId,
+            "uint2" => uint2TypeId,
+            "uint3" => uint3TypeId,
+            "uint4" => uint4TypeId,
             _ => 0
         };
     }
@@ -339,7 +527,7 @@ internal sealed class StructuredCBufferRewriter
                 }
             });
 
-            if (member.TypeName == "float4x4")
+            if (member.TypeName is "float2x2" or "float3x3" or "float4x4")
             {
                 decorations.Add(new SpirvInstruction
                 {
@@ -591,10 +779,19 @@ internal sealed class StructuredCBufferRewriter
     private sealed class TypeInfo
     {
         public uint FloatTypeId { get; set; }
+        public uint Float2TypeId { get; set; }
+        public uint Float3TypeId { get; set; }
         public uint Float4TypeId { get; set; }
+        public uint Float2x2TypeId { get; set; }
+        public uint Float3x3TypeId { get; set; }
         public uint Float4x4TypeId { get; set; }
+        public uint IntTypeId { get; set; }
+        public uint Int2TypeId { get; set; }
+        public uint Int3TypeId { get; set; }
+        public uint Int4TypeId { get; set; }
         public uint UIntTypeId { get; set; }
         public uint UInt2TypeId { get; set; }
+        public uint UInt3TypeId { get; set; }
         public uint UInt4TypeId { get; set; }
     }
 

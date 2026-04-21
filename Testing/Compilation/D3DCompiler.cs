@@ -10,11 +10,42 @@ internal static class D3DCompiler
 
     public static byte[] Compile(string source, string entryPoint, string profile)
     {
+        return Compile(source, entryPoint, profile, Array.Empty<(string Name, string Value)>());
+    }
+
+    public static byte[] Compile(string source, string entryPoint, string profile, params (string Name, string Value)[] defines)
+    {
+        IntPtr definesPtr = IntPtr.Zero;
+        IntPtr[] allocatedStrings = Array.Empty<IntPtr>();
+
+        if (defines.Length > 0)
+        {
+            allocatedStrings = new IntPtr[defines.Length * 2];
+            int macroSize = Marshal.SizeOf<D3DShaderMacro>();
+            definesPtr = Marshal.AllocHGlobal(macroSize * (defines.Length + 1));
+
+            for (int i = 0; i < defines.Length; i++)
+            {
+                IntPtr namePtr = Marshal.StringToHGlobalAnsi(defines[i].Name);
+                IntPtr valuePtr = Marshal.StringToHGlobalAnsi(defines[i].Value);
+                allocatedStrings[i * 2] = namePtr;
+                allocatedStrings[i * 2 + 1] = valuePtr;
+
+                Marshal.StructureToPtr(new D3DShaderMacro
+                {
+                    Name = namePtr,
+                    Definition = valuePtr,
+                }, IntPtr.Add(definesPtr, i * macroSize), false);
+            }
+
+            Marshal.StructureToPtr(new D3DShaderMacro(), IntPtr.Add(definesPtr, defines.Length * macroSize), false);
+        }
+
         int hr = D3DCompile(
             source,
             new UIntPtr((uint)source.Length),
             null,
-            IntPtr.Zero,
+            definesPtr,
             IntPtr.Zero,
             entryPoint,
             profile,
@@ -35,6 +66,19 @@ internal static class D3DCompiler
         }
         finally
         {
+            foreach (IntPtr allocated in allocatedStrings)
+            {
+                if (allocated != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(allocated);
+                }
+            }
+
+            if (definesPtr != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(definesPtr);
+            }
+
             if (codeBlob != IntPtr.Zero)
             {
                 Marshal.Release(codeBlob);
@@ -45,6 +89,13 @@ internal static class D3DCompiler
                 Marshal.Release(errorBlob);
             }
         }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct D3DShaderMacro
+    {
+        public IntPtr Name;
+        public IntPtr Definition;
     }
 
     private static unsafe byte[] ReadBlobAsBytes(IntPtr blob)

@@ -268,6 +268,8 @@ internal static class SpirvReflectionMetadataExtractor
             "float2" or "uint2" or "int2" => 8,
             "float3" or "uint3" or "int3" => 12,
             "float4" or "uint4" or "int4" => 16,
+            "float2x2" => 32,
+            "float3x3" => 48,
             "float4x4" => 64,
             _ => 16,
         };
@@ -277,6 +279,8 @@ internal static class SpirvReflectionMetadataExtractor
     {
         return typeName switch
         {
+            "mat2" => "float2x2",
+            "mat3" => "float3x3",
             "mat4" => "float4x4",
             "vec2" => "float2",
             "vec3" => "float3",

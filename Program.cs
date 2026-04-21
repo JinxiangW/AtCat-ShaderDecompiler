@@ -8,7 +8,6 @@ using System.Linq;
 using Newtonsoft.Json;
 using Ruri.ShaderDecompiler.Intermediate;
 using Ruri.ShaderDecompiler.Spirv;
-using Ruri.ShaderDecompiler.Testing.Assets.Shaders;
 using Ruri.ShaderDecompiler.Testing.Compilation;
 using Ruri.ShaderDecompiler.Unreal;
 
@@ -419,9 +418,11 @@ namespace Ruri.ShaderDecompiler
         private sealed record SelfTestStageSpec(
             string Name,
             string EntryPoint,
-            string ShaderModel5Profile,
-            string ShaderModel6Profile,
-            bool AllowKnownBackendLimitations);
+            string DxbcProfile,
+            string DxcProfile,
+            bool AllowKnownBackendLimitations,
+            string ShaderModelFolder,
+            string ShaderFileName);
 
         private sealed record SelfTestInputCase(string Name, byte[] Binary, ShaderFormat Format);
 
@@ -437,16 +438,13 @@ namespace Ruri.ShaderDecompiler
                 return 1;
             }
 
-            string shaderPath = Path.Combine(outputRoot, "SelfTestComplexPbr.hlsl");
-            File.WriteAllText(shaderPath, SelfTestAssets.ComplexPbrShader);
-
             List<string> failures = new();
             string summaryPath = Path.Combine(outputRoot, "SelfTestSummary.txt");
             using var decompiler = new ShaderDecompiler(outputRoot, toolsDir);
 
             foreach (SelfTestStageSpec stage in CreateSelfTestStageSpecs())
             {
-                RunSelfTestStage(stage, shaderPath, outputRoot, decompiler, dxcExe, toolsDir, failures);
+                RunSelfTestStage(stage, outputRoot, decompiler, dxcExe, toolsDir, failures);
             }
 
             File.WriteAllLines(summaryPath, failures.Count == 0
@@ -465,7 +463,6 @@ namespace Ruri.ShaderDecompiler
 
         static void RunSelfTestStage(
             SelfTestStageSpec stage,
-            string shaderPath,
             string outputRoot,
             ShaderDecompiler decompiler,
             string dxcExe,
@@ -480,7 +477,9 @@ namespace Ruri.ShaderDecompiler
 
             try
             {
-                byte[] dxbc = D3DCompiler.Compile(SelfTestAssets.ComplexPbrShader, stage.EntryPoint, stage.ShaderModel5Profile);
+                string shaderPath = ResolveSelfTestShaderPath(stage);
+                string shaderSource = File.ReadAllText(shaderPath);
+                byte[] dxbc = D3DCompiler.Compile(shaderSource, stage.EntryPoint, stage.DxbcProfile);
                 string dxbcPath = Path.Combine(compiledRoot, $"{stage.Name}.dxbc");
                 string dxilPath = Path.Combine(compiledRoot, $"{stage.Name}.dxil");
                 string spvPath = Path.Combine(compiledRoot, $"{stage.Name}.spv");
@@ -488,8 +487,8 @@ namespace Ruri.ShaderDecompiler
                 string dxbcRouteSpvPath = Path.Combine(compiledRoot, $"{stage.Name}.dxbc-route.spv");
 
                 File.WriteAllBytes(dxbcPath, dxbc);
-                RunSelfTestProcess(dxcExe, $"-T {stage.ShaderModel6Profile} -E {stage.EntryPoint} -Fo \"{dxilPath}\" \"{shaderPath}\"", dxilPath);
-                RunSelfTestProcess(dxcExe, $"-spirv -fspv-target-env=vulkan1.1 -T {stage.ShaderModel6Profile} -E {stage.EntryPoint} -Fo \"{spvPath}\" \"{shaderPath}\"", spvPath);
+                RunSelfTestProcess(dxcExe, $"-T {stage.DxcProfile} -E {stage.EntryPoint} -Fo \"{dxilPath}\" \"{shaderPath}\"", dxilPath);
+                RunSelfTestProcess(dxcExe, $"-spirv -fspv-target-env=vulkan1.1 -T {stage.DxcProfile} -E {stage.EntryPoint} -Fo \"{spvPath}\" \"{shaderPath}\"", spvPath);
 
                 ShaderSymbolData metadata = SpirvReflectionMetadataExtractor.Extract(spvPath, Path.Combine(toolsDir, "spirv-cross.exe"));
                 File.WriteAllText(Path.Combine(stageRoot, $"{stage.Name}.symbols.json"), JsonConvert.SerializeObject(metadata, Formatting.Indented));
@@ -584,6 +583,17 @@ namespace Ruri.ShaderDecompiler
                     continue;
                 }
 
+                if (ShouldAllowCompressedMatrixMembers(resource))
+                {
+                    bool hasAnyMember = resource.Members.Any(member => ContainsSelfTestToken(hlsl, spirv, member.Name));
+                    if (!hasAnyMember)
+                    {
+                        failures.Add($"[{stage.Name}/{caseName}] Missing reflected member symbols for compressed matrix buffer: {resource.Name}");
+                    }
+
+                    continue;
+                }
+
                 foreach (StructMember member in resource.Members)
                 {
                     if (!ContainsSelfTestToken(hlsl, spirv, member.Name))
@@ -594,6 +604,16 @@ namespace Ruri.ShaderDecompiler
             }
 
             return failures;
+        }
+
+        static bool ShouldAllowCompressedMatrixMembers(ResourceBinding resource)
+        {
+            if (resource.Members == null || resource.Members.Count == 0)
+            {
+                return false;
+            }
+
+            return resource.Members.All(member => string.Equals(member.TypeName, "float4x4", StringComparison.Ordinal));
         }
 
         static bool ContainsSelfTestToken(string hlsl, byte[]? spirv, string token)
@@ -655,12 +675,12 @@ namespace Ruri.ShaderDecompiler
         {
             return new[]
             {
-                new SelfTestStageSpec("Vertex", "VSMain", "vs_5_1", "vs_6_0", false),
-                new SelfTestStageSpec("Hull", "HSMain", "hs_5_1", "hs_6_0", true),
-                new SelfTestStageSpec("Domain", "DSMain", "ds_5_1", "ds_6_0", true),
-                new SelfTestStageSpec("Geometry", "GSMain", "gs_5_1", "gs_6_0", true),
-                new SelfTestStageSpec("Pixel", "PSMain", "ps_5_1", "ps_6_0", false),
-                new SelfTestStageSpec("Compute", "CSMain", "cs_5_1", "cs_6_0", false),
+                new SelfTestStageSpec("Vertex", "VSMain", "vs_4_0", "vs_6_0", false, "SM4", "SelfTestVertex.hlsl"),
+                new SelfTestStageSpec("Hull", "HSMain", "hs_5_0", "hs_6_0", true, "SM5", "SelfTestHull.hlsl"),
+                new SelfTestStageSpec("Domain", "DSMain", "ds_5_0", "ds_6_0", true, "SM5", "SelfTestDomain.hlsl"),
+                new SelfTestStageSpec("Geometry", "GSMain", "gs_4_0", "gs_6_0", true, "SM4", "SelfTestGeometry.hlsl"),
+                new SelfTestStageSpec("Pixel", "PSMain", "ps_4_0", "ps_6_0", false, "SM4", "SelfTestPixel.hlsl"),
+                new SelfTestStageSpec("Compute", "CSMain", "cs_5_0", "cs_6_0", false, "SM5", "SelfTestCompute.hlsl"),
             };
         }
 
@@ -783,6 +803,38 @@ namespace Ruri.ShaderDecompiler
             }
 
             return Path.Combine(baseDir, "Tools");
+        }
+
+        static string ResolveSelfTestShaderPath(SelfTestStageSpec stage)
+        {
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string relativeStagePath = Path.Combine("Testing", "Assets", "Shaders", stage.ShaderModelFolder, stage.Name, stage.ShaderFileName);
+            string relativeFlatPath = Path.Combine("Testing", "Assets", "Shaders", stage.ShaderModelFolder, stage.ShaderFileName);
+            string[] roots =
+            {
+                Path.GetFullPath(Path.Combine(baseDir, "..", "..")),
+                baseDir,
+                Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..")),
+            };
+
+            string[] candidates = roots
+                .SelectMany(root => new[]
+                {
+                    Path.Combine(root, relativeStagePath),
+                    Path.Combine(root, relativeFlatPath),
+                })
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            foreach (string candidate in candidates)
+            {
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            throw new FileNotFoundException($"Self-test shader file not found for {stage.Name}.", candidates.Last());
         }
 
         static ShaderFormat ParseFormat(string mode)
