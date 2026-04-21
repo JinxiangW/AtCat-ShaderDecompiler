@@ -1,462 +1,400 @@
-# UE5 Shader Mapping 恢复方案白皮书
+# UE Shader Symbol Mapping Research
 
-## 1. 概述
-在UE5中，Shader代码通常被打包在全局的 `.ushaderbytecode` (ShaderArchive) 中，而材质 (`.uasset`) 只存储了对这些Shader的引用。反编译时，我们需要通过这些引用将 Shader 与 材质名 (e.g. `M_Hero`) 关联起来，以便正确命名反编译后的 HLSL 文件。
+## Scope
+本文件只记录两类内容：
 
-本项目实现了从游戏数据 (`.utoc`) 中提取 **材质 -> ShaderMapHash** 的映射关系，并将其导出为 JSON 文件。
+1. 已经由 UE 源码确认的结构语义和生成路径
+2. 已经由游戏导出数据确认存在的真理数据
 
----
+不记录猜测性恢复方案，不记录基于硬编码布局的结论。
 
-## 2. 原理机制
+## Ground Rules
+- 反编译最终符号恢复只能基于游戏数据真理，或明确属于引擎全局统一定义的源码真理
+- 源码的用途是定位真理数据保存在什么结构、什么字段、什么生成路径中
+- 源码不能替代游戏里真实保存的材质/collection/preshader 数据去直接恢复非全局符号
 
-### 2.1 核心发现
-**`.utoc` 文件的 IoStore 容器头 (IoContainerHeader)** 包含了所有打包资源的元数据。其中，`FFilePackageStoreEntry` 结构体直接存储了材质包引用的 ShaderMapHashes。
+## Current Target
+当前重点分析四类 CB 符号来源：
 
-```cpp
-// UE Source: IoContainerHeader.h
-struct FFilePackageStoreEntry
-{
-    TFilePackageStoreEntryCArrayView<FPackageId> ImportedPackages;
-    TFilePackageStoreEntryCArrayView<FSHAHash> ShaderMapHashes;  // <--- 关键数据
-};
-```
+- `View`
+- `OpaqueBasePass`
+- `MaterialCollection0`
+- `Material`
 
-### 2.2 运行时流程
-当游戏加载一个材质时，它会从 IoStore 读取该材质对应的 `StoreEntry`，获取 `ShaderMapHashes`，然后使用这些 Hash 去全局 ShaderLibrary (`.ushaderbytecode`) 中查找并加载对应的 Shader 代码。
+以及它们的成员符号是否能被严格恢复。
 
-我们利用这一机制，扫描所有 IoStore 条目，提取所有拥有 ShaderMapHashes 的包（即材质），建立全局映射表。
+## Global Uniform Buffer Truth
+以下属于引擎全局统一定义，可直接使用源码真理。
 
----
-
-## 3. 实现细节 (Ruri.FModelHook)
-
-### 3.1 Hook 逻辑
-我们 Hook 了 `CUE4ParseViewModel.ExportData` 方法。只要用户通过 FModel 导出任意 `.ushaderbytecode` (Shader Library) 文件，Hook 就会自动触发。
-
-**代码位置**: `Source/Ruri.FModelHook/Game/SBUE/ShaderDecompiler/UE_ShaderDecompiler_Hook.cs`
-
-### 3.2 执行流程
-1.  **检测导出类型**: 如果导出的文件扩展名是 `ushaderbytecode`，则进入 Shader 处理流程。
-2.  **导出 Library**: 首先调用 `ShaderArchiveExporter` 导出 `.ushaderlib` 文件（供反编译器使用）。
-3.  **提取全局映射**:
-    *   遍历 FModel 中所有已挂载的 `IoStoreReader`。
-    *   读取每个 Reader 的 `ContainerHeader` -> `StoreEntries`。
-    *   检查每个 Entry 是否包含 `ShaderMapHashes`。
-    *   如果包含，利用 `PackageIdIndex` 反查出包名 (e.g. `/Game/Characters/M_Skin`)。
-    *   将 `包名 -> Hashes` 存入字典。
-4.  **保存结果**:
-    *   获取当前游戏的导出根目录 (`Output/Exports/{ProjectName}`).
-    *   将映射表序列化为 `ShaderMappings.json` 并保存到该目录。
-
-### 3.3 输出格式
-`ShaderMappings.json`:
-```json
-{
-  "Game/Unreal/Materials/M_Hero": [
-    "HASH_STRING_1...",
-    "HASH_STRING_2..."
-  ]
-}
-```
-
----
-
-## 4. 使用指南
-
-1.  **编译**: 构建 `Ruri.FModelHook` 项目。
-2.  **启动**: 运行生成的 `.exe` (会自动启动 FModel)。
-3.  **加载**: 在 FModel 中加载目标游戏的 IoStore 包 (`.utoc`).
-4.  **导出**: 找到 Shader Library 资产（通常在 `Engine/Content` 下，如 `GlobalShaderCache-PCD3D_SM5`），右键点击 **Export**。
-5.  **验证**: 检查你的游戏导出目录 (e.g. `Output/Exports/MyGame/`)，应能看到 `ShaderMappings.json`。
-
----
-
-## 5. 参考资料
-
-| 关键类/文件 | 作用 |
-|------|------|
-| `UE_ShaderDecompiler_Hook.cs` | 核心 Hook 逻辑，控制导出流程 |
-| `CUE4ParseViewModel.cs` | FModel 的主视图模型，提供 `Provider` (VFS) 和 `ProjectName` |
-| `IoStoreReader.cs` (CUE4Parse) | 解析 `.utoc` 文件，提供 `ContainerHeader` |
-| `FFilePackageStoreEntry.cs` | 数据结构，包含 `ShaderMapHashes` |
-| `ShaderArchiveExporter.cs` | 处理 `.ushaderlib` 的二进制导出 |
-
----
-
-## 6. 材质参数符号解析 (Material Parameter Symbol Resolution)
-
-> **基于 UE 5.4.4 源码分析**
-> 源文件位置: `UnrealEngine-5.4.4-release/Engine/Source/Runtime/Engine/`
-
-### 6.1 EMaterialParameterType 枚举
-
-**源文件**: `Public/MaterialTypes.h:186-204`
+### `View`
+源码注册：
 
 ```cpp
-enum class EMaterialParameterType : uint8
-{
-    Scalar = 0u,              // float
-    Vector,                   // FLinearColor
-    DoubleVector,             // FVector4d (LWC)
-    Texture,                  // UTexture*
-    Font,                     // UFont* + int32 FontPage
-    RuntimeVirtualTexture,    // URuntimeVirtualTexture*
-    SparseVolumeTexture,      // USparseVolumeTexture*
-    StaticSwitch,             // bool (静态参数,编译时)
-
-    NumRuntime,               // 运行时参数类型上限
-
-    StaticComponentMask = NumRuntime, // bool R/G/B/A (静态参数,编译时)
-
-    Num,
-    None = 0xff,
-};
+IMPLEMENT_STATIC_AND_SHADER_UNIFORM_BUFFER_STRUCT(FViewUniformShaderParameters, "View", View);
 ```
 
-### 6.2 参数存储数组
+文件：
+- `Engine/Source/Runtime/Engine/Private/SceneView.cpp:49`
 
-**源文件**: `Classes/Materials/MaterialInstance.h:617-643`
+结论：
+- `View` 作为 CB 名称属于引擎全局统一定义
 
-| 参数类型 | 存储数组 | 值类型结构 |
-|---------|---------|-----------|
-| Scalar | `ScalarParameterValues` | `FScalarParameterValue` |
-| Vector | `VectorParameterValues` | `FVectorParameterValue` |
-| DoubleVector | `DoubleVectorParameterValues` | `FDoubleVectorParameterValue` |
-| Texture | `TextureParameterValues` | `FTextureParameterValue` |
-| RuntimeVirtualTexture | `RuntimeVirtualTextureParameterValues` | `FRuntimeVirtualTextureParameterValue` |
-| SparseVolumeTexture | `SparseVolumeTextureParameterValues` | `FSparseVolumeTextureParameterValue` |
-| Font | `FontParameterValues` | `FFontParameterValue` |
-
-### 6.3 动态材质实例 API (UMaterialInstanceDynamic)
-
-**源文件**: `Classes/Materials/MaterialInstanceDynamic.h`
-
-#### 设置参数值
+### `OpaqueBasePass`
+源码注册：
 
 ```cpp
-// Scalar (float) - Line 22
-void SetScalarParameterValue(FName ParameterName, float Value);
-
-// Vector (FLinearColor/FVector/FVector4) - Line 91
-void SetVectorParameterValue(FName ParameterName, FLinearColor Value);
-
-// DoubleVector (FVector4d) - Line 99
-void SetDoubleVectorParameterValue(FName ParameterName, FVector4 Value);
-
-// Texture (UTexture*) - Line 63
-void SetTextureParameterValue(FName ParameterName, class UTexture* Value);
-
-// RuntimeVirtualTexture - Line 71
-void SetRuntimeVirtualTextureParameterValue(FName ParameterName, class URuntimeVirtualTexture* Value);
-
-// SparseVolumeTexture - Line 79
-void SetSparseVolumeTextureParameterValue(FName ParameterName, class USparseVolumeTexture* Value);
-
-// Font - Line 166
-void SetFontParameterValue(const FMaterialParameterInfo& ParameterInfo, class UFont* FontValue, int32 FontPage);
+IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT(FOpaqueBasePassUniformParameters, "OpaqueBasePass", SceneTextures);
 ```
 
-#### 获取参数值
+文件：
+- `Engine/Source/Runtime/Renderer/Private/BasePassRendering.cpp:96`
+
+结论：
+- `OpaqueBasePass` 作为 CB 名称属于引擎全局统一定义
+
+## Material Parameter Collection Truth
+`MaterialCollectionN` 不能拍脑袋恢复，必须先闭合游戏资产链。
+
+### Source Meaning
+源码确认 `FUniformExpressionSet` 中保存 collection 的 `StateId` 列表：
 
 ```cpp
-float K2_GetScalarParameterValue(FName ParameterName);
-FLinearColor K2_GetVectorParameterValue(FName ParameterName);
-class UTexture* K2_GetTextureParameterValue(FName ParameterName);
-```
-
-### 6.4 参数值结构体
-
-**源文件**: `Classes/Materials/MaterialInstance.h:70-436`
-
-#### FScalarParameterValue (Line 70-128)
-```cpp
-struct FScalarParameterValue
+void FUniformExpressionSet::SetParameterCollections(const TArray<UMaterialParameterCollection*>& InCollections)
 {
-    FMaterialParameterInfo ParameterInfo;
-    float ParameterValue;
-    FGuid ExpressionGUID;
-};
-```
-
-#### FVectorParameterValue (Line 132-181)
-```cpp
-struct FVectorParameterValue
-{
-    FMaterialParameterInfo ParameterInfo;
-    FLinearColor ParameterValue;
-    FGuid ExpressionGUID;
-};
-```
-
-#### FDoubleVectorParameterValue (Line 185-230)
-```cpp
-struct FDoubleVectorParameterValue
-{
-    FMaterialParameterInfo ParameterInfo;
-    FVector4d ParameterValue;
-    FGuid ExpressionGUID;
-};
-```
-
-#### FTextureParameterValue (Line 234-283)
-```cpp
-struct FTextureParameterValue
-{
-    FMaterialParameterInfo ParameterInfo;
-    TObjectPtr<class UTexture> ParameterValue;
-    FGuid ExpressionGUID;
-};
-```
-
-#### FRuntimeVirtualTextureParameterValue (Line 287-331)
-```cpp
-struct FRuntimeVirtualTextureParameterValue
-{
-    FMaterialParameterInfo ParameterInfo;
-    TObjectPtr<class URuntimeVirtualTexture> ParameterValue;
-    FGuid ExpressionGUID;
-};
-```
-
-#### FSparseVolumeTextureParameterValue (Line 335-379)
-```cpp
-struct FSparseVolumeTextureParameterValue
-{
-    FMaterialParameterInfo ParameterInfo;
-    TObjectPtr<class USparseVolumeTexture> ParameterValue;
-    FGuid ExpressionGUID;
-};
-```
-
-#### FFontParameterValue (Line 383-436)
-```cpp
-struct FFontParameterValue
-{
-    FMaterialParameterInfo ParameterInfo;
-    TObjectPtr<class UFont> FontValue;
-    int32 FontPage;
-    FGuid ExpressionGUID;
-};
-```
-
-### 6.5 参数信息结构 (FMaterialParameterInfo)
-
-**源文件**: `Public/MaterialTypes.h:29-94`
-
-```cpp
-struct FMaterialParameterInfo
-{
-    FName Name;
-    TEnumAsByte<EMaterialParameterAssociation> Association; // Layer/Blend/Global
-    int32 Index; // Layer or Blend index, INDEX_NONE for global
-};
-```
-
-### 6.6 本项目实现
-
-已创建以下文件实现完整的参数解析:
-
-| 文件 | 功能 |
-|------|------|
-| `Unreal/MaterialParameterInfo.cs` | 所有参数类型定义，匹配 UE 结构 |
-| `Unreal/MaterialParameterExtractor.cs` | 从 FModel JSON 导出解析所有参数 |
-
-#### 使用示例
-
-```csharp
-// 从材质 JSON 提取所有参数
-var collection = MaterialParameterExtractor.ExtractFromJson("M_Hero.json");
-
-// 获取所有参数绑定 (用于符号注入)
-var bindings = collection.GetAllParameterBindings();
-foreach (var (name, (type, slot)) in bindings)
-{
-    Console.WriteLine($"{name}: {type} @ slot {slot}");
-}
-
-// 输出示例:
-// Roughness: Scalar @ slot 0
-// Color: Vector @ slot 1
-// Albedo: Texture @ slot 2
-```
-
----
-
-## 7. 纹理槽位命名与映射 (Texture Slot Naming Convention)
-
-> **关键发现**: 基于 UE 5.4.4 源码分析
-> 源文件: `MaterialUniformExpressions.cpp:416-437`
-
-### 7.1 UE 纹理绑定命名规则
-
-UE 编译材质时，为所有纹理参数生成**固定模式**的绑定名称：
-
-```cpp
-// MaterialUniformExpressions.cpp
-for (int32 i = 0; i < 128; ++i)
-{
-    Texture2DNames[i] = FString::Printf(TEXT("Texture2D_%d"), i);
-    Texture2DSamplerNames[i] = FString::Printf(TEXT("Texture2D_%dSampler"), i);
-    TextureCubeNames[i] = FString::Printf(TEXT("TextureCube_%d"), i);
-    TextureCubeSamplerNames[i] = FString::Printf(TEXT("TextureCube_%dSampler"), i);
-    Texture2DArrayNames[i] = FString::Printf(TEXT("Texture2DArray_%d"), i);
-    VolumeTextureNames[i] = FString::Printf(TEXT("VolumeTexture_%d"), i);
-    ExternalTextureNames[i] = FString::Printf(TEXT("ExternalTexture_%d"), i);
-    VirtualTexturePhysicalNames[i] = FString::Printf(TEXT("VirtualTexturePhysical_%d"), i);
-    SparseVolumeTexturePageTableNames[i] = FString::Printf(TEXT("SparseVolumeTexturePageTable_%d"), i);
-    // ...
-}
-```
-
-### 7.2 Shader 中的绑定名称
-
-反编译后的 HLSL 中会看到如下声明：
-
-```hlsl
-// 2D 纹理 (Standard2D)
-Texture2D<float4> Material_Texture2D_0 : register(t0);
-SamplerState Material_Texture2D_0Sampler : register(s0);
-
-Texture2D<float4> Material_Texture2D_1 : register(t1);
-SamplerState Material_Texture2D_1Sampler : register(s1);
-
-// Cube 纹理
-TextureCube<float4> Material_TextureCube_0 : register(t2);
-SamplerState Material_TextureCube_0Sampler : register(s2);
-
-// ...
-```
-
-### 7.3 映射恢复机制
-
-| Shader 绑定名 | FUniformExpressionSet 数组 | 参数名来源 |
-|--------------|---------------------------|-----------|
-| `Material.Texture2D_0` | `UniformTextureParameters[Standard2D][0]` | `.ParameterInfo.Name` |
-| `Material.Texture2D_1` | `UniformTextureParameters[Standard2D][1]` | `.ParameterInfo.Name` |
-| `Material.TextureCube_0` | `UniformTextureParameters[Cube][0]` | `.ParameterInfo.Name` |
-| `Material.VolumeTexture_0` | `UniformTextureParameters[Volume][0]` | `.ParameterInfo.Name` |
-| `Material.VirtualTexturePhysical_0` | `UniformTextureParameters[Virtual][0]` | `.ParameterInfo.Name` |
-
-### 7.4 局限性
-
-`FUniformExpressionSet` 存储在编译后的 `FMaterialShaderMap` 中，**不在材质资产的 JSON 导出中**。
-
-目前采用的**近似映射**策略：
-- 假设 `TextureParameterValues` 的顺序与 `UniformTextureParameters[Standard2D]` 一致
-- 这在大多数情况下有效，但复杂材质可能存在差异
-
-### 7.5 本项目实现
-
-新增 `TextureParameterMapper.cs` 实现映射与注释生成：
-
-```csharp
-// 构建近似映射
-var mapping = TextureParameterMapper.BuildApproximateMapping(parameters);
-// mapping["Material.Texture2D_0"] = "BaseColorTexture"
-
-// 生成 HLSL 注释
-var annotations = TextureParameterMapper.GenerateParameterAnnotations(parameters);
-```
-
-#### 输出示例
-
-```hlsl
-//==============================================================================
-// Material Parameter Mapping (UE5 Shader Decompiler)
-// WARNING: This mapping is approximate. Actual slot order may differ.
-//==============================================================================
-
-// Texture2D Parameters:
-//   Material.Texture2D_0 → "BaseColorTexture" = /Game/Textures/T_Hero_BaseColor
-//   Material.Texture2D_1 → "NormalMapTexture" = /Game/Textures/T_Hero_Normal
-
-// Scalar Parameters:
-//   [0] "Roughness" = 0.5
-//   [1] "Metallic" = 1.0
-
-// Vector Parameters:
-//   [0] "TintColor" = (1.0, 0.8, 0.6, 1.0)
-
-Texture2D<float4> Material_Texture2D_0 : register(t0);
-SamplerState Material_Texture2D_0Sampler : register(s0);
-// ...
-```
-
----
-
-## 8. 精确参数映射实现 (Precise Parameter Mapping)
-
-> **方案已实现** - 无硬编码，无近似
-
-### 8.1 数据源
-
-CUE4Parse 已完整解析 `FUniformExpressionSet`：
-
-```
-UMaterial.LoadedMaterialResources[].LoadedShaderMap.Content
-  └── MaterialCompilationOutput.UniformExpressionSet
-        ├── UniformTextureParameters[7][]  ← 精确的纹理参数映射
-        │     └── ParameterInfo.Name       ← 参数名
-        │     └── TextureIndex             ← 纹理索引
-        └── UniformNumericParameters[]     ← 数值参数
-```
-
-### 8.2 实现文件
-
-| 文件 | 功能 |
-|-----|------|
-| `Ruri.FModelHook/.../UniformExpressionExporter.cs` | 从材质导出 UniformExpressionSet 到 JSON |
-| `Ruri.ShaderDecompiler/.../PreciseParameterMapper.cs` | 解析映射 JSON，提供精确查询 |
-
-### 8.3 导出格式
-
-`MaterialParameterMappings.json`:
-```json
-{
-  "Materials": {
-    "/Game/Characters/M_Hero": {
-      "ShaderMapHash": "ABC123...",
-      "TextureParameters": {
-        "Standard2D": [
-          {"Index": 0, "Name": "BaseColorTexture", "TextureIndex": 0},
-          {"Index": 1, "Name": "NormalMapTexture", "TextureIndex": 1}
-        ],
-        "Cube": [],
-        "Volume": []
-      },
-      "NumericParameters": [
-        {"Name": "Roughness", "Type": "Scalar", "DefaultValue": "0.5"},
-        {"Name": "TintColor", "Type": "Vector", "DefaultValue": "(1.0, 0.8, 0.6, 1.0)"}
-      ]
+    ParameterCollections.Empty(InCollections.Num());
+    for (int32 CollectionIndex = 0; CollectionIndex < InCollections.Num(); CollectionIndex++)
+    {
+        ParameterCollections.Add(InCollections[CollectionIndex]->StateId);
     }
-  }
 }
 ```
 
-### 8.4 使用方法
+文件：
+- `Engine/Source/Runtime/Engine/Private/Materials/MaterialUniformExpressions.cpp:331-339`
 
-```csharp
-// 加载映射
-var mapper = PreciseParameterMapper.LoadFromFile("MaterialParameterMappings.json");
+结论：
+- `FUniformExpressionSet.ParameterCollections[i]` 的语义就是第 `i` 个 `UMaterialParameterCollection` 的 `StateId`
 
-// 获取材质映射
-var mapping = mapper.GetByMaterialPath("/Game/Characters/M_Hero");
+### Game Data Truth Chain
+当前样例 `MI_Cliff_small_ground_level` / `M_Cliffs` 已确认以下闭环：
 
-// 解析 shader 绑定名
-string paramName = mapper.ResolveBindingName(mapping, "Material.Texture2D_0");
-// paramName = "BaseColorTexture"
+1. `UniformExpressionSet.ParameterCollections`
+   - 保存 GUID
+2. `ParameterCollectionInfos`
+   - 用同一个 `StateId` 指向具体 collection 资产
+3. `MaterialParameterCollection` 资产 JSON
+   - 保存完整参数树：`ScalarParameters` / `VectorParameters`
 
-// 生成 HLSL 注释头
-string header = mapper.GenerateHlslHeader(mapping);
+样例已确认：
+- `B5E511F4-423C469C-F5123096-934949E1`
+  -> `Level_material_parameters`
 
-// 构建完整映射表
-var bindingMap = mapper.BuildBindingToNameMap(mapping);
-// bindingMap["Material_Texture2D_0"] = "BaseColorTexture"
+样例文件：
+- `Content/Oni_Project/Materials/MI_Cliff_small_ground_level.json`
+- `Content/Oni_Project/Materials/M_Cliffs.json`
+- `Content/Oni_Project/Materials/Material_functions/Level_material_parameters.json`
+
+结论：
+- collection 身份树和参数树都在游戏数据里
+- `MaterialCollection0` 是否严格等于 `ParameterCollections[0]` 仍需额外证据闭合
+- 当前样例只有一个 collection，所以 `MaterialCollection0` 对应唯一候选，但按最高标准仍应视为“强支持，未完全闭合”
+
+## Material Uniform Buffer Truth
+`Material` 不能再用源码直接重建字段树。必须区分三类真理数据：
+
+1. 布局树
+2. 参数名字树
+3. preshader 写入桥
+
+### Source Generation of `Material`
+源码中 `FUniformExpressionSet::CreateBufferStruct()` 负责生成 `Material` uniform buffer 的布局。
+
+关键代码：
+
+```cpp
+new(Members) FShaderParametersMetadata::FMember(TEXT("PreshaderBuffer"), ... , UniformPreshaderBufferSize, NULL);
+...
+UniformBufferLayoutInitializer = FRHIUniformBufferLayoutInitializer(TEXT("Material"));
+...
+FShaderParametersMetadata(..., TEXT("Material"), TEXT("MaterialUniforms"), TEXT("Material"), ...)
 ```
 
-### 8.5 注意事项
+文件：
+- `Engine/Source/Runtime/Engine/Private/Materials/MaterialUniformExpressions.cpp:341-523`
 
-- 需要在 FModel Provider 中启用 `ReadShaderMaps = true`
-- 材质必须加载后 `LoadedMaterialResources` 才会填充
-- ShaderMapHash 可用于匹配 shader 和材质
+结论：
+- `Material` 作为 CB 名是固定生成结果
+- 但非全局字段恢复仍必须依赖游戏实际保存的数据，不可直接凭源码布局下结论
 
+### Game Data: Layout Tree
+游戏导出数据中已经保存 `Material` 的布局树：
+
+- `UniformExpressionSet.UniformBufferLayoutInitializer`
+  - `Name`
+  - `Resources[]`
+    - `MemberOffset`
+    - `MemberType`
+  - `ConstantBufferSize`
+
+这在样例中已经实际存在：
+- `MI_Cliff_small_ground_level.json`
+- `M_Cliffs.json`
+- `UnifiedShaderMetadata.json`
+
+结论：
+- `Material` 的资源布局树已经是游戏数据真理
+
+### Game Data: Parameter Name Tree
+当前已确认两个名字源：
+
+#### 1. `RuntimeEntries[*].ParameterInfoSet`
+`UMaterialInterface` 对缓存数据的解释逻辑：
+
+```csharp
+runtimeEntries[0].ParameterInfoSet -> ScalarValues
+runtimeEntries[1].ParameterInfoSet -> VectorValues
+runtimeEntries[3].ParameterInfoSet -> TextureValues
+```
+
+文件：
+- `FModel/CUE4Parse/CUE4Parse/UE4/Assets/Exports/Material/UMaterialInterface.cs:140-168`
+
+结论：
+- `RuntimeEntries.ParameterInfoSet` 是材质参数名字树与值数组的对应表
+- 它不是 `Material` buffer 字段表本身
+
+#### 2. `FrozenArchive.ScriptNames`
+统一导出中已经能看到大量真实材质参数名，例如：
+
+- `AO input`
+- `Curvature input`
+- `Normal input`
+- `Specular detail`
+- `Specular softness`
+- `Roughness dullness`
+- `UV Scale Near`
+
+结论：
+- frozen archive 中保存了真实 script name 集合
+- 每个名字还有 `Patches`，说明它们对应 memory image 中的实际写入点
+
+### Preshader Bridge
+这是当前 `Material` 成员恢复最关键的桥。
+
+#### `FUniformExpressionSet`
+当前 UE 5.x 中 `FUniformExpressionSet` 同时保存：
+
+- `UniformNumericParameters`
+- `UniformTextureParameters`
+- `UniformExternalTextureParameters`
+- `UniformTextureCollectionParameters`
+- `UniformPreshaders`
+- `UniformPreshaderFields`
+- `UniformPreshaderData`
+- `ParameterCollections`
+- `UniformBufferLayoutInitializer`
+
+参考：
+- `FModel/CUE4Parse/CUE4Parse/UE4/Assets/Exports/Material/MaterialResourceTypes.cs:556-577`
+
+#### `FMaterialUniformPreshaderField`
+当前结构语义：
+
+```csharp
+public struct FMaterialUniformPreshaderField
+{
+    public uint BufferOffset, ComponentIndex;
+    public EShaderValueType Type;
+}
+```
+
+文件：
+- `FModel/CUE4Parse/CUE4Parse/UE4/Assets/Exports/Material/MaterialResourceTypes.cs:837-842`
+
+结论：
+- 这是 preshader 结果写入 `Material` buffer 的偏移桥
+
+#### `FMaterialUniformPreshaderHeader`
+当前已确认字段：
+
+- `OpcodeOffset`
+- `OpcodeSize`
+- UE5.1 变体还包含：
+  - `FieldIndex`
+  - `NumFields`
+
+文件：
+- `FModel/CUE4Parse/CUE4Parse/UE4/Assets/Exports/Material/MaterialResourceTypes.cs:782-834`
+
+结论：
+- 它定义了每段 preshader opcode 作用于哪些 field
+
+#### `FillUniformBuffer()` 消费逻辑
+源码明确说明：
+
+1. 遍历 `UniformPreshaders`
+2. 用 `UniformPreshaderData` 执行 `EvaluatePreshader()`
+3. 用 `UniformPreshaderFields` 将结果写进 `PreshaderBuffer`
+4. 写入位置由 `BufferOffset` 决定
+
+文件：
+- `Engine/Source/Runtime/Engine/Private/Materials/MaterialUniformExpressions.cpp:748-880`
+
+结论：
+- `UniformPreshaders` + `UniformPreshaderFields` + `UniformPreshaderData` 是 `Material` 的真实写入桥
+
+### `FMaterialPreshaderData`
+真实结构名：`UE::Shader::FPreshaderData`
+
+源码：
+- `Engine/Source/Runtime/Engine/Public/Shader/Preshader.h:92-149`
+
+保存内容：
+- `Names`
+- `StructTypes`
+- `StructComponentTypes`
+- `Data`
+
+对应导出字段：
+- `Names`
+- `NamesOffset`（旧版本资产）
+- `StructTypes`
+- `StructComponentTypes`
+- `Data`
+
+结论：
+- 这不是“直接成员名表”
+- 它是 preshader opcode / 类型 / 名字引用数据本体
+
+### Where Parameter Names Enter Preshader Data
+源码确认 `FPreshaderData` 支持写入 `FHashedMaterialParameterInfo`：
+
+```cpp
+template<>
+FPreshaderData& Write<FHashedMaterialParameterInfo>(const FHashedMaterialParameterInfo& Value)
+{
+    return Write(Value.Name).Write(Value.Index).Write(Value.Association);
+}
+```
+
+文件：
+- `Engine/Source/Runtime/Engine/Public/Shader/Preshader.h:140-142`
+
+读取时：
+
+```cpp
+template<>
+FHashedMaterialParameterInfo ReadPreshaderValue<FHashedMaterialParameterInfo>(...)
+```
+
+文件：
+- `Engine/Source/Runtime/Engine/Private/Shader/Preshader.cpp:311-317`
+
+结论：
+- preshader data 确实可以携带参数身份，不只是数值字节码
+
+### `EPreshaderOpcode::Parameter`
+源码枚举值顺序中 `Parameter` 位于：
+
+```cpp
+ConstantZero = 1,
+Constant = 2,
+Parameter = 3,
+```
+
+文件：
+- `Engine/Source/Runtime/Engine/Public/Shader/Preshader.h:19-75`
+
+运行时消费：
+
+```cpp
+case EPreshaderOpcode::Parameter:
+    EvaluateParameter(Stack, UniformExpressionSet, ReadPreshaderValue<uint16>(Data), Context);
+```
+
+文件：
+- `Engine/Source/Runtime/Engine/Private/Shader/Preshader.cpp:835-845`
+
+`EvaluateParameter()` 再用 `ParameterIndex` 去 `UniformExpressionSet->GetNumericParameter(ParameterIndex)`。
+
+文件：
+- `Engine/Source/Runtime/Engine/Private/Shader/Preshader.cpp:420-459`
+
+结论：
+- 如果 bytecode 中存在 `Parameter` opcode，就能建立：
+  `ParameterIndex -> UniformNumericParameters[ParameterIndex] -> ParameterInfo`
+
+## Current Exporter Truth
+当前统一导出已经显式导出了以下桥字段：
+
+- `Content.UniformExpressionSet.UniformPreshaders`
+- `Content.UniformExpressionSet.UniformPreshaderFields`
+- `Content.UniformExpressionSet.UniformPreshaderData`
+- `Content.UniformExpressionSet.UniformNumericParameters`
+- `Content.UniformExpressionSet.UniformTextureCollectionParameters`
+- `Content.UniformExpressionSet.ParameterCollections`
+
+导出位置：
+- `Source/Ruri.FModelHook/Game/SBUE/ShaderDecompiler/UnifiedShaderMetadataExporter.cs`
+
+## Current Offline Analysis Status
+已添加离线命令：
+
+```text
+--analyze-preshader <UnifiedShaderMetadata.json> --material <material path>
+```
+
+当前状态：
+- 命令可运行
+- 能读出目标材质与 `ParameterCollections`
+- 但对当前样例 `MI_Cliff_small_ground_level` / `M_Cliffs`，尚未从 preshader bytecode 中静态抓到可直接闭合的 `ParameterIndex -> BufferOffset`
+
+这说明至少当前样例中：
+- 要么 preshader 已被常量折叠
+- 要么参数到 field 的映射不以简单线性 `Parameter` opcode 形式暴露
+- 要么还需要继续分析 `FrozenArchive.ScriptNames.Patches` 与 memory image 的关系
+
+## What Is Proven vs Not Proven
+
+### Proven
+- `View` / `OpaqueBasePass` 属于引擎全局统一 CB 名
+- `ParameterCollections[i]` 保存的是第 `i` 个 collection 的 `StateId`
+- `MaterialParameterCollection` 的参数树保存在游戏资产中
+- `Material` 的布局树保存在 `UniformBufferLayoutInitializer` 中
+- `Material` 的 preshader 写入桥保存在 `UniformPreshaders` 和 `UniformPreshaderFields` 中
+- `FPreshaderData` 可以保存参数身份引用
+
+### Not Yet Proven
+- `ParameterCollections[0]` 必然等于 shader 中的 `MaterialCollection0`
+- `MaterialCollection` 参数到 `float4[i].xyzw` 的显式映射
+- `FrozenArchive.ScriptNames[k]` 到某个 `UniformPreshaderField.BufferOffset` 的一一对应
+- `UniformNumericParameters[i]` 到某个最终 `Material` buffer offset 的直接闭环
+
+## Recommended Next Work
+下一步应继续做的不是猜测恢复，而是继续真理提取：
+
+1. 追 `FrozenArchive.ScriptNames.Patches` 的生成与消费路径
+2. 继续分析 preshader data 与 field 写入关系，尤其是非直接 `Parameter` opcode 的路径
+3. 查 `MaterialCollection` 编号与 packing 是否在游戏数据中另有保存结构
+
+## Naming Rules For This Research
+本文件中只使用以下对齐源码的结构名，不再自创命名：
+
+- `FUniformExpressionSet`
+- `FRHIUniformBufferLayoutInitializer`
+- `FMaterialUniformPreshaderHeader`
+- `FMaterialUniformPreshaderField`
+- `UE::Shader::FPreshaderData`
+- `FHashedMaterialParameterInfo`
+- `FMaterialNumericParameterInfo`
+- `UMaterialParameterCollection`
+- `ParameterCollections`
+- `ScriptNames`
+- `Patches`
+
+避免使用没有源码出处的模糊命名，例如：
+- “CB member table”
+- “material field graph”
+- “symbol blob”
+
+除非能明确对应到 UE 真实结构。
