@@ -381,8 +381,17 @@ internal sealed class StructuredCBufferRewriter
 
     private static void InsertStructuredNames(SpirvModule module, FlatUniformBufferInfo flatBuffer, uint newStructTypeId)
     {
-        module.InsertDebugName(newStructTypeId, $"type.{flatBuffer.Metadata.Name}");
-        module.InsertDebugName(flatBuffer.VariableId, flatBuffer.Metadata.Name);
+        // IMPORTANT:
+        // spirv-cross HLSL naming is sensitive to type/variable collisions for uniform blocks.
+        // For clean HLSL we want:
+        // - block/type name == metadata name (e.g. ViewData)
+        // - variable name != block/type name
+        // If both use the same debug name, spirv-cross generates `ViewData_1_*` member names.
+        // If the type is unnamed, spirv-cross synthesizes `type_ViewData`.
+        // Therefore we name the struct type with the real cbuffer name and keep the variable on
+        // a private, non-user-facing name.
+        module.InsertDebugName(newStructTypeId, flatBuffer.Metadata.Name);
+        module.InsertDebugName(flatBuffer.VariableId, $"__ruri_{flatBuffer.Metadata.Name}_var");
 
         for (int i = 0; i < flatBuffer.Metadata.Members!.Count; i++)
         {

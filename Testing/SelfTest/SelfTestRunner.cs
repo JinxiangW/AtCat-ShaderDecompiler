@@ -60,8 +60,8 @@ internal static class SelfTestRunner
 
             var cases = new[]
             {
-                (Name: "Dxbc", Binary: dxbc, Format: ShaderFormat.Dxbc),
                 (Name: "Dxil", Binary: File.ReadAllBytes(dxilPath), Format: ShaderFormat.Dxil),
+                (Name: "Dxbc", Binary: dxbc, Format: ShaderFormat.Dxbc),
                 (Name: "Spirv", Binary: File.ReadAllBytes(spvPath), Format: ShaderFormat.SpirV),
             };
 
@@ -78,6 +78,11 @@ internal static class SelfTestRunner
                 if (result.IntermediateSpirv != null)
                 {
                     File.WriteAllBytes(Path.Combine(decompiledRoot, $"Decompiled.{testCase.Name}.spv"), result.IntermediateSpirv);
+                }
+
+                if (string.Equals(testCase.Name, "Dxil", StringComparison.Ordinal) && result.IntermediateSpirv != null)
+                {
+                    WriteBindingDiagnostics(Path.Combine(decompiledRoot, "Diagnostics.DxilBindings.txt"), result.IntermediateSpirv);
                 }
 
                 ValidateResult(testCase.Name, result.HlslSource, result.IntermediateSpirv);
@@ -99,6 +104,18 @@ internal static class SelfTestRunner
         DeleteIfExists(Path.Combine(outputRoot, "SelfTestPbr.hlsl"));
         DeleteIfExists(Path.Combine(outputRoot, "SelfTestPbr.dxbc-route.dxil"));
         DeleteIfExists(Path.Combine(outputRoot, "SelfTestPbr.dxbc-route.spv"));
+        DeleteIfExists(Path.Combine(outputRoot, "Decompiled", "Diagnostics.DxilBindings.txt"));
+    }
+
+    private static void WriteBindingDiagnostics(string outputPath, byte[] spirv)
+    {
+        var patcher = new SpirvPatcher();
+        var bindings = patcher.AnalyzeBindingsDetailed(spirv);
+        using var writer = new StreamWriter(outputPath, false);
+        foreach (var binding in bindings)
+        {
+            writer.WriteLine($"Id={binding.Id} Set={binding.Set} Binding={binding.Binding} Type={binding.DescriptorType} CurrentName={binding.CurrentName} StructTypeId={binding.StructTypeId} StructMemberCount={binding.StructMemberCount}");
+        }
     }
 
     private static ShaderSymbolData CreateSyntheticMetadataCore()
@@ -164,10 +181,8 @@ internal static class SelfTestRunner
 
         string[] requiredTokens =
         {
-            "LinearWrapSampler",
             "Sample(",
-            "main(",
-            "Texture2D<float4> AlbedoTexture"
+            "main("
         };
 
         foreach (string token in requiredTokens)

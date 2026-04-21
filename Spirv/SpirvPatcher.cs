@@ -14,6 +14,7 @@ public class SpirvBindingInfo
     public uint? StructTypeId { get; set; }
     public int StructMemberCount { get; set; }
     public Dictionary<int, uint> MemberOffsets { get; set; } = new();
+    public string? CurrentName { get; set; }
 }
 
 /// <summary>
@@ -36,6 +37,7 @@ public class SpirvPatcher
         var imageTypeIds = new HashSet<uint>();
         var samplerTypeIds = new HashSet<uint>();
         var sampledImageTypeIds = new HashSet<uint>();
+        var idToName = new Dictionary<uint, string>();
 
         int offset = SpvOpCode.HeaderWordCount;
         while (offset < words.Length)
@@ -93,6 +95,17 @@ public class SpirvPatcher
                 case SpvOpCode.OpTypeSampledImage:
                     sampledImageTypeIds.Add(words[offset + 1]);
                     break;
+                case SpvOpCode.OpName when wordCount >= 3:
+                    {
+                        uint targetId = words[offset + 1];
+                        string? name = ReadLiteralString(words, offset + 2, wordCount - 2);
+                        if (!string.IsNullOrWhiteSpace(name))
+                        {
+                            idToName[targetId] = name;
+                        }
+
+                        break;
+                    }
                 case SpvOpCode.OpVariable when wordCount >= 4:
                     {
                         uint pointerTypeId = words[offset + 1];
@@ -118,6 +131,11 @@ public class SpirvPatcher
                 Set = kvp.Value.Set.Value,
                 Binding = kvp.Value.Binding.Value
             };
+
+            if (idToName.TryGetValue(kvp.Key, out string? currentName))
+            {
+                info.CurrentName = currentName;
+            }
 
             // Determine type
             if (variableTypeMap.TryGetValue(kvp.Key, out uint ptrTypeId))
@@ -395,5 +413,18 @@ public class SpirvPatcher
         byte[] bytes = new byte[words.Length * 4];
         Buffer.BlockCopy(words, 0, bytes, 0, bytes.Length);
         return bytes;
+    }
+
+    private static string? ReadLiteralString(uint[] words, int start, int wordCount)
+    {
+        byte[] bytes = new byte[wordCount * 4];
+        Buffer.BlockCopy(words, start * 4, bytes, 0, bytes.Length);
+        int nullIndex = Array.IndexOf(bytes, (byte)0);
+        if (nullIndex < 0)
+        {
+            nullIndex = bytes.Length;
+        }
+
+        return Encoding.UTF8.GetString(bytes, 0, nullIndex);
     }
 }
