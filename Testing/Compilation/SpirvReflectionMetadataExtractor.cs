@@ -120,7 +120,7 @@ internal static class SpirvReflectionMetadataExtractor
             var binding = new ResourceBinding
             {
                 Name = resourceName,
-                Set = ReadIntProperty(ubo, "set"),
+                Set = 0,
                 Binding = ReadIntProperty(ubo, "binding"),
                 Type = ShaderResourceType.ConstantBuffer,
                 RegisterType = 'b',
@@ -168,7 +168,7 @@ internal static class SpirvReflectionMetadataExtractor
             metadata.Resources.Add(new ResourceBinding
             {
                 Name = NormalizeTypePrefixedName(name),
-                Set = ReadIntProperty(resource, "set"),
+                Set = 0,
                 Binding = ReadIntProperty(resource, "binding"),
                 Type = InferConcreteResourceType(resourceType, resource),
                 RegisterType = registerType,
@@ -192,7 +192,7 @@ internal static class SpirvReflectionMetadataExtractor
             metadata.Resources.Add(new ResourceBinding
             {
                 Name = NormalizeTypePrefixedName(name),
-                Set = ReadIntProperty(buffer, "set"),
+                Set = 0,
                 Binding = ReadIntProperty(buffer, "binding"),
                 Type = InferStorageBufferType(isReadonly, typeName),
                 RegisterType = isReadonly ? 't' : 'u',

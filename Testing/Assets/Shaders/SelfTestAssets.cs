@@ -56,29 +56,29 @@ cbuffer MaterialData : register(b6)
 
 cbuffer ComputeParams : register(b7)
 {
-    uint2 ComputeOutputExtent;
-    uint ComputeClusterStride;
-    uint ComputeActiveLightCount;
+    uint4 ComputeOutputExtent;
+    uint4 ComputeClusterStride;
+    uint4 ComputeActiveLightCount;
     float4 ComputeWeights;
 };
 
-Texture2D WindNoiseTexture : register(t0);
-Texture2D HeightTexture : register(t1);
-Texture2D AlbedoTexture : register(t2);
-Texture2D NormalTexture : register(t3);
-Texture2D MaterialTexture : register(t4);
-Texture2D EmissiveTexture : register(t5);
-TextureCube ReflectionProbe : register(t6);
-StructuredBuffer<float4> ClusterLightData : register(t7);
-ByteAddressBuffer ClusterIndices : register(t8);
+Texture2D WindNoiseTexture : register(t16);
+Texture2D HeightTexture : register(t17);
+Texture2D AlbedoTexture : register(t18);
+Texture2D NormalTexture : register(t19);
+Texture2D MaterialTexture : register(t20);
+Texture2D EmissiveTexture : register(t21);
+TextureCube ReflectionProbe : register(t22);
+StructuredBuffer<float4> ClusterLightData : register(t23);
+ByteAddressBuffer ClusterIndices : register(t24);
 
-SamplerState VertexLinearSampler : register(s0);
-SamplerState DomainLinearSampler : register(s1);
-SamplerState PixelLinearSampler : register(s2);
+SamplerState VertexLinearSampler : register(s32);
+SamplerState DomainLinearSampler : register(s33);
+SamplerState PixelLinearSampler : register(s34);
 
-RWTexture2D<float4> DebugOutput : register(u0);
-RWStructuredBuffer<float4> ReductionBuffer : register(u1);
-RWByteAddressBuffer CounterBuffer : register(u2);
+RWTexture2D<float4> DebugOutput : register(u48);
+RWStructuredBuffer<float4> ReductionBuffer : register(u49);
+RWByteAddressBuffer CounterBuffer : register(u50);
 
 struct VSInput
 {
@@ -316,8 +316,8 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     }
 
     uint flatIndex = dispatchThreadId.y * ComputeOutputExtent.x + dispatchThreadId.x;
-    uint lightCount = max(ComputeActiveLightCount, 1u);
-    uint lightIndexOffset = (flatIndex % lightCount) * ComputeClusterStride;
+    uint lightCount = max(ComputeActiveLightCount.x, 1u);
+    uint lightIndexOffset = (flatIndex % lightCount) * ComputeClusterStride.x;
     uint encodedLightIndex = ClusterIndices.Load(lightIndexOffset * 4);
     uint clampedLightIndex = encodedLightIndex % lightCount;
     float4 lightData = ClusterLightData[clampedLightIndex];

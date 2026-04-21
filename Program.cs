@@ -655,12 +655,12 @@ namespace Ruri.ShaderDecompiler
         {
             return new[]
             {
-                new SelfTestStageSpec("Vertex", "VSMain", "vs_5_0", "vs_6_0", false),
-                new SelfTestStageSpec("Hull", "HSMain", "hs_5_0", "hs_6_0", true),
-                new SelfTestStageSpec("Domain", "DSMain", "ds_5_0", "ds_6_0", true),
-                new SelfTestStageSpec("Geometry", "GSMain", "gs_5_0", "gs_6_0", true),
-                new SelfTestStageSpec("Pixel", "PSMain", "ps_5_0", "ps_6_0", false),
-                new SelfTestStageSpec("Compute", "CSMain", "cs_5_0", "cs_6_0", false),
+                new SelfTestStageSpec("Vertex", "VSMain", "vs_5_1", "vs_6_0", false),
+                new SelfTestStageSpec("Hull", "HSMain", "hs_5_1", "hs_6_0", true),
+                new SelfTestStageSpec("Domain", "DSMain", "ds_5_1", "ds_6_0", true),
+                new SelfTestStageSpec("Geometry", "GSMain", "gs_5_1", "gs_6_0", true),
+                new SelfTestStageSpec("Pixel", "PSMain", "ps_5_1", "ps_6_0", false),
+                new SelfTestStageSpec("Compute", "CSMain", "cs_5_1", "cs_6_0", false),
             };
         }
 
