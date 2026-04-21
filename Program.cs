@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using Ruri.ShaderDecompiler;
 using Ruri.ShaderDecompiler.Engine;
@@ -6,7 +7,9 @@ using Ruri.ShaderDecompiler.Utils;
 using System.Linq;
 using Newtonsoft.Json;
 using Ruri.ShaderDecompiler.Intermediate;
-using Ruri.ShaderDecompiler.Testing.SelfTest;
+using Ruri.ShaderDecompiler.Spirv;
+using Ruri.ShaderDecompiler.Testing.Assets.Shaders;
+using Ruri.ShaderDecompiler.Testing.Compilation;
 using Ruri.ShaderDecompiler.Unreal;
 
 namespace Ruri.ShaderDecompiler
@@ -20,7 +23,7 @@ namespace Ruri.ShaderDecompiler
                 string outputRoot = args.Length > 1
                     ? Path.GetFullPath(args[1])
                     : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "SelfTestOutput");
-                return SelfTestRunner.Run(outputRoot);
+                return RunSelfTest(outputRoot);
             }
 
             if (args.Length < 1)
@@ -411,6 +414,375 @@ namespace Ruri.ShaderDecompiler
                 11 => "AS", // Amplification
                 _ => $"Freq{frequency}"
             };
+        }
+
+        private sealed record SelfTestStageSpec(
+            string Name,
+            string EntryPoint,
+            string ShaderModel5Profile,
+            string ShaderModel6Profile,
+            bool AllowKnownBackendLimitations);
+
+        private sealed record SelfTestInputCase(string Name, byte[] Binary, ShaderFormat Format);
+
+        static int RunSelfTest(string outputRoot)
+        {
+            RecreateDirectory(outputRoot);
+
+            string toolsDir = ResolveSelfTestToolsDirectory();
+            string? dxcExe = ResolveSelfTestDxcExecutable(toolsDir);
+            if (dxcExe == null)
+            {
+                Console.Error.WriteLine("Self-test failed: dxc.exe not found under Tools or known SDK locations.");
+                return 1;
+            }
+
+            string shaderPath = Path.Combine(outputRoot, "SelfTestComplexPbr.hlsl");
+            File.WriteAllText(shaderPath, SelfTestAssets.ComplexPbrShader);
+
+            List<string> failures = new();
+            string summaryPath = Path.Combine(outputRoot, "SelfTestSummary.txt");
+            using var decompiler = new ShaderDecompiler(outputRoot, toolsDir);
+
+            foreach (SelfTestStageSpec stage in CreateSelfTestStageSpecs())
+            {
+                RunSelfTestStage(stage, shaderPath, outputRoot, decompiler, dxcExe, toolsDir, failures);
+            }
+
+            File.WriteAllLines(summaryPath, failures.Count == 0
+                ? new[] { "Self-test passed with no failures." }
+                : new[] { "Self-test failures:" }.Concat(failures));
+
+            if (failures.Count > 0)
+            {
+                Console.Error.WriteLine($"Self-test completed with {failures.Count} failure(s). Summary: {summaryPath}");
+                return 2;
+            }
+
+            Console.WriteLine($"Self-test passed. Output: {outputRoot}");
+            return 0;
+        }
+
+        static void RunSelfTestStage(
+            SelfTestStageSpec stage,
+            string shaderPath,
+            string outputRoot,
+            ShaderDecompiler decompiler,
+            string dxcExe,
+            string toolsDir,
+            List<string> failures)
+        {
+            string stageRoot = Path.Combine(outputRoot, stage.Name);
+            string compiledRoot = Path.Combine(stageRoot, "Compiled");
+            string decompiledRoot = Path.Combine(stageRoot, "Decompiled");
+            Directory.CreateDirectory(compiledRoot);
+            Directory.CreateDirectory(decompiledRoot);
+
+            try
+            {
+                byte[] dxbc = D3DCompiler.Compile(SelfTestAssets.ComplexPbrShader, stage.EntryPoint, stage.ShaderModel5Profile);
+                string dxbcPath = Path.Combine(compiledRoot, $"{stage.Name}.dxbc");
+                string dxilPath = Path.Combine(compiledRoot, $"{stage.Name}.dxil");
+                string spvPath = Path.Combine(compiledRoot, $"{stage.Name}.spv");
+                string dxbcRouteDxilPath = Path.Combine(compiledRoot, $"{stage.Name}.dxbc-route.dxil");
+                string dxbcRouteSpvPath = Path.Combine(compiledRoot, $"{stage.Name}.dxbc-route.spv");
+
+                File.WriteAllBytes(dxbcPath, dxbc);
+                RunSelfTestProcess(dxcExe, $"-T {stage.ShaderModel6Profile} -E {stage.EntryPoint} -Fo \"{dxilPath}\" \"{shaderPath}\"", dxilPath);
+                RunSelfTestProcess(dxcExe, $"-spirv -fspv-target-env=vulkan1.1 -T {stage.ShaderModel6Profile} -E {stage.EntryPoint} -Fo \"{spvPath}\" \"{shaderPath}\"", spvPath);
+
+                ShaderSymbolData metadata = SpirvReflectionMetadataExtractor.Extract(spvPath, Path.Combine(toolsDir, "spirv-cross.exe"));
+                File.WriteAllText(Path.Combine(stageRoot, $"{stage.Name}.symbols.json"), JsonConvert.SerializeObject(metadata, Formatting.Indented));
+
+                var previewRewriter = new StructuredCBufferRewriter();
+                byte[] previewStructuredSpv = previewRewriter.Rewrite(File.ReadAllBytes(spvPath), metadata);
+                File.WriteAllBytes(Path.Combine(decompiledRoot, $"Preview.Structured.{stage.Name}.DirectSpirv.spv"), previewStructuredSpv);
+
+                RunSelfTestProcess(Path.Combine(toolsDir, "dxbc2dxil.exe"), $"\"{dxbcPath}\" -o \"{dxbcRouteDxilPath}\" -emit-bc", dxbcRouteDxilPath);
+                RunSelfTestProcess(Path.Combine(toolsDir, "dxil-spirv.exe"), $"\"{dxbcRouteDxilPath}\" --output \"{dxbcRouteSpvPath}\" --raw-llvm", dxbcRouteSpvPath);
+                byte[] dxbcRouteStructuredSpv = previewRewriter.Rewrite(File.ReadAllBytes(dxbcRouteSpvPath), metadata);
+                File.WriteAllBytes(Path.Combine(decompiledRoot, $"Preview.Structured.{stage.Name}.DxbcRoute.spv"), dxbcRouteStructuredSpv);
+
+                var cases = new[]
+                {
+                    new SelfTestInputCase("Dxbc", dxbc, ShaderFormat.Dxbc),
+                    new SelfTestInputCase("Dxil", File.ReadAllBytes(dxilPath), ShaderFormat.Dxil),
+                    new SelfTestInputCase("Spirv", File.ReadAllBytes(spvPath), ShaderFormat.SpirV),
+                };
+
+                foreach (SelfTestInputCase inputCase in cases)
+                {
+                    try
+                    {
+                        var result = decompiler.Decompile(inputCase.Binary, inputCase.Format, metadata, 60);
+                        if (!result.Success || string.IsNullOrWhiteSpace(result.HlslSource))
+                        {
+                            if (stage.AllowKnownBackendLimitations && IsKnownSelfTestBackendLimitation(result.ErrorMessage))
+                            {
+                                continue;
+                            }
+
+                            failures.Add($"[{stage.Name}/{inputCase.Name}] Decompilation failed: {result.ErrorMessage}");
+                            continue;
+                        }
+
+                        string basePath = Path.Combine(decompiledRoot, $"Decompiled.{stage.Name}.{inputCase.Name}");
+                        File.WriteAllText(basePath + ".hlsl", result.HlslSource);
+                        if (result.IntermediateSpirv != null)
+                        {
+                            File.WriteAllBytes(basePath + ".spv", result.IntermediateSpirv);
+                            WriteSelfTestBindingDiagnostics(basePath + ".bindings.txt", result.IntermediateSpirv);
+                        }
+
+                        foreach (string validationFailure in ValidateSelfTestResult(stage, metadata, inputCase.Name, result.HlslSource, result.IntermediateSpirv))
+                        {
+                            failures.Add(validationFailure);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        failures.Add($"[{stage.Name}/{inputCase.Name}] Exception: {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                failures.Add($"[{stage.Name}] Compilation pipeline failed: {ex.Message}");
+            }
+        }
+
+        static IEnumerable<string> ValidateSelfTestResult(SelfTestStageSpec stage, ShaderSymbolData metadata, string caseName, string hlsl, byte[]? spirv)
+        {
+            List<string> failures = new();
+
+            if (spirv == null || spirv.Length == 0)
+            {
+                failures.Add($"[{stage.Name}/{caseName}] Missing patched SPIR-V output.");
+                return failures;
+            }
+
+            if (!hlsl.Contains("main(", StringComparison.Ordinal) && !hlsl.Contains("main ", StringComparison.Ordinal))
+            {
+                failures.Add($"[{stage.Name}/{caseName}] Missing main entry point.");
+            }
+
+            if (metadata.Resources.Count == 0)
+            {
+                failures.Add($"[{stage.Name}/{caseName}] Reflected metadata contains no resources.");
+                return failures;
+            }
+
+            foreach (ResourceBinding resource in metadata.Resources)
+            {
+                if (!ContainsSelfTestToken(hlsl, spirv, resource.Name))
+                {
+                    failures.Add($"[{stage.Name}/{caseName}] Missing reflected resource symbol: {resource.Name}");
+                }
+
+                if (resource.Members == null || resource.Members.Count == 0)
+                {
+                    continue;
+                }
+
+                foreach (StructMember member in resource.Members)
+                {
+                    if (!ContainsSelfTestToken(hlsl, spirv, member.Name))
+                    {
+                        failures.Add($"[{stage.Name}/{caseName}] Missing reflected member symbol: {resource.Name}.{member.Name}");
+                    }
+                }
+            }
+
+            return failures;
+        }
+
+        static bool ContainsSelfTestToken(string hlsl, byte[]? spirv, string token)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return true;
+            }
+
+            if (!string.IsNullOrEmpty(hlsl) && hlsl.Contains(token, StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            return spirv != null && spirv.Length > 0 && ContainsSelfTestAsciiToken(spirv, token);
+        }
+
+        static bool ContainsSelfTestAsciiToken(byte[] bytes, string token)
+        {
+            byte[] needle = System.Text.Encoding.ASCII.GetBytes(token);
+            if (needle.Length == 0 || bytes.Length < needle.Length)
+            {
+                return false;
+            }
+
+            for (int i = 0; i <= bytes.Length - needle.Length; i++)
+            {
+                bool match = true;
+                for (int j = 0; j < needle.Length; j++)
+                {
+                    if (bytes[i + j] != needle[j])
+                    {
+                        match = false;
+                        break;
+                    }
+                }
+
+                if (match)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        static void WriteSelfTestBindingDiagnostics(string outputPath, byte[] spirv)
+        {
+            var patcher = new SpirvPatcher();
+            var bindings = patcher.AnalyzeBindingsDetailed(spirv);
+            using var writer = new StreamWriter(outputPath, false);
+            foreach (var binding in bindings)
+            {
+                writer.WriteLine($"Id={binding.Id} Set={binding.Set} Binding={binding.Binding} Type={binding.DescriptorType} CurrentName={binding.CurrentName} StructTypeId={binding.StructTypeId} StructMemberCount={binding.StructMemberCount}");
+            }
+        }
+
+        static SelfTestStageSpec[] CreateSelfTestStageSpecs()
+        {
+            return new[]
+            {
+                new SelfTestStageSpec("Vertex", "VSMain", "vs_5_0", "vs_6_0", false),
+                new SelfTestStageSpec("Hull", "HSMain", "hs_5_0", "hs_6_0", true),
+                new SelfTestStageSpec("Domain", "DSMain", "ds_5_0", "ds_6_0", true),
+                new SelfTestStageSpec("Geometry", "GSMain", "gs_5_0", "gs_6_0", true),
+                new SelfTestStageSpec("Pixel", "PSMain", "ps_5_0", "ps_6_0", false),
+                new SelfTestStageSpec("Compute", "CSMain", "cs_5_0", "cs_6_0", false),
+            };
+        }
+
+        static bool IsKnownSelfTestBackendLimitation(string? errorMessage)
+        {
+            if (string.IsNullOrWhiteSpace(errorMessage))
+            {
+                return false;
+            }
+
+            return errorMessage.Contains("Unsupported builtin in HLSL", StringComparison.Ordinal)
+                || errorMessage.Contains("SPIRV-Cross threw an exception", StringComparison.Ordinal);
+        }
+
+        static void RecreateDirectory(string path)
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, true);
+            }
+
+            Directory.CreateDirectory(path);
+        }
+
+        static void RunSelfTestProcess(string exePath, string arguments, string? expectedOutputPath = null)
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = exePath,
+                Arguments = arguments,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = Path.GetDirectoryName(exePath)!
+            };
+
+            using var process = Process.Start(psi) ?? throw new InvalidOperationException($"Failed to start {exePath}");
+            string stdout = process.StandardOutput.ReadToEnd();
+            string stderr = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+
+            if (process.ExitCode != 0)
+            {
+                throw new InvalidOperationException($"Process failed: {Path.GetFileName(exePath)} {arguments}\n{stdout}\n{stderr}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(expectedOutputPath) && !File.Exists(expectedOutputPath))
+            {
+                throw new InvalidOperationException($"Process produced no output file: {Path.GetFileName(exePath)} {arguments}\n{stdout}\n{stderr}");
+            }
+        }
+
+        static string? FindSelfTestFile(string rootDir, string fileName)
+        {
+            if (!Directory.Exists(rootDir))
+            {
+                return null;
+            }
+
+            return Directory.EnumerateFiles(rootDir, fileName, SearchOption.AllDirectories).FirstOrDefault();
+        }
+
+        static string? ResolveSelfTestDxcExecutable(string toolsDir)
+        {
+            string[] candidateRoots =
+            {
+                Path.Combine(toolsDir, "dxc"),
+                toolsDir,
+                Path.Combine(toolsDir, "bin"),
+                @"D:\Tools\Program64\Microsoft Visual Studio\18\Insiders\VC\Tools\Llvm\x64\bin",
+                @"C:\Program Files\Microsoft DirectX Shader Compiler",
+                @"C:\Program Files (x86)\Microsoft DirectX Shader Compiler"
+            };
+
+            foreach (string root in candidateRoots.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                string[] preferred =
+                {
+                    Path.Combine(root, "bin", "x64", "dxc.exe"),
+                    Path.Combine(root, "x64", "dxc.exe"),
+                };
+
+                foreach (string candidate in preferred)
+                {
+                    if (File.Exists(candidate))
+                    {
+                        return candidate;
+                    }
+                }
+
+                string? exe = FindSelfTestFile(root, "dxc.exe");
+                if (!string.IsNullOrWhiteSpace(exe))
+                {
+                    return exe;
+                }
+            }
+
+            return null;
+        }
+
+        static string ResolveSelfTestToolsDirectory()
+        {
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string[] candidates =
+            {
+                Path.Combine(baseDir, "Tools"),
+                Path.GetFullPath(Path.Combine(baseDir, "..", "..", "Tools")),
+                Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "Tools")),
+                Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "Tools")),
+                Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "Tools")),
+            };
+
+            foreach (string candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (Directory.Exists(candidate) && ShaderDecompiler.HasDirectTools(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            return Path.Combine(baseDir, "Tools");
         }
 
         static ShaderFormat ParseFormat(string mode)

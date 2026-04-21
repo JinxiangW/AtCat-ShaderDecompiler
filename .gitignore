@@ -18,4 +18,4 @@ Source/Ruri.RipperHook/PyTools/TypeTreeDump
 Source/Ruri.RipperHook/PyTools/TypeTreeOutput
 Source/Ruri.SourceGenerated/*
 !Source/Ruri.SourceGenerated/Ruri.SourceGenerated.csproj
-SelfTestOutput/Decompiled
+SelfTestOutput/
