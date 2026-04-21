@@ -161,17 +161,17 @@ namespace Ruri.ShaderDecompiler
                 var lib = UnrealShaderLibraryReader.Read(inputPath);
                 Console.WriteLine($"Read Library: {lib.Version} Version, {lib.ShaderEntries.Length} shaders.");
 
-                // 2. Auto-Detect Mapping if not provided
+                // 2. Auto-detect unified metadata if not provided.
                 if (string.IsNullOrEmpty(mappingPath))
                 {
                     var dir = Path.GetDirectoryName(inputPath);
                     while (dir != null)
                     {
-                        var candidate = Path.Combine(dir, "ShaderMappings.json");
+                        var candidate = Path.Combine(dir, "UnifiedShaderMetadata.json");
                         if (File.Exists(candidate))
                         {
                             mappingPath = candidate;
-                            Console.WriteLine($"[Auto-Detect] Found mapping file: {mappingPath}");
+                            Console.WriteLine($"[Auto-Detect] Found unified metadata file: {mappingPath}");
                             break;
                         }
                         var parent = Directory.GetParent(dir);
@@ -180,77 +180,63 @@ namespace Ruri.ShaderDecompiler
                     }
                 }
 
-                // 3. Load Shader Mappings (JSON)
+                Console.WriteLine($"Mapping path: {(mappingPath ?? "<null>")}");
+                if (!string.IsNullOrEmpty(mappingPath))
+                {
+                    Console.WriteLine($"Mapping exists: {File.Exists(mappingPath)}");
+                }
+
+                // 3. Load unified UE metadata.
+                UnifiedShaderMetadataResolver? unifiedResolver = null;
                 if (!string.IsNullOrEmpty(mappingPath) && File.Exists(mappingPath))
                 {
-                     try
-                     {
-                         Console.WriteLine($"Loading mapping from {mappingPath}...");
-                         var json = File.ReadAllText(mappingPath);
-                         var mapping = JsonConvert.DeserializeObject<Dictionary<string, List<string>>>(json);
-                         
-                         var hashToMats = new Dictionary<string, HashSet<string>>();
-                         if(mapping != null)
-                         {
-                             foreach(var kvp in mapping)
-                             {
-                                 foreach(var hash in kvp.Value)
-                                 {
-                                     if (!hashToMats.ContainsKey(hash)) hashToMats[hash] = new HashSet<string>();
-                                     // Store FULL path for precise mapping
-                                     hashToMats[hash].Add(kvp.Key);
-                                 }
-                             }
-                             
-                             Console.WriteLine($"Loaded {mapping.Count} material mappings.");
+                    try
+                    {
+                        Console.WriteLine($"Loading unified metadata from {mappingPath}...");
+                        unifiedResolver = UnifiedShaderMetadataResolver.LoadFromFile(mappingPath);
+                        if (unifiedResolver != null)
+                        {
+                            var hashToMats = unifiedResolver.BuildHashToMaterialsMap(normalizedMaterialFilter);
+                            Console.WriteLine($"Loaded {hashToMats.Count} shader map hash entries.");
 
-                             int mapCount = Math.Min(lib.ShaderMapEntries.Length, lib.ShaderMapHashes.Count); 
-                             int mappedShaders = 0;
+                            int mapCount = Math.Min(lib.ShaderMapEntries.Length, lib.ShaderMapHashes.Count);
+                            int mappedShaders = 0;
 
-                             for(int i=0; i<mapCount; i++)
-                             {
-                                 var hash = lib.ShaderMapHashes[i];
-                                 if (hashToMats.TryGetValue(hash, out var mats))
-                                 {
-                                     if (normalizedMaterialFilter != null &&
-                                         !mats.Any(m => string.Equals(m, normalizedMaterialFilter, StringComparison.OrdinalIgnoreCase) ||
-                                                        m.EndsWith(normalizedMaterialFilter, StringComparison.OrdinalIgnoreCase)))
-                                     {
-                                         continue;
-                                     }
+                            for (int i = 0; i < mapCount; i++)
+                            {
+                                var hash = lib.ShaderMapHashes[i];
+                                if (!hashToMats.TryGetValue(hash, out var mats))
+                                {
+                                    continue;
+                                }
 
-                                     var entry = lib.ShaderMapEntries[i];
-                                     // "Use first material name" rule from user
-                                     // NOTE: We must extract simple name for file naming, but keep full path in usedBy for mapper
-                                     string fullMaterialPath = mats.FirstOrDefault() ?? "Unknown";
-                                     var niceName = Path.GetFileNameWithoutExtension(fullMaterialPath);
-                                     if (string.IsNullOrEmpty(niceName)) niceName = "UnknownMaterial"; 
-                                     
-                                     for(uint k=0; k<entry.NumShaders; k++)
-                                     {
-                                         long idxInternal = entry.ShaderIndicesOffset + k;
-                                         if(idxInternal < lib.ShaderIndices.Length)
-                                         {
-                                             uint sIdx = lib.ShaderIndices[idxInternal];
-                                             
-                                             // Update Usage Map
-                                             if (!usageMap.ContainsKey((int)sIdx)) usageMap[(int)sIdx] = new HashSet<string>();
-                                             foreach (var m in mats) usageMap[(int)sIdx].Add(m);
-                                             
-                                             // Update Name Map (First wins)
-                                             if(!nameMap.ContainsKey((int)sIdx))
-                                             {
-                                                 nameMap[(int)sIdx] = niceName;
-                                                 mappedShaders++;
-                                             }
-                                         }
-                                     }
-                                 }
-                             }
-                             Console.WriteLine($"Mapped {mappedShaders} shaders using JSON mapping.");
-                         }
-                     }
-                     catch(Exception ex) { Console.WriteLine($"[Warning] JSON Mapping failed: {ex.Message}"); }
+                                var entry = lib.ShaderMapEntries[i];
+                                string fullMaterialPath = mats.FirstOrDefault() ?? "Unknown";
+                                var niceName = Path.GetFileNameWithoutExtension(fullMaterialPath);
+                                if (string.IsNullOrEmpty(niceName)) niceName = "UnknownMaterial";
+
+                                for (uint k = 0; k < entry.NumShaders; k++)
+                                {
+                                    long idxInternal = entry.ShaderIndicesOffset + k;
+                                    if (idxInternal < lib.ShaderIndices.Length)
+                                    {
+                                        uint sIdx = lib.ShaderIndices[idxInternal];
+                                        if (!usageMap.ContainsKey((int)sIdx)) usageMap[(int)sIdx] = new HashSet<string>();
+                                        foreach (var m in mats) usageMap[(int)sIdx].Add(m);
+
+                                        if (!nameMap.ContainsKey((int)sIdx))
+                                        {
+                                            nameMap[(int)sIdx] = niceName;
+                                            mappedShaders++;
+                                        }
+                                    }
+                                }
+                            }
+
+                            Console.WriteLine($"Mapped {mappedShaders} shaders using unified metadata.");
+                        }
+                    }
+                    catch (Exception ex) { Console.WriteLine($"[Warning] Unified metadata load failed: {ex.Message}"); }
                 }
 
                 // 4. Load runtime UE material metadata resolver.
@@ -260,7 +246,7 @@ namespace Ruri.ShaderDecompiler
                     string exportRoot = Path.GetDirectoryName(mappingPath)!;
                     if (Directory.Exists(exportRoot))
                     {
-                        materialSymbolExtractor = new UeMaterialJsonSymbolExtractor(exportRoot);
+                        materialSymbolExtractor = new UeMaterialJsonSymbolExtractor(exportRoot, unifiedResolver);
                     }
                 }
 
@@ -319,14 +305,40 @@ namespace Ruri.ShaderDecompiler
                                  sb.AppendLine($" * Used by {usedBy.Count} Materials:");
                                  
                                  // Try to find a material with runtime metadata
-                                 UeMaterialSymbolInfo? bestMaterialInfo = null;
-                                  string bestMaterialName = "";
+                                  UeMaterialSymbolInfo? bestMaterialInfo = null;
+                                   string bestMaterialName = "";
+                                  string? shaderMapHashForShader = null;
+
+                                  foreach (var shaderMapEntry in lib.ShaderMapEntries.Select((value, index) => (value, index)))
+                                  {
+                                      uint start = shaderMapEntry.value.ShaderIndicesOffset;
+                                      uint count = shaderMapEntry.value.NumShaders;
+                                      for (uint mapShaderIndex = 0; mapShaderIndex < count; mapShaderIndex++)
+                                      {
+                                          long shaderIndexTableOffset = start + mapShaderIndex;
+                                          if (shaderIndexTableOffset >= lib.ShaderIndices.Length)
+                                          {
+                                              break;
+                                          }
+
+                                          if (lib.ShaderIndices[shaderIndexTableOffset] == i && shaderMapEntry.index < lib.ShaderMapHashes.Count)
+                                          {
+                                              shaderMapHashForShader = lib.ShaderMapHashes[shaderMapEntry.index];
+                                              break;
+                                          }
+                                      }
+
+                                      if (shaderMapHashForShader != null)
+                                      {
+                                          break;
+                                      }
+                                  }
 
                                   foreach(var m in usedBy) 
                                   {
                                       if (bestMaterialInfo == null && materialSymbolExtractor != null)
                                       {
-                                          bestMaterialInfo = materialSymbolExtractor.GetMaterial(m);
+                                          bestMaterialInfo = materialSymbolExtractor.GetMaterial(m, shaderMapHashForShader);
                                           if (bestMaterialInfo != null) 
                                           {
                                               bestMaterialName = m;

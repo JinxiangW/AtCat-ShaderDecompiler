@@ -11,21 +11,23 @@ internal sealed class UeMaterialJsonSymbolExtractor
 {
     private readonly string _exportRoot;
     private readonly string _exportRootName;
+    private readonly UnifiedShaderMetadataResolver? _contextResolver;
     private readonly Dictionary<string, UeMaterialSymbolInfo?> _cache = new(StringComparer.OrdinalIgnoreCase);
 
-    public UeMaterialJsonSymbolExtractor(string exportRoot)
+    public UeMaterialJsonSymbolExtractor(string exportRoot, UnifiedShaderMetadataResolver? contextResolver = null)
     {
         _exportRoot = exportRoot;
         _exportRootName = Path.GetFileName(exportRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        _contextResolver = contextResolver;
     }
 
-    public UeMaterialSymbolInfo? GetBestMaterial(IEnumerable<string> materialPaths)
+    public UeMaterialSymbolInfo? GetBestMaterial(IEnumerable<string> materialPaths, string? shaderMapHash = null)
     {
         UeMaterialSymbolInfo? best = null;
 
         foreach (string materialPath in materialPaths)
         {
-            UeMaterialSymbolInfo? candidate = GetMaterial(materialPath);
+            UeMaterialSymbolInfo? candidate = GetMaterial(materialPath, shaderMapHash);
             if (candidate == null)
             {
                 continue;
@@ -40,10 +42,13 @@ internal sealed class UeMaterialJsonSymbolExtractor
         return best;
     }
 
-    public UeMaterialSymbolInfo? GetMaterial(string materialPath)
+    public UeMaterialSymbolInfo? GetMaterial(string materialPath, string? shaderMapHash = null)
     {
         string normalizedPath = materialPath.Replace('\\', '/');
-        if (_cache.TryGetValue(normalizedPath, out UeMaterialSymbolInfo? cached))
+        string cacheKey = string.IsNullOrWhiteSpace(shaderMapHash)
+            ? normalizedPath
+            : normalizedPath + "|" + shaderMapHash;
+        if (_cache.TryGetValue(cacheKey, out UeMaterialSymbolInfo? cached))
         {
             return cached;
         }
@@ -51,7 +56,7 @@ internal sealed class UeMaterialJsonSymbolExtractor
         string? jsonPath = ResolveMaterialJsonPath(normalizedPath);
         if (jsonPath == null || !File.Exists(jsonPath))
         {
-            _cache[normalizedPath] = null;
+            _cache[cacheKey] = null;
             return null;
         }
 
@@ -66,13 +71,13 @@ internal sealed class UeMaterialJsonSymbolExtractor
             }
 
             JsonElement asset = root[0];
-            UeMaterialSymbolInfo info = BuildSymbolInfo(normalizedPath, asset);
-            _cache[normalizedPath] = info;
+            UeMaterialSymbolInfo info = BuildSymbolInfo(normalizedPath, asset, shaderMapHash);
+            _cache[cacheKey] = info;
             return info;
         }
         catch
         {
-            _cache[normalizedPath] = null;
+            _cache[cacheKey] = null;
             return null;
         }
     }
@@ -107,7 +112,7 @@ internal sealed class UeMaterialJsonSymbolExtractor
         return null;
     }
 
-    private static UeMaterialSymbolInfo BuildSymbolInfo(string materialPath, JsonElement asset)
+    private UeMaterialSymbolInfo BuildSymbolInfo(string materialPath, JsonElement asset, string? shaderMapHash)
     {
         var metadata = new ShaderSymbolData
         {
@@ -117,10 +122,11 @@ internal sealed class UeMaterialJsonSymbolExtractor
         List<string> numericNames = new();
         List<string> textureNames = new();
         bool usedLoadedResources = false;
+        UnifiedShaderMapEntry? targetShaderMap = _contextResolver?.FindShaderMap(materialPath, shaderMapHash);
 
         if (asset.TryGetProperty("LoadedMaterialResources", out JsonElement loadedResources) &&
             loadedResources.ValueKind == JsonValueKind.Array &&
-            TryExtractFromLoadedMaterialResources(metadata, loadedResources, numericNames, textureNames))
+            TryExtractFromLoadedMaterialResources(metadata, loadedResources, numericNames, textureNames, targetShaderMap))
         {
             usedLoadedResources = true;
         }
@@ -146,12 +152,22 @@ internal sealed class UeMaterialJsonSymbolExtractor
         ShaderSymbolData metadata,
         JsonElement loadedResources,
         List<string> numericNames,
-        List<string> textureNames)
+        List<string> textureNames,
+        UnifiedShaderMapEntry? targetShaderMap)
     {
         bool foundAny = false;
 
         foreach (JsonElement resource in loadedResources.EnumerateArray())
         {
+            if (targetShaderMap != null)
+            {
+                string? candidateHash = ReadNestedString(resource, "LoadedShaderMap", "ShaderMapId", "CookedShaderMapIdHash", "Hash");
+                if (!string.Equals(candidateHash, targetShaderMap.ShaderMapIdHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+            }
+
             if (!resource.TryGetProperty("LoadedShaderMap", out JsonElement loadedShaderMap) ||
                 !loadedShaderMap.TryGetProperty("Content", out JsonElement content) ||
                 !content.TryGetProperty("MaterialCompilationOutput", out JsonElement compilationOutput) ||
@@ -368,6 +384,20 @@ internal sealed class UeMaterialJsonSymbolExtractor
         }
 
         return ReadString(nested, valueProperty);
+    }
+
+    private static string? ReadNestedString(JsonElement element, params string[] path)
+    {
+        JsonElement current = element;
+        foreach (string segment in path)
+        {
+            if (!current.TryGetProperty(segment, out current))
+            {
+                return null;
+            }
+        }
+
+        return current.ValueKind == JsonValueKind.String ? current.GetString() : null;
     }
 
     private static string? ReadString(JsonElement element, string propertyName)
