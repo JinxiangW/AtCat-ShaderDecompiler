@@ -39,6 +39,7 @@ public class DecompileResult
 public sealed class ShaderDecompiler : IDisposable
 {
     private const int DefaultPerStepTimeoutMs = 30000;
+    private const bool EnablePatchDiagnostics = true;
     private readonly SpirvPatcher _patcher = new();
     private readonly StructuredCBufferRewriter _structuredCBufferRewriter = new();
     private readonly string _baseDir;
@@ -103,6 +104,24 @@ public sealed class ShaderDecompiler : IDisposable
             }
 
             ShaderSymbolData finalMetadata = MergeMetadata(bundle.Symbols, metadata);
+
+            if (EnablePatchDiagnostics)
+            {
+                try
+                {
+                    string metadataLogPath = Path.Combine(TempDir, "FinalMetadata.diagnostics.txt");
+                    var lines = new List<string>
+                    {
+                        $"=== FinalMetadata DebugName={finalMetadata.DebugName} EntryPoint={finalMetadata.EntryPoint} ==="
+                    };
+                    lines.AddRange(finalMetadata.Resources.Select(r => $"{r.Name} reg={r.RegisterType} set={r.Set} binding={r.Binding} type={r.Type} members={r.Members?.Count ?? 0}"));
+                    lines.Add(string.Empty);
+                    File.AppendAllLines(metadataLogPath, lines);
+                }
+                catch
+                {
+                }
+            }
 
             byte[] spirv = format switch
             {
@@ -190,7 +209,10 @@ public sealed class ShaderDecompiler : IDisposable
 
         foreach (var resource in explicitMetadata.Resources)
         {
-            merged.Resources.RemoveAll(r => r.Set == resource.Set && r.Binding == resource.Binding && NormalizeResourceType(r.Type) == NormalizeResourceType(resource.Type));
+            merged.Resources.RemoveAll(r =>
+                r.Set == resource.Set &&
+                r.Binding == resource.Binding &&
+                r.RegisterType == resource.RegisterType);
             merged.Resources.Add(CloneResource(resource));
         }
 
@@ -364,6 +386,7 @@ public sealed class ShaderDecompiler : IDisposable
         var detailedBindings = _patcher.AnalyzeBindingsDetailed(spirv);
         var patches = new List<(uint Id, string Name)>();
         var memberPatches = new List<(uint TypeId, uint MemberIndex, string Name)>();
+        var diagnostics = new List<string>();
 
         foreach (var resource in metadata.Resources)
         {
@@ -373,31 +396,105 @@ public sealed class ShaderDecompiler : IDisposable
             }
 
             var matches = detailedBindings.Where(b => b.Set == resource.Set && b.Binding == resource.Binding).ToList();
+            if (EnablePatchDiagnostics)
+            {
+                diagnostics.Add($"resource {resource.Name} reg={resource.RegisterType} set={resource.Set} binding={resource.Binding} matches={string.Join(",", matches.Select(m => $"{m.DescriptorType}:{m.CurrentName}:id={m.Id}:struct={m.StructTypeId}"))}");
+            }
+
             foreach (var match in matches)
             {
                 if (!IsMetadataResourceMatch(resource, match.DescriptorType))
                 {
+                    if (EnablePatchDiagnostics)
+                    {
+                        diagnostics.Add($"skip {resource.Name} -> {match.DescriptorType}/{match.CurrentName}");
+                    }
                     continue;
                 }
 
                 if (match.DescriptorType == "UniformBuffer" && match.StructTypeId.HasValue && match.StructTypeId.Value != 0)
                 {
+                    patches.Add((match.StructTypeId.Value, resource.Name));
+                    patches.Add((match.Id, resource.Name));
+                    if (EnablePatchDiagnostics)
+                    {
+                        diagnostics.Add($"patch UBO {resource.Name} variableId={match.Id} structId={match.StructTypeId.Value}");
+                    }
+
                     if (resource.Members != null)
                     {
-                        foreach (var member in resource.Members.Where(m => !string.IsNullOrWhiteSpace(m.Name) && m.Index >= 0 && m.Index < match.StructMemberCount))
+                        bool isCompressedMatrixBuffer =
+                            match.StructMemberCount == 1 &&
+                            resource.Members.Count > 0 &&
+                            resource.Members.All(m => m.IsMatrix && m.Rows == 4 && m.Columns == 4);
+
+                        if (isCompressedMatrixBuffer)
                         {
-                            memberPatches.Add((match.StructTypeId.Value, (uint)member.Index, member.Name));
+                            string combinedName = string.Join("_", resource.Members.Select(m => m.Name));
+                            memberPatches.Add((match.StructTypeId.Value, 0, combinedName));
+                            continue;
+                        }
+
+                        bool patchedAnyMember = false;
+                        foreach (var member in resource.Members.Where(m => !string.IsNullOrWhiteSpace(m.Name)))
+                        {
+                            int? targetIndex = null;
+
+                            if (member.ByteOffset >= 0 && match.MemberOffsets.Count > 0)
+                            {
+                                foreach (var offsetKvp in match.MemberOffsets)
+                                {
+                                    if (offsetKvp.Value == (uint)member.ByteOffset)
+                                    {
+                                        targetIndex = offsetKvp.Key;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (!targetIndex.HasValue && member.Index >= 0 && member.Index < match.StructMemberCount)
+                            {
+                                targetIndex = member.Index;
+                            }
+
+                            if (targetIndex.HasValue)
+                            {
+                                memberPatches.Add((match.StructTypeId.Value, (uint)targetIndex.Value, member.Name));
+                                patchedAnyMember = true;
+                            }
                         }
                     }
                 }
 
                 patches.Add((match.Id, resource.Name));
+                if (EnablePatchDiagnostics)
+                {
+                    diagnostics.Add($"patch resource {resource.Name} variableId={match.Id}");
+                }
             }
         }
 
         if (patches.Count == 0 && memberPatches.Count == 0)
         {
             return spirv;
+        }
+
+        if (EnablePatchDiagnostics)
+        {
+            try
+            {
+                string diagnosticsPath = Path.Combine(TempDir, "PatchSpirvSymbols.diagnostics.txt");
+                var lines = new List<string>
+                {
+                    $"=== PatchSpirvSymbols DebugName={metadata.DebugName} EntryPoint={metadata.EntryPoint} ==="
+                };
+                lines.AddRange(diagnostics);
+                lines.Add(string.Empty);
+                File.AppendAllLines(diagnosticsPath, lines);
+            }
+            catch
+            {
+            }
         }
 
         return _patcher.PatchByIds(spirv, patches, memberPatches);
