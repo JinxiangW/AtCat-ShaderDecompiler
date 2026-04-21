@@ -235,8 +235,14 @@ internal sealed class StructuredCBufferRewriter
                 case SpvOpCode.OpTypeFloat when instruction.Words.Length >= 3 && instruction[2] == 32:
                     info.FloatTypeId = instruction[1];
                     break;
+                case SpvOpCode.OpTypeInt when instruction.Words.Length >= 4 && instruction[2] == 32 && instruction[3] == 0:
+                    info.UIntTypeId = instruction[1];
+                    break;
                 case SpvOpCode.OpTypeVector when instruction.Words.Length >= 4 && instruction[2] == info.FloatTypeId && instruction[3] == 4:
                     info.Float4TypeId = instruction[1];
+                    break;
+                case SpvOpCode.OpTypeVector when instruction.Words.Length >= 4 && instruction[2] == info.UIntTypeId && instruction[3] == 2:
+                    info.UInt2TypeId = instruction[1];
                     break;
                 case SpvOpCode.OpTypeMatrix when instruction.Words.Length >= 4 && instruction[2] == info.Float4TypeId && instruction[3] == 4:
                     info.Float4x4TypeId = instruction[1];
@@ -278,6 +284,8 @@ internal sealed class StructuredCBufferRewriter
         {
             "float4" => types.Float4TypeId,
             "float4x4" => mat4TypeId,
+            "uint" => types.UIntTypeId,
+            "uint2" => types.UInt2TypeId,
             _ => 0
         };
     }
@@ -581,6 +589,8 @@ internal sealed class StructuredCBufferRewriter
         public uint FloatTypeId { get; set; }
         public uint Float4TypeId { get; set; }
         public uint Float4x4TypeId { get; set; }
+        public uint UIntTypeId { get; set; }
+        public uint UInt2TypeId { get; set; }
     }
 
     private sealed class BufferRewritePlan

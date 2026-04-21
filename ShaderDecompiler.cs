@@ -737,7 +737,7 @@ public sealed class ShaderDecompiler : IDisposable
             "UniformBuffer" => normalized == ShaderResourceType.ConstantBuffer,
             "StorageBuffer" => normalized == ShaderResourceType.StorageBuffer || normalized == ShaderResourceType.RWBuffer || normalized == ShaderResourceType.StructuredBuffer || normalized == ShaderResourceType.UAV,
             "Sampler" => normalized == ShaderResourceType.Sampler,
-            "SampledImage" => normalized == ShaderResourceType.Texture,
+            "SampledImage" => normalized == ShaderResourceType.Texture || normalized == ShaderResourceType.UAV || normalized == ShaderResourceType.RWBuffer || normalized == ShaderResourceType.StructuredBuffer || normalized == ShaderResourceType.StorageBuffer,
             "StorageImage" => normalized == ShaderResourceType.UAV || normalized == ShaderResourceType.StorageImage,
             _ => true
         };
