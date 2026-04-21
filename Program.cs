@@ -35,7 +35,6 @@ namespace Ruri.ShaderDecompiler
             string mode = args.Length > 1 && !args[1].StartsWith("--", StringComparison.Ordinal) ? args[1] : "";
             string? outputPath = args.Length > 2 && !args[2].StartsWith("--", StringComparison.Ordinal) ? args[2] : null;
             bool keepTemps = false;
-            string? scanAssetsPath = null;
             string? mappingPath = null;
             string? symbolsPath = null;
             string? materialFilter = null;
@@ -49,11 +48,6 @@ namespace Ruri.ShaderDecompiler
                 }
 
                 if (args[i] == "--keep-temps") keepTemps = true;
-                else if (args[i] == "--scan-assets" && i + 1 < args.Length)
-                {
-                    scanAssetsPath = args[i + 1];
-                    i++; // Skip next arg
-                }
                 else if (args[i] == "--mapping" && i + 1 < args.Length)
                 {
                     mappingPath = args[i + 1];
@@ -69,13 +63,6 @@ namespace Ruri.ShaderDecompiler
                     materialFilter = args[i + 1];
                     i++;
                 }
-                else if (args[i] == "--restore-symbols" && i + 2 < args.Length)
-                {
-                    string matDir = args[i+1];
-                    string arcDir = args[i+2];
-                    nameMap = ShaderBindingExtractor.ScanAndRestore(matDir, arcDir);
-                    i += 2;
-                }
             }
 
             if (!File.Exists(inputPath))
@@ -87,7 +74,7 @@ namespace Ruri.ShaderDecompiler
             // Handle .ushaderlib
             if (inputPath.EndsWith(".ushaderlib", StringComparison.OrdinalIgnoreCase))
             {
-                return ProcessUnrealLibrary(inputPath, outputPath, keepTemps, scanAssetsPath, mappingPath, nameMap, materialFilter);
+                return ProcessUnrealLibrary(inputPath, outputPath, keepTemps, mappingPath, nameMap, materialFilter);
             }
 
             // Legacy single file mode logic
@@ -130,36 +117,70 @@ namespace Ruri.ShaderDecompiler
             }
         }
 
-        static int ProcessUnrealLibrary(string inputPath, string? outputPath, bool keepTemps, string? scanAssetsPath, string? mappingPath, Dictionary<int, string>? nameMapInput = null, string? materialFilter = null)
+        static int ProcessUnrealLibrary(string inputPath, string? outputPath, bool keepTemps, string? mappingPath, Dictionary<int, string>? nameMapInput = null, string? materialFilter = null)
         {
             try 
             {
                 var nameMap = nameMapInput ?? new Dictionary<int, string>();
                 var usageMap = new Dictionary<int, HashSet<string>>();
+                ShaderLibraryTruthSidecarResolver sidecarResolver = ShaderLibraryTruthSidecarResolver.Load(inputPath);
                 string? normalizedMaterialFilter = string.IsNullOrWhiteSpace(materialFilter)
                     ? null
                     : materialFilter.Replace('\\', '/');
 
-                // 1. Scan Assets (Legacy)
-                if (!string.IsNullOrEmpty(scanAssetsPath))
+                var lib = UnrealShaderLibraryReader.Read(inputPath);
+                Console.WriteLine($"Read Library: {lib.Version} Version, {lib.ShaderEntries.Length} shaders.");
+
+                for (int shaderMapIndex = 0; shaderMapIndex < Math.Min(lib.ShaderMapEntries.Length, lib.ShaderMapHashes.Count); shaderMapIndex++)
                 {
-                    try
+                    IReadOnlyCollection<string> provenAssets = sidecarResolver.GetAssetsForShaderMap(lib.ShaderMapHashes[shaderMapIndex]);
+                    if (provenAssets.Count == 0)
                     {
-                        var manager = new MaterialShaderManager();
-                        manager.ScanMaterials(scanAssetsPath);
-                        foreach (var kv in manager.ShaderIndexToNameMap)
-                        {
-                            nameMap[kv.Key] = kv.Value;
-                        }
+                        continue;
                     }
-                    catch(Exception ex)
+
+                    UnrealShaderLibraryReader.FShaderMapEntry shaderMapEntry = lib.ShaderMapEntries[shaderMapIndex];
+                    foreach (string asset in provenAssets)
                     {
-                         Console.WriteLine($"[Warning] Material scan failed: {ex.Message}");
+                        for (uint k = 0; k < shaderMapEntry.NumShaders; k++)
+                        {
+                            long idxInternal = shaderMapEntry.ShaderIndicesOffset + k;
+                            if (idxInternal < 0 || idxInternal >= lib.ShaderIndices.Length)
+                            {
+                                continue;
+                            }
+
+                            int shaderIndex = (int)lib.ShaderIndices[idxInternal];
+                            if (!usageMap.TryGetValue(shaderIndex, out HashSet<string>? materials))
+                            {
+                                materials = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                                usageMap[shaderIndex] = materials;
+                            }
+
+                            materials.Add(asset);
+                        }
                     }
                 }
 
-                var lib = UnrealShaderLibraryReader.Read(inputPath);
-                Console.WriteLine($"Read Library: {lib.Version} Version, {lib.ShaderEntries.Length} shaders.");
+                for (int shaderIndex = 0; shaderIndex < lib.ShaderHashes.Count && shaderIndex < lib.ShaderEntries.Length; shaderIndex++)
+                {
+                    IReadOnlyCollection<string> provenAssets = sidecarResolver.GetAssetsForShaderHash(lib.ShaderHashes[shaderIndex], lib.ShaderEntries[shaderIndex].Frequency);
+                    if (provenAssets.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    if (!usageMap.TryGetValue(shaderIndex, out HashSet<string>? materials))
+                    {
+                        materials = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        usageMap[shaderIndex] = materials;
+                    }
+
+                    foreach (string asset in provenAssets)
+                    {
+                        materials.Add(asset);
+                    }
+                }
 
                 // 2. Auto-detect unified metadata if not provided.
                 if (string.IsNullOrEmpty(mappingPath))
@@ -221,7 +242,7 @@ namespace Ruri.ShaderDecompiler
                                     if (idxInternal < lib.ShaderIndices.Length)
                                     {
                                         uint sIdx = lib.ShaderIndices[idxInternal];
-                                        if (!usageMap.ContainsKey((int)sIdx)) usageMap[(int)sIdx] = new HashSet<string>();
+                                        if (!usageMap.ContainsKey((int)sIdx)) usageMap[(int)sIdx] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                                         foreach (var m in mats) usageMap[(int)sIdx].Add(m);
 
                                         if (!nameMap.ContainsKey((int)sIdx))

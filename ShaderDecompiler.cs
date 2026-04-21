@@ -235,6 +235,24 @@ public sealed class ShaderDecompiler : IDisposable
         return data;
     }
 
+    private static int? FindMemberIndexByMetadata(SpirvBindingInfo match, int byteOffset)
+    {
+        if (byteOffset >= 0 && match.MemberOffsets.Count > 0)
+        {
+            foreach (var offsetKvp in match.MemberOffsets)
+            {
+                if (offsetKvp.Value == (uint)byteOffset)
+                {
+                    return offsetKvp.Key;
+                }
+            }
+
+            return null;
+        }
+
+        return null;
+    }
+
     private byte[] ConvertDxbcToSpirv(byte[] rawDxbc, string tempDxbc, string tempDxil, string tempSpv)
     {
         byte[] actualDxbc = ExtractDxbc(rawDxbc);
@@ -412,15 +430,7 @@ public sealed class ShaderDecompiler : IDisposable
 
                         foreach (StructParameter structParameter in constantBuffer.StructParams.Where(s => !string.IsNullOrWhiteSpace(s.Name)))
                         {
-                            int? structMemberIndex = null;
-                            foreach (var offsetKvp in match.MemberOffsets)
-                            {
-                                if (offsetKvp.Value == (uint)structParameter.Index)
-                                {
-                                    structMemberIndex = offsetKvp.Key;
-                                    break;
-                                }
-                            }
+                            int? structMemberIndex = FindMemberIndexByMetadata(match, structParameter.Index);
 
                             if (structMemberIndex.HasValue)
                             {
@@ -431,24 +441,7 @@ public sealed class ShaderDecompiler : IDisposable
                         bool patchedAnyMember = false;
                         foreach (var parameter in constantBuffer.CBParams.Where(p => !string.IsNullOrWhiteSpace(p.ParamName)))
                         {
-                            int? targetIndex = null;
-
-                            if (parameter.Index >= 0 && match.MemberOffsets.Count > 0)
-                            {
-                                foreach (var offsetKvp in match.MemberOffsets)
-                                {
-                                    if (offsetKvp.Value == (uint)parameter.Index)
-                                    {
-                                        targetIndex = offsetKvp.Key;
-                                        break;
-                                    }
-                                }
-                            }
-
-                            if (!targetIndex.HasValue && parameter.Index >= 0 && parameter.Index < match.StructMemberCount)
-                            {
-                                targetIndex = parameter.Index;
-                            }
+                            int? targetIndex = FindMemberIndexByMetadata(match, parameter.Index);
 
                             if (targetIndex.HasValue)
                             {

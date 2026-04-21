@@ -92,7 +92,7 @@ public class ConstantBufferParameter
     public int Columns;
     public bool IsMatrix;
     public int ArraySize;
-    public int Index;
+    public int Index; // 这个等价于ByteOffset
 }
 
 public class ConstantBuffer
