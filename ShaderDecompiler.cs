@@ -112,6 +112,13 @@ public sealed class ShaderDecompiler : IDisposable
                 _ => throw new ArgumentException($"Unsupported shader format: {format}")
             };
 
+            // IMPORTANT:
+            // DXIL -> dxil-spirv output is not equivalent to direct dxc -spirv output.
+            // In practice the DXIL route often keeps resource variables and rewritten UBO types
+            // in a different shape, so the SPIR-V symbol patch pass MUST still run after the
+            // structured cbuffer rewrite. Do not short-circuit to "rewrite already happened" here,
+            // otherwise DXIL resource names regress back to machine names like _8 / _29 and AI
+            // assistants will be tempted to reintroduce HLSL text post-processing.
             spirv = _structuredCBufferRewriter.Rewrite(spirv, finalMetadata);
             byte[] patchedSpirv = PatchSpirvSymbols(spirv, finalMetadata);
             bool hasStructuredCbuffers = HasStructuredConstantBuffers(patchedSpirv, finalMetadata);
@@ -344,6 +351,11 @@ public sealed class ShaderDecompiler : IDisposable
 
     private byte[] PatchSpirvSymbols(byte[] spirv, ShaderSymbolData metadata)
     {
+        // IMPORTANT:
+        // This pass is now the single source of truth for symbol restoration.
+        // Do not add HLSL-side renaming back here. If a DXIL case still comes out with
+        // names like _8 / _29 / ViewData_1_ViewProjection, the bug must be fixed in the
+        // SPIR-V analysis or patch logic below, not by resurrecting PostProcessHlsl().
         if (metadata.Resources.Count == 0)
         {
             return spirv;

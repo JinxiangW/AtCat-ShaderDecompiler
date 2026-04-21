@@ -134,6 +134,10 @@ public class SpirvPatcher
                     }
                     else if (samplerTypeIds.Contains(pointedType))
                         info.DescriptorType = "Sampler";
+                    // IMPORTANT:
+                    // dxil-spirv frequently emits texture resources as plain OpTypeImage instead of
+                    // the shape we see from direct dxc -spirv. Treat both forms as sampled images for
+                    // symbol restoration, otherwise DXIL routes keep machine names like _8 / _14.
                     else if (sampledImageTypeIds.Contains(pointedType) || imageTypeIds.Contains(pointedType))
                         info.DescriptorType = "SampledImage";
                     else
@@ -159,6 +163,11 @@ public class SpirvPatcher
         if (words[0] != SpvOpCode.MagicNumber)
             throw new ArgumentException("Invalid SPIR-V magic");
 
+        // IMPORTANT:
+        // We replace existing OpName / OpMemberName entries instead of appending duplicates.
+        // dxil-spirv often already contains machine debug names; if they are left in place,
+        // spirv-cross may keep preferring them and the HLSL output regresses even though the
+        // metadata names were injected later.
         var replacedIds = names.Select(x => x.Id).ToHashSet();
         var replacedMembers = memberNames?
             .Select(x => (x.TypeId, x.MemberIndex))
