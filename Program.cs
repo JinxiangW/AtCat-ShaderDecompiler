@@ -38,6 +38,7 @@ namespace Ruri.ShaderDecompiler
             string? scanAssetsPath = null;
             string? mappingPath = null;
             string? symbolsPath = null;
+            string? materialFilter = null;
 
             var nameMap = new Dictionary<int, string>();
             for (int i = 1; i < args.Length; i++)
@@ -63,6 +64,11 @@ namespace Ruri.ShaderDecompiler
                     symbolsPath = args[i + 1];
                     i++;
                 }
+                else if (args[i] == "--material" && i + 1 < args.Length)
+                {
+                    materialFilter = args[i + 1];
+                    i++;
+                }
                 else if (args[i] == "--restore-symbols" && i + 2 < args.Length)
                 {
                     string matDir = args[i+1];
@@ -81,7 +87,7 @@ namespace Ruri.ShaderDecompiler
             // Handle .ushaderlib
             if (inputPath.EndsWith(".ushaderlib", StringComparison.OrdinalIgnoreCase))
             {
-                return ProcessUnrealLibrary(inputPath, outputPath, keepTemps, scanAssetsPath, mappingPath, nameMap);
+                return ProcessUnrealLibrary(inputPath, outputPath, keepTemps, scanAssetsPath, mappingPath, nameMap, materialFilter);
             }
 
             // Legacy single file mode logic
@@ -124,12 +130,15 @@ namespace Ruri.ShaderDecompiler
             }
         }
 
-        static int ProcessUnrealLibrary(string inputPath, string? outputPath, bool keepTemps, string? scanAssetsPath, string? mappingPath, Dictionary<int, string>? nameMapInput = null)
+        static int ProcessUnrealLibrary(string inputPath, string? outputPath, bool keepTemps, string? scanAssetsPath, string? mappingPath, Dictionary<int, string>? nameMapInput = null, string? materialFilter = null)
         {
             try 
             {
                 var nameMap = nameMapInput ?? new Dictionary<int, string>();
                 var usageMap = new Dictionary<int, HashSet<string>>();
+                string? normalizedMaterialFilter = string.IsNullOrWhiteSpace(materialFilter)
+                    ? null
+                    : materialFilter.Replace('\\', '/');
 
                 // 1. Scan Assets (Legacy)
                 if (!string.IsNullOrEmpty(scanAssetsPath))
@@ -203,6 +212,13 @@ namespace Ruri.ShaderDecompiler
                                  var hash = lib.ShaderMapHashes[i];
                                  if (hashToMats.TryGetValue(hash, out var mats))
                                  {
+                                     if (normalizedMaterialFilter != null &&
+                                         !mats.Any(m => string.Equals(m, normalizedMaterialFilter, StringComparison.OrdinalIgnoreCase) ||
+                                                        m.EndsWith(normalizedMaterialFilter, StringComparison.OrdinalIgnoreCase)))
+                                     {
+                                         continue;
+                                     }
+
                                      var entry = lib.ShaderMapEntries[i];
                                      // "Use first material name" rule from user
                                      // NOTE: We must extract simple name for file naming, but keep full path in usedBy for mapper
@@ -237,19 +253,14 @@ namespace Ruri.ShaderDecompiler
                      catch(Exception ex) { Console.WriteLine($"[Warning] JSON Mapping failed: {ex.Message}"); }
                 }
 
-                // 4. Load Material Parameter Mappings (Precise)
-                Ruri.ShaderDecompiler.Unreal.PreciseParameterMapper? preciseMapper = null;
+                // 4. Load runtime UE material metadata resolver.
+                UeMaterialJsonSymbolExtractor? materialSymbolExtractor = null;
                 if (!string.IsNullOrEmpty(mappingPath))
                 {
-                    string paramMappingPath = Path.Combine(Path.GetDirectoryName(mappingPath)!, "MaterialParameterMappings.json");
-                    if (File.Exists(paramMappingPath))
+                    string exportRoot = Path.GetDirectoryName(mappingPath)!;
+                    if (Directory.Exists(exportRoot))
                     {
-                        Console.WriteLine($"[信息] 加载参数映射文件: {paramMappingPath}");
-                        preciseMapper = Ruri.ShaderDecompiler.Unreal.PreciseParameterMapper.LoadFromFile(paramMappingPath);
-                    }
-                    else
-                    {
-                        Console.WriteLine($"[警告] 未找到参数映射文件: {paramMappingPath} (将无法进行变量重命名)");
+                        materialSymbolExtractor = new UeMaterialJsonSymbolExtractor(exportRoot);
                     }
                 }
 
@@ -267,8 +278,18 @@ namespace Ruri.ShaderDecompiler
                     var entry = lib.ShaderEntries[i];
                     Console.WriteLine($"Shader {i}: Size={entry.Size}, Uncompressed={entry.UncompressedSize}, Offset={entry.Offset}");
                     
-                    if (code == null) continue;
-                    
+                     if (code == null) continue;
+
+                    if (normalizedMaterialFilter != null)
+                    {
+                        if (!usageMap.TryGetValue(i, out var filteredUsage) ||
+                            !filteredUsage.Any(m => string.Equals(m, normalizedMaterialFilter, StringComparison.OrdinalIgnoreCase) ||
+                                                    m.EndsWith(normalizedMaterialFilter, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            continue;
+                        }
+                    }
+                     
                     string typeSuffix = GetShaderFreqString(entry.Frequency);
 
                     try 
@@ -297,21 +318,20 @@ namespace Ruri.ShaderDecompiler
                                  sb.AppendLine($" * Stage: {typeSuffix}");
                                  sb.AppendLine($" * Used by {usedBy.Count} Materials:");
                                  
-                                 // Try to find a material with precise mapping
-                                 MaterialMapping? bestMapping = null;
-                                 string bestMaterialName = "";
+                                 // Try to find a material with runtime metadata
+                                 UeMaterialSymbolInfo? bestMaterialInfo = null;
+                                  string bestMaterialName = "";
 
-                                 foreach(var m in usedBy) 
-                                 {
-                                     if (bestMapping == null && preciseMapper != null)
-                                     {
-                                         // Debug match attempts
-                                         bestMapping = preciseMapper.GetByMaterialPath(m);
-                                         if (bestMapping != null) 
-                                         {
-                                             bestMaterialName = m;
-                                             Console.WriteLine($"[调试] 成功匹配: '{m}'");
-                                         }
+                                  foreach(var m in usedBy) 
+                                  {
+                                      if (bestMaterialInfo == null && materialSymbolExtractor != null)
+                                      {
+                                          bestMaterialInfo = materialSymbolExtractor.GetMaterial(m);
+                                          if (bestMaterialInfo != null) 
+                                          {
+                                              bestMaterialName = m;
+                                              Console.WriteLine($"[调试] 成功匹配: '{m}'");
+                                          }
                                          else
                                          {
                                             // Only log first few failures to avoid spam
@@ -325,25 +345,22 @@ namespace Ruri.ShaderDecompiler
                                  }
                                  
                                  if(usedBy.Count > 20) sb.AppendLine($" *  ... and {usedBy.Count-20} more");
-                                 sb.AppendLine(" */");
-                                 sb.AppendLine("");
+                                  sb.AppendLine(" */");
+                                  sb.AppendLine("");
 
-                                 ShaderSymbolMetadata? injectionSymbols = null;
+                                  ShaderSymbolData? injectionSymbols = null;
 
-                                 // Inject Precise Parameter Mapping Header & Prepare Symbols
-                                 if (bestMapping != null && preciseMapper != null)
-                                 {
-                                     Console.WriteLine($"[信息] Shader {i} 匹配到材质: {bestMaterialName} (包含参数映射)");
-                                     string mappingHeader = preciseMapper.GenerateHlslHeader(bestMapping, bestMaterialName);
-                                     sb.AppendLine(mappingHeader);
-
-                                     // Prepare symbols for native injection
-                                     injectionSymbols = preciseMapper.GetSymbolMetadata(bestMapping);
-                                 }
-                                 else
-                                 {
-                                     // Console.WriteLine($"[警告] Shader {i} 未找到精确材质映射");
-                                 }
+                                  // Inject runtime material metadata & prepare symbols.
+                                  if (bestMaterialInfo != null)
+                                  {
+                                      Console.WriteLine($"[信息] Shader {i} 匹配到材质: {bestMaterialName} ({(bestMaterialInfo.UsedLoadedResources ? "LoadedMaterialResources" : "PropertiesFallback")})");
+                                      sb.Append(bestMaterialInfo.Header);
+                                      injectionSymbols = bestMaterialInfo.Metadata;
+                                  }
+                                  else
+                                  {
+                                      // Console.WriteLine($"[警告] Shader {i} 未找到运行时材质元数据");
+                                  }
 
                                  // Re-decompile with symbols if available to get native variable names
                                  if (injectionSymbols != null)
