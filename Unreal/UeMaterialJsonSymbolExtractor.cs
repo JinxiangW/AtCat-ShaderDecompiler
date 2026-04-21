@@ -244,9 +244,12 @@ internal sealed class UeMaterialJsonSymbolExtractor
             foreach (JsonElement entry in typedArray.EnumerateArray())
             {
                 string? name = ReadNestedString(entry, "ParameterInfo", "Name");
+                string prefix = prefixes[Math.Min(typeIndex, prefixes.Length - 1)];
+                ShaderResourceType resourceType = resourceTypes[Math.Min(typeIndex, resourceTypes.Length - 1)];
+
                 if (!string.IsNullOrWhiteSpace(name) && !string.Equals(name, "None", StringComparison.OrdinalIgnoreCase))
                 {
-                    AddTextureResource(metadata, name, binding, prefixes[Math.Min(typeIndex, prefixes.Length - 1)], resourceTypes[Math.Min(typeIndex, resourceTypes.Length - 1)]);
+                    AddTextureResource(metadata, name, binding, prefix, resourceType);
                     textureNames.Add(name);
                 }
 
