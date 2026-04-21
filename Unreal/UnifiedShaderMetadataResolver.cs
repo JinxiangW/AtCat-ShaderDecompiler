@@ -7,14 +7,14 @@ namespace Ruri.ShaderDecompiler.Unreal;
 
 internal sealed class UnifiedShaderMetadataResolver
 {
-    private readonly Dictionary<string, UnifiedMaterialEntry> _materials;
+    private readonly Dictionary<string, UnifiedMaterialEntry> _materialInterfaces;
     private readonly Dictionary<string, List<string>> _materialToShaderMapHashes;
 
     private UnifiedShaderMetadataResolver(
-        Dictionary<string, UnifiedMaterialEntry> materials,
+        Dictionary<string, UnifiedMaterialEntry> materialInterfaces,
         Dictionary<string, List<string>> materialToShaderMapHashes)
     {
-        _materials = materials;
+        _materialInterfaces = materialInterfaces;
         _materialToShaderMapHashes = materialToShaderMapHashes;
     }
 
@@ -40,7 +40,7 @@ internal sealed class UnifiedShaderMetadataResolver
             }
 
             return new UnifiedShaderMetadataResolver(
-                root.Materials ?? new Dictionary<string, UnifiedMaterialEntry>(StringComparer.OrdinalIgnoreCase),
+                root.MaterialInterfaces ?? new Dictionary<string, UnifiedMaterialEntry>(StringComparer.OrdinalIgnoreCase),
                 root.MaterialToShaderMapHashes ?? new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase));
         }
         catch
@@ -86,12 +86,12 @@ internal sealed class UnifiedShaderMetadataResolver
         }
 
         string normalized = materialPath.Replace('\\', '/');
-        if (!_materials.TryGetValue(normalized, out UnifiedMaterialEntry? material) || material.ShaderMaps == null)
+        if (!_materialInterfaces.TryGetValue(normalized, out UnifiedMaterialEntry? material) || material.LoadedShaderMaps == null)
         {
             return null;
         }
 
-        foreach (UnifiedShaderMapEntry shaderMap in material.ShaderMaps)
+        foreach (UnifiedShaderMapEntry shaderMap in material.LoadedShaderMaps)
         {
             if (string.Equals(shaderMap.ShaderMapIdHash, shaderMapHash, StringComparison.OrdinalIgnoreCase))
             {
@@ -106,14 +106,14 @@ internal sealed class UnifiedShaderMetadataResolver
 internal sealed class UnifiedShaderMetadataRoot
 {
     public Dictionary<string, List<string>>? MaterialToShaderMapHashes { get; set; }
-    public Dictionary<string, UnifiedMaterialEntry>? Materials { get; set; }
+    public Dictionary<string, UnifiedMaterialEntry>? MaterialInterfaces { get; set; }
 }
 
 internal sealed class UnifiedMaterialEntry
 {
     public string? MaterialPath { get; set; }
     public List<string>? ShaderMapHashes { get; set; }
-    public List<UnifiedShaderMapEntry>? ShaderMaps { get; set; }
+    public List<UnifiedShaderMapEntry>? LoadedShaderMaps { get; set; }
 }
 
 internal sealed class UnifiedShaderMapEntry
