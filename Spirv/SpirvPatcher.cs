@@ -336,15 +336,10 @@ public class SpirvPatcher
                     }
                 }
 
-                if (!targetIndex.HasValue && parameter.Index >= 0 && parameter.Index < match.StructMemberCount)
-                {
-                    targetIndex = parameter.Index;
-                }
-
-                if (targetIndex.HasValue)
-                {
-                    memberNames.Add((match.StructTypeId.Value, (uint)targetIndex.Value, parameter.ParamName));
-                }
+				if (targetIndex.HasValue)
+				{
+					memberNames.Add((match.StructTypeId.Value, (uint)targetIndex.Value, parameter.ParamName));
+				}
             }
         }
         
