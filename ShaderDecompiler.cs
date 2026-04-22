@@ -33,6 +33,14 @@ public class DecompileResult
     public string? ShaderName { get; set; }
     public string? StructuredRewriteSummary { get; set; }
     public ShaderSymbolData? FinalMetadata { get; set; }
+    public IReadOnlyList<string>? UnrealOptionalDataKeys { get; set; }
+    public IReadOnlyList<string>? UnrealUniformBufferNames { get; set; }
+    public string? UnrealShaderCodePackedResourceCounts { get; set; }
+    public string? UnrealShaderCodeResourceMasks { get; set; }
+    public string? UnrealShaderCodeFeatures { get; set; }
+    public string? UnrealShaderCodeName { get; set; }
+    public string? UnrealShaderCodeVendorExtension { get; set; }
+    public string? UnrealSm6Flag { get; set; }
 }
 
 /// <summary>
@@ -90,7 +98,8 @@ public sealed class ShaderDecompiler : IDisposable
         {
             var bundle = Unreal.UnrealShaderParser.Parse(binary);
             byte[] processingBinary = bundle.NativeCode;
-            string? recoveredShaderName = (bundle.EngineMetadata as Unreal.UnrealShaderParser.UnrealMetadata)?.ShaderName;
+            var unrealMetadata = bundle.EngineMetadata as Unreal.UnrealShaderParser.UnrealMetadata;
+            string? recoveredShaderName = unrealMetadata?.ShaderName;
 
             if (format == ShaderFormat.Unknown)
             {
@@ -139,7 +148,25 @@ public sealed class ShaderDecompiler : IDisposable
                 IntermediateSpirv = patchedSpirv,
                 ShaderName = recoveredShaderName ?? finalMetadata.DebugName,
                 StructuredRewriteSummary = _structuredCBufferRewriter.LastRewriteSummary,
-                FinalMetadata = finalMetadata
+                FinalMetadata = finalMetadata,
+                UnrealOptionalDataKeys = unrealMetadata?.OptionalDataKeys,
+                UnrealUniformBufferNames = unrealMetadata?.UniformBufferNames,
+                UnrealShaderCodePackedResourceCounts = unrealMetadata?.ShaderCodePackedResourceCounts is Unreal.UnrealShaderParser.FShaderCodePackedResourceCounts packed
+                    ? $"UsageFlags={packed.UsageFlags} NumSamplers={packed.NumSamplers} NumSRVs={packed.NumSRVs} NumCBs={packed.NumCBs} NumUAVs={packed.NumUAVs}"
+                    : null,
+                UnrealShaderCodeResourceMasks = unrealMetadata?.ShaderCodeResourceMasks is Unreal.UnrealShaderParser.FShaderCodeResourceMasks masks
+                    ? $"UAVMask=0x{masks.UAVMask:X8}"
+                    : null,
+                UnrealShaderCodeFeatures = unrealMetadata?.ShaderCodeFeatures is Unreal.UnrealShaderParser.FShaderCodeFeatures features
+                    ? $"CodeFeatures=0x{features.CodeFeatures:X2}"
+                    : null,
+                UnrealShaderCodeName = unrealMetadata?.ShaderCodeName?.Value,
+                UnrealShaderCodeVendorExtension = unrealMetadata?.ShaderCodeVendorExtension != null
+                    ? $"RawSize={unrealMetadata.ShaderCodeVendorExtension.RawData.Length}"
+                    : null,
+                UnrealSm6Flag = unrealMetadata?.IsSm6Shader.HasValue == true
+                    ? unrealMetadata.IsSm6Shader.Value.ToString()
+                    : null
             };
         }
         catch (Exception ex)

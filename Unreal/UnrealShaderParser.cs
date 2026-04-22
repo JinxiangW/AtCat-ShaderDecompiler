@@ -42,12 +42,6 @@ namespace Ruri.ShaderDecompiler.Unreal
                 srt.SamplerMap = ReadUInt32Array(reader);
                 srt.UnorderedAccessViewMap = ReadUInt32Array(reader);
                 srt.ResourceTableLayoutHashes = ReadUInt32Array(reader);
-                // TextureMap presence depends on version. Try to read.
-                // If EOF, might be old version.
-                if (reader.BaseStream.Position < reader.BaseStream.Length)
-                {
-                    srt.TextureMap = ReadUInt32Array(reader);
-                }
             } catch {
                 // Not a valid SRT, fall through to fallback
                 Console.WriteLine("[Debug] SRT Parse failed, falling back to scan.");
@@ -97,17 +91,7 @@ namespace Ruri.ShaderDecompiler.Unreal
             if (arch != ShaderArchitecture.Unknown && codeStart >= 0)
             {
                 // Parse optional data between SRT and Code
-                var metadata = new UnrealMetadata { SRT = srt, UniformBufferNames = new List<string>() };
-
-                long optionalDataStart = reader.BaseStream.Position; // End of SRT
-                long optionalDataLength = codeStart - optionalDataStart;
-                
-                if (optionalDataLength > 0)
-                {
-                    byte[] optData = new byte[optionalDataLength];
-                    Array.Copy(data, optionalDataStart, optData, 0, optionalDataLength);
-                    ParseOptionalData(optData, metadata);
-                }
+                var metadata = new UnrealMetadata { SRT = srt, UniformBufferNames = new List<string>(), OptionalDataKeys = new List<string>() };
 
                 // Extract code
                 int len = (int)(data.Length - codeStart);
@@ -119,16 +103,8 @@ namespace Ruri.ShaderDecompiler.Unreal
 
                 byte[] code = new byte[nativeCodeSize];
                 Array.Copy(data, codeStart, code, 0, nativeCodeSize);
-                
-                // Check for optional data after native code
-                if (nativeCodeSize < len)
-                {
-                    int optAfterStart = (int)codeStart + nativeCodeSize;
-                    int optAfterSize = len - nativeCodeSize;
-                    byte[] optDataAfter = new byte[optAfterSize];
-                    Array.Copy(data, optAfterStart, optDataAfter, 0, optAfterSize);
-                    ParseOptionalData(optDataAfter, metadata);
-                }
+
+                ParseOptionalDataFromShaderTail(code, metadata);
 
                 var bundle = new ShaderBundle 
                 { 
@@ -192,27 +168,139 @@ namespace Ruri.ShaderDecompiler.Unreal
             public FShaderResourceTable SRT;
             public List<string> UniformBufferNames;
             public string ShaderName;
+            public List<string> OptionalDataKeys;
+            public FShaderCodePackedResourceCounts? ShaderCodePackedResourceCounts;
+            public FShaderCodeResourceMasks? ShaderCodeResourceMasks;
+            public FShaderCodeFeatures? ShaderCodeFeatures;
+            public FShaderCodeName? ShaderCodeName;
+            public FShaderCodeUniformBuffers? ShaderCodeUniformBuffers;
+            public FShaderCodeVendorExtension? ShaderCodeVendorExtension;
+            public bool? IsSm6Shader;
         }
 
-        private static void ParseOptionalData(byte[] data, UnrealMetadata metadata)
+        // UE source name: FShaderCodePackedResourceCounts (ShaderCore.h)
+        public struct FShaderCodePackedResourceCounts
         {
+            public const byte Key = (byte)'p';
+            public byte UsageFlags;
+            public byte NumSamplers;
+            public byte NumSRVs;
+            public byte NumCBs;
+            public byte NumUAVs;
+        }
+
+        // UE source name: FShaderCodeResourceMasks (ShaderCore.h)
+        public struct FShaderCodeResourceMasks
+        {
+            public const byte Key = (byte)'m';
+            public uint UAVMask;
+        }
+
+        // UE source name: FShaderCodeFeatures (ShaderCore.h)
+        public struct FShaderCodeFeatures
+        {
+            public const byte Key = (byte)'x';
+            public byte CodeFeatures;
+        }
+
+        // UE source name: FShaderCodeName (ShaderCore.h)
+        public sealed class FShaderCodeName
+        {
+            public const byte Key = (byte)'n';
+            public string Value { get; set; } = string.Empty;
+        }
+
+        // UE source name: FShaderCodeUniformBuffers (ShaderCore.h)
+        public sealed class FShaderCodeUniformBuffers
+        {
+            public const byte Key = (byte)'u';
+            public List<string> Names { get; set; } = new();
+        }
+
+        // UE source name: FShaderCodeVendorExtension (ShaderCore.h)
+        // Keep as a formal placeholder even when current sample does not use it.
+        public sealed class FShaderCodeVendorExtension
+        {
+            public const byte Key = (byte)'v';
+            public byte[] RawData { get; set; } = Array.Empty<byte>();
+        }
+
+        // UE source usage: AddOptionalData('6', &IsSM6, 1)
+        public struct FShaderCodeSm6Flag
+        {
+            public const byte Key = (byte)'6';
+            public byte Value;
+        }
+
+        private static void ParseOptionalDataFromShaderTail(byte[] shaderCode, UnrealMetadata metadata)
+        {
+            if (shaderCode.Length < sizeof(int))
+            {
+                return;
+            }
+
+            int optionalDataSize = BitConverter.ToInt32(shaderCode, shaderCode.Length - sizeof(int));
+            if (optionalDataSize <= 0 || optionalDataSize > shaderCode.Length)
+            {
+                return;
+            }
+
+            int optionalDataStart = shaderCode.Length - optionalDataSize;
+            int optionalDataPayloadLength = optionalDataSize - sizeof(int);
+            if (optionalDataPayloadLength <= 0)
+            {
+                return;
+            }
+
             try 
             {
-                using var stream = new MemoryStream(data);
+                using var stream = new MemoryStream(shaderCode, optionalDataStart, optionalDataPayloadLength, false);
                 using var reader = new BinaryReader(stream);
                 
                 while (stream.Position < stream.Length)
                 {
                     byte key = reader.ReadByte();
                     int size = reader.ReadInt32();
-                    
-                    if (stream.Position + size > stream.Length) break;
+
+                    if (size < 0 || stream.Position + size > stream.Length)
+                    {
+                        break;
+                    }
+
                     long nextPos = stream.Position + size;
+                    metadata.OptionalDataKeys.Add(DescribeOptionalDataKey(key, size));
+
+                    if (key == FShaderCodePackedResourceCounts.Key && size >= 5)
+                    {
+                        metadata.ShaderCodePackedResourceCounts = new FShaderCodePackedResourceCounts
+                        {
+                            UsageFlags = reader.ReadByte(),
+                            NumSamplers = reader.ReadByte(),
+                            NumSRVs = reader.ReadByte(),
+                            NumCBs = reader.ReadByte(),
+                            NumUAVs = reader.ReadByte()
+                        };
+                    }
+                    else if (key == FShaderCodeResourceMasks.Key && size == 4)
+                    {
+                        metadata.ShaderCodeResourceMasks = new FShaderCodeResourceMasks
+                        {
+                            UAVMask = reader.ReadUInt32()
+                        };
+                    }
+                    else if (key == FShaderCodeFeatures.Key && size >= 1)
+                    {
+                        metadata.ShaderCodeFeatures = new FShaderCodeFeatures
+                        {
+                            CodeFeatures = reader.ReadByte()
+                        };
+                    }
                     
-                    // 'u' = UniformBuffers (Array<FString>)
-                    if (key == (byte)'u') 
+                    // UE source name: FShaderCodeUniformBuffers
+                    else if (key == FShaderCodeUniformBuffers.Key) 
                     {
                         if (metadata.UniformBufferNames == null) metadata.UniformBufferNames = new List<string>();
+                        metadata.ShaderCodeUniformBuffers ??= new FShaderCodeUniformBuffers();
                         
                         // int count
                         int count = reader.ReadInt32();
@@ -245,31 +333,41 @@ namespace Ruri.ShaderDecompiler.Unreal
                                 if (len > 1) s = System.Text.Encoding.ASCII.GetString(strBytes, 0, len - 1);
                             }
                             metadata.UniformBufferNames.Add(s);
+                            metadata.ShaderCodeUniformBuffers.Names.Add(s);
                             // Console.WriteLine($"[Debug] Found UB Name: {s}");
                         }
                     }
-                    // 'n' = ShaderName (Straight ANSI string)
-                    else if (key == (byte)'n')
+                    // UE source name: FShaderCodeName
+                    else if (key == FShaderCodeName.Key)
                     {
-                        if (size > 1)
+                        if (size > 0)
                         {
-                            byte[] nameBytes = reader.ReadBytes(size - 1); // Exclude null terminator
-                            reader.ReadByte(); // Consume null terminator
-                            metadata.ShaderName = System.Text.Encoding.ASCII.GetString(nameBytes);
+                            byte[] nameBytes = reader.ReadBytes(size);
+                            int stringLength = Array.IndexOf(nameBytes, (byte)0);
+                            if (stringLength < 0)
+                            {
+                                stringLength = nameBytes.Length;
+                            }
+
+                            metadata.ShaderName = System.Text.Encoding.ASCII.GetString(nameBytes, 0, stringLength);
+                            metadata.ShaderCodeName = new FShaderCodeName { Value = metadata.ShaderName };
                             Console.WriteLine($"[Debug] Found Shader Name: {metadata.ShaderName}");
                         }
-                        else
+                    }
+                    else if (key == FShaderCodeVendorExtension.Key)
+                    {
+                        metadata.ShaderCodeVendorExtension = new FShaderCodeVendorExtension
                         {
-                             reader.ReadBytes(size);
-                        }
+                            RawData = reader.ReadBytes(size)
+                        };
+                    }
+                    else if (key == FShaderCodeSm6Flag.Key && size >= 1)
+                    {
+                        metadata.IsSm6Shader = reader.ReadByte() != 0;
                     }
                     else
                     {
-                        // Skip
-                        // Console.WriteLine($"[Debug] Skipped Optional Data Key: {(char)key} Size: {size}");
-                        stream.Seek(size, SeekOrigin.Current); // Use original size logic (reader might have advanced)
-                        // Wait, if I read bytes above, current position changed.
-                        // It's safer to always use nextPos
+                        stream.Seek(size, SeekOrigin.Current);
                     }
                     stream.Position = nextPos;
                 }
@@ -326,6 +424,23 @@ namespace Ruri.ShaderDecompiler.Unreal
             }
             return -1;
         }
+
+        private static string DescribeOptionalDataKey(byte key, int size)
+        {
+            string name = key switch
+            {
+                FShaderCodePackedResourceCounts.Key => "FShaderCodePackedResourceCounts",
+                FShaderCodeResourceMasks.Key => "FShaderCodeResourceMasks",
+                FShaderCodeFeatures.Key => "FShaderCodeFeatures",
+                FShaderCodeName.Key => "FShaderCodeName",
+                FShaderCodeUniformBuffers.Key => "FShaderCodeUniformBuffers",
+                FShaderCodeVendorExtension.Key => "FShaderCodeVendorExtension",
+                FShaderCodeSm6Flag.Key => "SM6Flag",
+                _ => $"unknown('{(char)key}')"
+            };
+
+            return $"{name}[{(char)key}] Size={size}";
+        }
     }
 
     public struct FShaderResourceTable
@@ -335,6 +450,5 @@ namespace Ruri.ShaderDecompiler.Unreal
         public List<uint> SamplerMap;
         public List<uint> UnorderedAccessViewMap;
         public List<uint> ResourceTableLayoutHashes;
-        public List<uint> TextureMap;
     }
 }

@@ -372,8 +372,31 @@ namespace Ruri.ShaderDecompiler
                                       // Console.WriteLine($"[警告] Shader {i} 未找到运行时材质元数据");
                                   }
 
+                                   if (res.UnrealOptionalDataKeys is { Count: > 0 })
+                                   {
+                                       sb.AppendLine("/*");
+                                       sb.AppendLine(" * UE Shader Tail Optional Data");
+                                       sb.AppendLine($" * FShaderCodeName: {res.UnrealShaderCodeName ?? res.ShaderName ?? "unknown"}");
+                                       sb.AppendLine($" * OptionalDataKeys: {string.Join(", ", res.UnrealOptionalDataKeys)}");
+                                       sb.AppendLine($" * FShaderCodePackedResourceCounts: {res.UnrealShaderCodePackedResourceCounts ?? "<absent>"}");
+                                       sb.AppendLine($" * FShaderCodeResourceMasks: {res.UnrealShaderCodeResourceMasks ?? "<absent>"}");
+                                       sb.AppendLine($" * FShaderCodeFeatures: {res.UnrealShaderCodeFeatures ?? "<absent>"}");
+                                       sb.AppendLine($" * FShaderCodeVendorExtension: {res.UnrealShaderCodeVendorExtension ?? "<absent>"}");
+                                       sb.AppendLine($" * SM6Flag('6'): {res.UnrealSm6Flag ?? "<absent>"}");
+                                       if (res.UnrealUniformBufferNames is { Count: > 0 })
+                                       {
+                                           sb.AppendLine($" * FShaderCodeUniformBuffers: {string.Join(", ", res.UnrealUniformBufferNames)}");
+                                       }
+                                       else
+                                       {
+                                           sb.AppendLine(" * FShaderCodeUniformBuffers: <absent>");
+                                       }
+                                       sb.AppendLine(" */");
+                                       sb.AppendLine("");
+                                   }
+
                                  // Re-decompile with symbols if available to get native variable names
-                                  if (injectionSymbols != null)
+                                   if (injectionSymbols != null)
                                   {
                                       Console.WriteLine($"[符号元数据] Shader {i} resources={injectionSymbols.Resources.Count} constantBuffers={injectionSymbols.ConstantBuffers.Count}");
                                       foreach (ConstantBuffer constantBuffer in injectionSymbols.ConstantBuffers)
