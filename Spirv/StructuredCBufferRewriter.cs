@@ -328,6 +328,7 @@ internal sealed class StructuredCBufferRewriter
         }
 
         var layout = new StructuredBufferLayout();
+        var rawMembers = new List<StructuredMemberLayout>();
         foreach (ConstantBufferParameter metadataParameter in flatBuffer.ConstantBuffer.CBParams.OrderBy(p => p.Index))
         {
             MemberLogicalType? logicalType = TryCreateLogicalTypeFromUscLayout(metadataParameter);
@@ -345,7 +346,7 @@ internal sealed class StructuredCBufferRewriter
                 RegisterOffset = metadataParameter.Index / 16
             };
 
-            layout.Members.Add(member);
+            rawMembers.Add(member);
         }
 
         foreach (StructParameter structParameter in flatBuffer.ConstantBuffer.StructParams.OrderBy(s => s.Index))
@@ -402,11 +403,153 @@ internal sealed class StructuredCBufferRewriter
                 });
             }
 
-            layout.Members.Add(structMember);
+            rawMembers.Add(structMember);
         }
 
-        layout.RequiredRegisterCount = layout.Members.Max(m => m.RegisterOffset + m.RegisterCount);
+        rawMembers.Sort((left, right) => left.Metadata.Index.CompareTo(right.Metadata.Index));
+
+        int currentByteOffset = 0;
+        int paddingIndex = 0;
+        int arrayByteSize = flatBuffer.ArrayLength * flatBuffer.ArrayStride;
+        foreach (StructuredMemberLayout member in rawMembers)
+        {
+            int memberOffset = member.Metadata.Index;
+            if (memberOffset > currentByteOffset)
+            {
+                AddPaddingMembers(layout, currentByteOffset, memberOffset - currentByteOffset, ref paddingIndex);
+            }
+
+            layout.Members.Add(member);
+            currentByteOffset = Math.Max(currentByteOffset, member.Metadata.Index + GetMemberSpanBytes(member));
+        }
+
+        if (currentByteOffset < arrayByteSize)
+        {
+            AddPaddingMembers(layout, currentByteOffset, arrayByteSize - currentByteOffset, ref paddingIndex);
+            currentByteOffset = arrayByteSize;
+        }
+
+        layout.RequiredRegisterCount = (currentByteOffset + 15) / 16;
         return layout;
+    }
+
+    private static void AddPaddingMembers(StructuredBufferLayout layout, int byteOffset, int byteSize, ref int paddingIndex)
+    {
+        if (byteSize <= 0)
+        {
+            return;
+        }
+
+        if ((byteOffset % 4) != 0 || (byteSize % 4) != 0)
+        {
+            throw new InvalidOperationException($"Padding region is not 4-byte aligned: offset={byteOffset}, size={byteSize}");
+        }
+
+        int remainingBytes = byteSize;
+        int currentByteOffset = byteOffset;
+
+        // HLSL can express whole-register padding cleanly as float4[N].
+        while (remainingBytes > 0 && (currentByteOffset % 16) != 0)
+        {
+            layout.Members.Add(CreatePaddingMember(currentByteOffset, paddingIndex++));
+            currentByteOffset += 4;
+            remainingBytes -= 4;
+        }
+
+        while (remainingBytes >= 16)
+        {
+            int registerCount = remainingBytes / 16;
+            layout.Members.Add(CreatePaddingArrayMember(currentByteOffset, registerCount, paddingIndex++));
+            int consumedBytes = registerCount * 16;
+            currentByteOffset += consumedBytes;
+            remainingBytes -= consumedBytes;
+        }
+
+        while (remainingBytes > 0)
+        {
+            layout.Members.Add(CreatePaddingMember(currentByteOffset, paddingIndex++));
+            currentByteOffset += 4;
+            remainingBytes -= 4;
+        }
+    }
+
+    private static StructuredMemberLayout CreatePaddingMember(int byteOffset, int paddingIndex)
+    {
+        var metadata = new ConstantBufferParameter
+        {
+            ParamName = $"__ruri_unknown_{paddingIndex}",
+            Index = byteOffset,
+            ParamType = ShaderParamType.Float,
+            Rows = 1,
+            Columns = 1,
+            IsMatrix = false,
+            ArraySize = 1
+        };
+
+        return new StructuredMemberLayout
+        {
+            Metadata = metadata,
+            LogicalType = new MemberLogicalType
+            {
+                Kind = LogicalTypeKind.Scalar,
+                ScalarKind = ScalarKind.Float,
+                Rows = 1,
+                Columns = 1,
+                ArrayLength = 1,
+                DeclaredByteSize = 4,
+                UscIndex = byteOffset,
+                IsMatrix = false
+            },
+            RegisterOffset = byteOffset / 16,
+            RegisterCount = 1
+        };
+    }
+
+    private static StructuredMemberLayout CreatePaddingArrayMember(int byteOffset, int registerCount, int paddingIndex)
+    {
+        var metadata = new ConstantBufferParameter
+        {
+            ParamName = $"__ruri_unknown_{paddingIndex}",
+            Index = byteOffset,
+            ParamType = ShaderParamType.Float,
+            Rows = 4,
+            Columns = 1,
+            IsMatrix = false,
+            ArraySize = registerCount
+        };
+
+        return new StructuredMemberLayout
+        {
+            Metadata = metadata,
+            LogicalType = new MemberLogicalType
+            {
+                Kind = LogicalTypeKind.Vector,
+                ScalarKind = ScalarKind.Float,
+                Rows = 4,
+                Columns = 1,
+                ArrayLength = registerCount,
+                DeclaredByteSize = registerCount * 16,
+                UscIndex = byteOffset,
+                IsMatrix = false
+            },
+            RegisterOffset = byteOffset / 16,
+            RegisterCount = registerCount
+        };
+    }
+
+    private static int GetMemberSpanBytes(StructuredMemberLayout member)
+    {
+        if (member.LogicalType.Kind == LogicalTypeKind.Struct)
+        {
+            return member.RegisterCount * 16;
+        }
+
+        if (member.LogicalType.Kind == LogicalTypeKind.Matrix)
+        {
+            return member.LogicalType.Columns * 16 * Math.Max(member.LogicalType.ArrayLength, 1);
+        }
+
+        return member.LogicalType.DeclaredByteSize;
     }
 
     private static MemberLogicalType? TryCreateLogicalTypeFromUscLayout(ConstantBufferParameter metadataParameter)
@@ -475,7 +618,7 @@ internal sealed class StructuredCBufferRewriter
     private static uint ResolveMemberTypeId(SpirvModule module, TypeInfo types, StructuredMemberLayout member)
     {
         MemberLogicalType logicalType = member.LogicalType;
-        return logicalType.Kind switch
+        uint baseTypeId = logicalType.Kind switch
         {
             LogicalTypeKind.Scalar => EnsureScalarType(module, types, logicalType.ScalarKind),
             LogicalTypeKind.Vector => EnsureVectorType(module, types, logicalType.ScalarKind, logicalType.Rows),
@@ -483,6 +626,98 @@ internal sealed class StructuredCBufferRewriter
             LogicalTypeKind.Struct => EnsureStructType(module, types, member),
             _ => 0
         };
+
+        if (baseTypeId == 0)
+        {
+            return 0;
+        }
+
+        if ((logicalType.Kind == LogicalTypeKind.Scalar || logicalType.Kind == LogicalTypeKind.Vector) && logicalType.ArrayLength > 1)
+        {
+            int arrayStride = logicalType.Kind == LogicalTypeKind.Vector && logicalType.Rows == 4
+                ? 16
+                : logicalType.DeclaredByteSize / logicalType.ArrayLength;
+            return EnsureArrayType(module, types, baseTypeId, logicalType.ArrayLength, arrayStride);
+        }
+
+        return baseTypeId;
+    }
+
+    private static uint EnsureArrayType(SpirvModule module, TypeInfo types, uint elementTypeId, int arrayLength, int arrayStride)
+    {
+        uint lengthConstantId = FindOrCreateUIntConstant(module, types, checked((uint)arrayLength));
+
+        foreach (SpirvInstruction instruction in module.Instructions)
+        {
+            if (instruction.OpCode == SpvOpCode.OpTypeArray && instruction.Words.Length >= 4 &&
+                instruction[2] == elementTypeId && instruction[3] == lengthConstantId)
+            {
+                return instruction[1];
+            }
+        }
+
+        uint resultId = module.AllocateId();
+        int decorationInsertIndex = module.FindFirstTypeInstructionIndex();
+        while (decorationInsertIndex > 0 &&
+               (module.Instructions[decorationInsertIndex - 1].OpCode == SpvOpCode.OpDecorate ||
+                module.Instructions[decorationInsertIndex - 1].OpCode == SpvOpCode.OpMemberDecorate))
+        {
+            decorationInsertIndex--;
+        }
+
+        module.Instructions.Insert(decorationInsertIndex, new SpirvInstruction
+        {
+            OpCode = SpvOpCode.OpDecorate,
+            Words =
+            [
+                SpvOpCode.MakeInstructionWord(SpvOpCode.OpDecorate, 4),
+                resultId,
+                SpvOpCode.DecorationArrayStride,
+                (uint)arrayStride
+            ]
+        });
+
+        module.Instructions.Insert(module.FindTypeSectionEndIndex(), new SpirvInstruction
+        {
+            OpCode = SpvOpCode.OpTypeArray,
+            Words =
+            [
+                SpvOpCode.MakeInstructionWord(SpvOpCode.OpTypeArray, 4),
+                resultId,
+                elementTypeId,
+                lengthConstantId
+            ]
+        });
+
+        return resultId;
+    }
+
+    private static uint FindOrCreateUIntConstant(SpirvModule module, TypeInfo types, uint value)
+    {
+        uint uintTypeId = EnsureUIntType(module, types);
+        foreach (SpirvInstruction instruction in module.Instructions)
+        {
+            if (instruction.OpCode == SpvOpCode.OpConstant && instruction.Words.Length >= 4 &&
+                instruction[1] == uintTypeId && instruction[3] == value)
+            {
+                return instruction[2];
+            }
+        }
+
+        uint resultId = module.AllocateId();
+        module.Instructions.Insert(module.FindTypeSectionEndIndex(), new SpirvInstruction
+        {
+            OpCode = SpvOpCode.OpConstant,
+            Words =
+            [
+                SpvOpCode.MakeInstructionWord(SpvOpCode.OpConstant, 4),
+                uintTypeId,
+                resultId,
+                value
+            ]
+        });
+
+        return resultId;
     }
 
     private static uint EnsureStructType(SpirvModule module, TypeInfo types, StructuredMemberLayout member)

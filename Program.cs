@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using Ruri.ShaderDecompiler;
 using Ruri.ShaderDecompiler.Engine;
 using Ruri.ShaderDecompiler.Utils;
@@ -23,6 +24,16 @@ namespace Ruri.ShaderDecompiler
                     ? Path.GetFullPath(args[1])
                     : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "SelfTestOutput");
                 return RunSelfTest(outputRoot);
+            }
+
+            if (args.Length >= 1 && string.Equals(args[0], "--analyze-preshader", StringComparison.OrdinalIgnoreCase))
+            {
+                return RunAnalyzePreshader(args);
+            }
+
+            if (args.Length >= 1 && string.Equals(args[0], "--analyze-spirv-images", StringComparison.OrdinalIgnoreCase))
+            {
+                return RunAnalyzeSpirvImages(args);
             }
 
             if (args.Length < 1)
@@ -127,6 +138,7 @@ namespace Ruri.ShaderDecompiler
                 string? normalizedMaterialFilter = string.IsNullOrWhiteSpace(materialFilter)
                     ? null
                     : materialFilter.Replace('\\', '/');
+                HashSet<string>? materialFilterVariants = BuildMaterialPathVariants(normalizedMaterialFilter);
 
                 var lib = UnrealShaderLibraryReader.Read(inputPath);
                 Console.WriteLine($"Read Library: {lib.Version} Version, {lib.ShaderEntries.Length} shaders.");
@@ -182,23 +194,16 @@ namespace Ruri.ShaderDecompiler
                     }
                 }
 
-                // 2. Auto-detect unified metadata if not provided.
-                if (string.IsNullOrEmpty(mappingPath))
+                if (string.IsNullOrWhiteSpace(outputPath))
                 {
-                    var dir = Path.GetDirectoryName(inputPath);
-                    while (dir != null)
-                    {
-                        var candidate = Path.Combine(dir, "UnifiedShaderMetadata.json");
-                        if (File.Exists(candidate))
-                        {
-                            mappingPath = candidate;
-                            Console.WriteLine($"[Auto-Detect] Found unified metadata file: {mappingPath}");
-                            break;
-                        }
-                        var parent = Directory.GetParent(dir);
-                        if (parent == null) break;
-                        dir = parent.FullName;
-                    }
+                    Console.Error.WriteLine("Error: ushaderlib processing requires an explicit output directory argument.");
+                    return 1;
+                }
+
+                if (string.IsNullOrWhiteSpace(mappingPath))
+                {
+                    Console.Error.WriteLine("Error: ushaderlib processing requires an explicit --mapping <UnifiedShaderMetadata.json> argument.");
+                    return 1;
                 }
 
                 Console.WriteLine($"Mapping path: {(mappingPath ?? "<null>")}");
@@ -211,53 +216,49 @@ namespace Ruri.ShaderDecompiler
                 UnifiedShaderMetadataResolver? unifiedResolver = null;
                 if (!string.IsNullOrEmpty(mappingPath) && File.Exists(mappingPath))
                 {
-                    try
+                    Console.WriteLine($"Loading unified metadata from {mappingPath}...");
+                    unifiedResolver = UnifiedShaderMetadataResolver.LoadFromFile(mappingPath);
+                    if (unifiedResolver != null)
                     {
-                        Console.WriteLine($"Loading unified metadata from {mappingPath}...");
-                        unifiedResolver = UnifiedShaderMetadataResolver.LoadFromFile(mappingPath);
-                        if (unifiedResolver != null)
+                        var hashToMats = unifiedResolver.BuildPackageShaderMapHashToMaterialsMap(normalizedMaterialFilter);
+                        Console.WriteLine($"Loaded {hashToMats.Count} shader map hash entries.");
+
+                        int mapCount = Math.Min(lib.ShaderMapEntries.Length, lib.ShaderMapHashes.Count);
+                        int mappedShaders = 0;
+
+                        for (int i = 0; i < mapCount; i++)
                         {
-                            var hashToMats = unifiedResolver.BuildHashToMaterialsMap(normalizedMaterialFilter);
-                            Console.WriteLine($"Loaded {hashToMats.Count} shader map hash entries.");
-
-                            int mapCount = Math.Min(lib.ShaderMapEntries.Length, lib.ShaderMapHashes.Count);
-                            int mappedShaders = 0;
-
-                            for (int i = 0; i < mapCount; i++)
+                            var hash = lib.ShaderMapHashes[i];
+                            if (!hashToMats.TryGetValue(hash, out var mats))
                             {
-                                var hash = lib.ShaderMapHashes[i];
-                                if (!hashToMats.TryGetValue(hash, out var mats))
-                                {
-                                    continue;
-                                }
+                                continue;
+                            }
 
-                                var entry = lib.ShaderMapEntries[i];
-                                string fullMaterialPath = mats.FirstOrDefault() ?? "Unknown";
-                                var niceName = Path.GetFileNameWithoutExtension(fullMaterialPath);
-                                if (string.IsNullOrEmpty(niceName)) niceName = "UnknownMaterial";
+                            var entry = lib.ShaderMapEntries[i];
+                            string fullMaterialPath = mats.FirstOrDefault() ?? "Unknown";
+                            var niceName = Path.GetFileNameWithoutExtension(fullMaterialPath);
+                            if (string.IsNullOrEmpty(niceName)) niceName = "UnknownMaterial";
 
-                                for (uint k = 0; k < entry.NumShaders; k++)
+                            for (uint k = 0; k < entry.NumShaders; k++)
+                            {
+                                long idxInternal = entry.ShaderIndicesOffset + k;
+                                if (idxInternal < lib.ShaderIndices.Length)
                                 {
-                                    long idxInternal = entry.ShaderIndicesOffset + k;
-                                    if (idxInternal < lib.ShaderIndices.Length)
+                                    uint sIdx = lib.ShaderIndices[idxInternal];
+                                    if (!usageMap.ContainsKey((int)sIdx)) usageMap[(int)sIdx] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                                    foreach (var m in mats) usageMap[(int)sIdx].Add(m);
+
+                                    if (!nameMap.ContainsKey((int)sIdx))
                                     {
-                                        uint sIdx = lib.ShaderIndices[idxInternal];
-                                        if (!usageMap.ContainsKey((int)sIdx)) usageMap[(int)sIdx] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                                        foreach (var m in mats) usageMap[(int)sIdx].Add(m);
-
-                                        if (!nameMap.ContainsKey((int)sIdx))
-                                        {
-                                            nameMap[(int)sIdx] = niceName;
-                                            mappedShaders++;
-                                        }
+                                        nameMap[(int)sIdx] = niceName;
+                                        mappedShaders++;
                                     }
                                 }
                             }
-
-                            Console.WriteLine($"Mapped {mappedShaders} shaders using unified metadata.");
                         }
+
+                        Console.WriteLine($"Mapped {mappedShaders} shaders using unified metadata.");
                     }
-                    catch (Exception ex) { Console.WriteLine($"[Warning] Unified metadata load failed: {ex.Message}"); }
                 }
 
                 // 4. Load runtime UE material metadata resolver.
@@ -271,10 +272,9 @@ namespace Ruri.ShaderDecompiler
                     }
                 }
 
-                if (outputPath == null) 
-                    outputPath = Path.Combine(Path.GetDirectoryName(inputPath)!, Path.GetFileNameWithoutExtension(inputPath) + "_Export");
-                
-                Directory.CreateDirectory(outputPath);
+                outputPath = Path.GetFullPath(outputPath);
+                RecreateDirectory(outputPath);
+                Console.WriteLine($"Session output: {outputPath}");
 
                 using var decompiler = new ShaderDecompiler(outputPath);
                 int successCount = 0;
@@ -287,11 +287,10 @@ namespace Ruri.ShaderDecompiler
                     
                      if (code == null) continue;
 
-                    if (normalizedMaterialFilter != null)
+                    if (materialFilterVariants is { Count: > 0 })
                     {
                         if (!usageMap.TryGetValue(i, out var filteredUsage) ||
-                            !filteredUsage.Any(m => string.Equals(m, normalizedMaterialFilter, StringComparison.OrdinalIgnoreCase) ||
-                                                    m.EndsWith(normalizedMaterialFilter, StringComparison.OrdinalIgnoreCase)))
+                            !filteredUsage.Any(m => MaterialPathMatchesFilter(m, materialFilterVariants)))
                         {
                             continue;
                         }
@@ -314,7 +313,8 @@ namespace Ruri.ShaderDecompiler
                             
                             finalName = string.Join("_", finalName.Split(Path.GetInvalidFileNameChars()));
                             string outName = $"{finalName}_{typeSuffix}_{i}.hlsl";
-                            
+                            ShaderSymbolData? injectionSymbols = null;
+                             
                             // Inject Header
                             if (usageMap.TryGetValue(i, out var usedBy))
                             {
@@ -328,41 +328,20 @@ namespace Ruri.ShaderDecompiler
                                  // Try to find a material with runtime metadata
                                   UeMaterialSymbolInfo? bestMaterialInfo = null;
                                    string bestMaterialName = "";
-                                  string? shaderMapHashForShader = null;
+                                   string shaderPlatformForShader = entry.Frequency switch
+                                   {
+                                       0 or 1 or 2 or 3 or 4 or 5 => "SP_PCD3D_SM5",
+                                       _ => string.Empty
+                                   };
 
-                                  foreach (var shaderMapEntry in lib.ShaderMapEntries.Select((value, index) => (value, index)))
-                                  {
-                                      uint start = shaderMapEntry.value.ShaderIndicesOffset;
-                                      uint count = shaderMapEntry.value.NumShaders;
-                                      for (uint mapShaderIndex = 0; mapShaderIndex < count; mapShaderIndex++)
-                                      {
-                                          long shaderIndexTableOffset = start + mapShaderIndex;
-                                          if (shaderIndexTableOffset >= lib.ShaderIndices.Length)
-                                          {
-                                              break;
-                                          }
-
-                                          if (lib.ShaderIndices[shaderIndexTableOffset] == i && shaderMapEntry.index < lib.ShaderMapHashes.Count)
-                                          {
-                                              shaderMapHashForShader = lib.ShaderMapHashes[shaderMapEntry.index];
-                                              break;
-                                          }
-                                      }
-
-                                      if (shaderMapHashForShader != null)
-                                      {
-                                          break;
-                                      }
-                                  }
-
-                                  foreach(var m in usedBy) 
-                                  {
-                                      if (bestMaterialInfo == null && materialSymbolExtractor != null)
-                                      {
-                                          bestMaterialInfo = materialSymbolExtractor.GetMaterial(m, shaderMapHashForShader);
-                                          if (bestMaterialInfo != null) 
-                                          {
-                                              bestMaterialName = m;
+                                   foreach(var m in usedBy) 
+                                   {
+                                       if (bestMaterialInfo == null && materialSymbolExtractor != null)
+                                       {
+                                           bestMaterialInfo = materialSymbolExtractor.GetMaterial(m, shaderPlatformForShader);
+                                           if (bestMaterialInfo != null) 
+                                           {
+                                               bestMaterialName = m;
                                               Console.WriteLine($"[调试] 成功匹配: '{m}'");
                                           }
                                          else
@@ -381,9 +360,7 @@ namespace Ruri.ShaderDecompiler
                                   sb.AppendLine(" */");
                                   sb.AppendLine("");
 
-                                  ShaderSymbolData? injectionSymbols = null;
-
-                                  // Inject runtime material metadata & prepare symbols.
+                                   // Inject runtime material metadata & prepare symbols.
                                   if (bestMaterialInfo != null)
                                   {
                                       Console.WriteLine($"[信息] Shader {i} 匹配到材质: {bestMaterialName} ({(bestMaterialInfo.UsedLoadedResources ? "LoadedMaterialResources" : "PropertiesFallback")})");
@@ -396,14 +373,24 @@ namespace Ruri.ShaderDecompiler
                                   }
 
                                  // Re-decompile with symbols if available to get native variable names
-                                 if (injectionSymbols != null)
-                                 {
-                                     try 
-                                     {
-                                         // Decompile again, this time with symbols which will be patched into SPIR-V
-                                         var resWithSymbols = decompiler.Decompile(code, ShaderFormat.Unknown, injectionSymbols, 50);
+                                  if (injectionSymbols != null)
+                                  {
+                                      Console.WriteLine($"[符号元数据] Shader {i} resources={injectionSymbols.Resources.Count} constantBuffers={injectionSymbols.ConstantBuffers.Count}");
+                                      foreach (ConstantBuffer constantBuffer in injectionSymbols.ConstantBuffers)
+                                      {
+                                          Console.WriteLine($"[符号元数据]   CB {constantBuffer.Name} members={constantBuffer.CBParams.Count} structs={constantBuffer.StructParams.Count}");
+                                      }
+
+                                      try 
+                                      {
+                                          // Decompile again, this time with symbols which will be patched into SPIR-V
+                                          var resWithSymbols = decompiler.Decompile(code, ShaderFormat.Unknown, injectionSymbols, 50);
                                          if (resWithSymbols.Success)
                                          {
+                                              if (!string.IsNullOrWhiteSpace(resWithSymbols.StructuredRewriteSummary))
+                                              {
+                                                  Console.WriteLine($"[结构化CB] Shader {i}\n{resWithSymbols.StructuredRewriteSummary}");
+                                              }
                                               res = resWithSymbols;
                                          }
                                          else
@@ -420,7 +407,20 @@ namespace Ruri.ShaderDecompiler
                                  res.HlslSource = sb.ToString() + res.HlslSource;
                             }
 
-                            File.WriteAllText(Path.Combine(outputPath, outName), res.HlslSource);
+                            string outputFilePath = Path.Combine(outputPath, outName);
+                            string basePath = Path.Combine(outputPath, Path.GetFileNameWithoutExtension(outName));
+                            File.WriteAllText(outputFilePath, res.HlslSource);
+
+                            if (res.FinalMetadata != null)
+                            {
+                                File.WriteAllText(basePath + ".metadata.json", JsonConvert.SerializeObject(res.FinalMetadata, Formatting.Indented));
+                            }
+
+                            if (res.IntermediateSpirv != null && res.IntermediateSpirv.Length > 0)
+                            {
+                                File.WriteAllBytes(basePath + ".spv", res.IntermediateSpirv);
+                                WriteSelfTestBindingDiagnostics(basePath + ".bindings.txt", res.IntermediateSpirv);
+                            }
                             successCount++;
                         }
                         else
@@ -463,6 +463,103 @@ namespace Ruri.ShaderDecompiler
                 11 => "AS", // Amplification
                 _ => $"Freq{frequency}"
             };
+        }
+
+        static int RunAnalyzePreshader(string[] args)
+        {
+            if (args.Length < 2)
+            {
+                Console.Error.WriteLine("Usage: ShaderDecompiler.exe --analyze-preshader <UnifiedShaderMetadata.json> --material <material path>");
+                return 1;
+            }
+
+            string metadataPath = Path.GetFullPath(args[1]);
+            string? materialPath = null;
+            for (int i = 2; i < args.Length; i++)
+            {
+                if (string.Equals(args[i], "--material", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    materialPath = args[i + 1];
+                    i++;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(materialPath))
+            {
+                Console.Error.WriteLine("Missing required option: --material <material path>");
+                return 1;
+            }
+
+            try
+            {
+                return ShaderTruthAnalyzer.Analyze(metadataPath, materialPath);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Analyze Error: {ex.Message}");
+                return 1;
+            }
+        }
+
+        private static bool MaterialPathMatchesFilter(string materialPath, HashSet<string> filterVariants)
+        {
+            HashSet<string> materialVariants = BuildMaterialPathVariants(materialPath);
+            return materialVariants.Overlaps(filterVariants);
+        }
+
+        private static HashSet<string> BuildMaterialPathVariants(string? materialPath)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(materialPath))
+            {
+                return result;
+            }
+
+            string normalized = materialPath.Replace('\\', '/');
+            AddMaterialPathVariant(result, normalized);
+
+            if (normalized.StartsWith("/", StringComparison.Ordinal))
+            {
+                AddMaterialPathVariant(result, normalized[1..]);
+            }
+            else
+            {
+                AddMaterialPathVariant(result, "/" + normalized);
+            }
+
+            int dotIndex = normalized.LastIndexOf('.');
+            int slashIndex = normalized.LastIndexOf('/');
+            if (dotIndex > slashIndex)
+            {
+                AddMaterialPathVariant(result, normalized[..dotIndex]);
+            }
+
+            foreach (string current in result.ToArray())
+            {
+                int contentMarkerIndex = current.IndexOf("/Content/", StringComparison.OrdinalIgnoreCase);
+                if (contentMarkerIndex >= 0)
+                {
+                    string trimmed = current[(contentMarkerIndex + "/Content/".Length)..];
+                    AddMaterialPathVariant(result, trimmed);
+                    AddMaterialPathVariant(result, "/" + trimmed);
+                }
+                else if (current.StartsWith("Content/", StringComparison.OrdinalIgnoreCase))
+                {
+                    string trimmed = current["Content/".Length..];
+                    AddMaterialPathVariant(result, trimmed);
+                    AddMaterialPathVariant(result, "/" + trimmed);
+                }
+            }
+
+            return result;
+        }
+
+        private static void AddMaterialPathVariant(HashSet<string> variants, string? value)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                variants.Add(value!);
+            }
         }
 
         private sealed record SelfTestStageSpec(
@@ -510,6 +607,148 @@ namespace Ruri.ShaderDecompiler
             Console.WriteLine($"Self-test passed. Output: {outputRoot}");
             return 0;
         }
+
+        static int RunAnalyzeSpirvImages(string[] args)
+        {
+            if (args.Length < 2)
+            {
+                Console.Error.WriteLine("Usage: ShaderDecompiler.exe --analyze-spirv-images <shader.spv>");
+                return 1;
+            }
+
+            string spirvPath = Path.GetFullPath(args[1]);
+            if (!File.Exists(spirvPath))
+            {
+                Console.Error.WriteLine($"SPIR-V file not found: {spirvPath}");
+                return 1;
+            }
+
+            SpirvModule module = SpirvModule.Parse(File.ReadAllBytes(spirvPath));
+            var names = new Dictionary<uint, string>();
+            var pointerTypes = new Dictionary<uint, (uint StorageClass, uint PointedTypeId)>();
+            var variablePointerTypes = new Dictionary<uint, uint>();
+            var imageTypes = new Dictionary<uint, SpirvImageTypeInfo>();
+            var sampledImageTypes = new Dictionary<uint, uint>();
+            var descriptorSets = new Dictionary<uint, uint>();
+            var bindings = new Dictionary<uint, uint>();
+
+            foreach (SpirvInstruction instruction in module.Instructions)
+            {
+                switch (instruction.OpCode)
+                {
+                    case SpvOpCode.OpName when instruction.Words.Length >= 3:
+                        {
+                            string? name = ReadSpirvString(instruction.Words, 2);
+                            if (!string.IsNullOrWhiteSpace(name))
+                            {
+                                names[instruction[1]] = name;
+                            }
+
+                            break;
+                        }
+                    case SpvOpCode.OpDecorate when instruction.Words.Length >= 4:
+                        if (instruction[2] == SpvOpCode.DecorationDescriptorSet)
+                        {
+                            descriptorSets[instruction[1]] = instruction[3];
+                        }
+                        else if (instruction[2] == SpvOpCode.DecorationBinding)
+                        {
+                            bindings[instruction[1]] = instruction[3];
+                        }
+
+                        break;
+                    case SpvOpCode.OpTypePointer when instruction.Words.Length >= 4:
+                        pointerTypes[instruction[1]] = (instruction[2], instruction[3]);
+                        break;
+                    case SpvOpCode.OpVariable when instruction.Words.Length >= 4:
+                        variablePointerTypes[instruction[2]] = instruction[1];
+                        break;
+                    case SpvOpCode.OpTypeImage when instruction.Words.Length >= 9:
+                        imageTypes[instruction[1]] = new SpirvImageTypeInfo(
+                            SampledTypeId: instruction[2],
+                            Dim: instruction[3],
+                            Depth: instruction[4],
+                            Arrayed: instruction[5],
+                            Multisampled: instruction[6],
+                            Sampled: instruction[7],
+                            Format: instruction[8]);
+                        break;
+                    case SpvOpCode.OpTypeSampledImage when instruction.Words.Length >= 3:
+                        sampledImageTypes[instruction[1]] = instruction[2];
+                        break;
+                }
+            }
+
+            foreach ((uint variableId, uint pointerTypeId) in variablePointerTypes.OrderBy(pair => descriptorSets.TryGetValue(pair.Key, out uint set) ? set : uint.MaxValue).ThenBy(pair => bindings.TryGetValue(pair.Key, out uint binding) ? binding : uint.MaxValue))
+            {
+                if (!descriptorSets.TryGetValue(variableId, out uint set) || !bindings.TryGetValue(variableId, out uint binding))
+                {
+                    continue;
+                }
+
+                if (!pointerTypes.TryGetValue(pointerTypeId, out (uint StorageClass, uint PointedTypeId) pointerInfo) || pointerInfo.StorageClass != SpvOpCode.StorageClassUniformConstant)
+                {
+                    continue;
+                }
+
+                uint pointedTypeId = pointerInfo.PointedTypeId;
+                bool isSampledImageWrapper = false;
+                if (sampledImageTypes.TryGetValue(pointedTypeId, out uint imageTypeId))
+                {
+                    pointedTypeId = imageTypeId;
+                    isSampledImageWrapper = true;
+                }
+
+                if (!imageTypes.TryGetValue(pointedTypeId, out SpirvImageTypeInfo imageInfo))
+                {
+                    continue;
+                }
+
+                string name = names.TryGetValue(variableId, out string? variableName) ? variableName : $"id_{variableId}";
+                Console.WriteLine($"Set={set} Binding={binding} VarId={variableId} Name={name} SampledImageWrapper={isSampledImageWrapper}");
+                Console.WriteLine($"  ImageTypeId={pointedTypeId} SampledTypeId={imageInfo.SampledTypeId} Dim={FormatSpirvDim(imageInfo.Dim)} Arrayed={imageInfo.Arrayed} Depth={imageInfo.Depth} MS={imageInfo.Multisampled} Sampled={imageInfo.Sampled} Format={imageInfo.Format}");
+            }
+
+            return 0;
+        }
+
+        static string? ReadSpirvString(uint[] words, int startIndex)
+        {
+            if (startIndex >= words.Length)
+            {
+                return null;
+            }
+
+            byte[] bytes = new byte[(words.Length - startIndex) * 4];
+            Buffer.BlockCopy(words, startIndex * 4, bytes, 0, bytes.Length);
+            int terminatorIndex = Array.IndexOf(bytes, (byte)0);
+            int length = terminatorIndex >= 0 ? terminatorIndex : bytes.Length;
+            return length == 0 ? string.Empty : Encoding.UTF8.GetString(bytes, 0, length);
+        }
+
+        static string FormatSpirvDim(uint dim)
+        {
+            return dim switch
+            {
+                0 => "1D",
+                1 => "2D",
+                2 => "3D",
+                3 => "Cube",
+                4 => "Rect",
+                5 => "Buffer",
+                6 => "SubpassData",
+                _ => $"Unknown({dim})"
+            };
+        }
+
+        readonly record struct SpirvImageTypeInfo(
+            uint SampledTypeId,
+            uint Dim,
+            uint Depth,
+            uint Arrayed,
+            uint Multisampled,
+            uint Sampled,
+            uint Format);
 
         static void RunSelfTestStage(
             SelfTestStageSpec stage,

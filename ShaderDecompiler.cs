@@ -31,6 +31,8 @@ public class DecompileResult
     public string? ErrorMessage { get; set; }
     public byte[]? IntermediateSpirv { get; set; }
     public string? ShaderName { get; set; }
+    public string? StructuredRewriteSummary { get; set; }
+    public ShaderSymbolData? FinalMetadata { get; set; }
 }
 
 /// <summary>
@@ -103,6 +105,11 @@ public sealed class ShaderDecompiler : IDisposable
             }
 
             ShaderSymbolData finalMetadata = MergeMetadata(bundle.Symbols, metadata);
+            Console.WriteLine($"[Decompile] merged resources={finalMetadata.Resources.Count} constantBuffers={finalMetadata.ConstantBuffers.Count}");
+            foreach (ConstantBuffer constantBuffer in finalMetadata.ConstantBuffers)
+            {
+                Console.WriteLine($"[Decompile]   CB {constantBuffer.Name} members={constantBuffer.CBParams.Count} structs={constantBuffer.StructParams.Count}");
+            }
 
             byte[] spirv = format switch
             {
@@ -130,7 +137,9 @@ public sealed class ShaderDecompiler : IDisposable
                 Success = true,
                 HlslSource = hlsl,
                 IntermediateSpirv = patchedSpirv,
-                ShaderName = recoveredShaderName ?? finalMetadata.DebugName
+                ShaderName = recoveredShaderName ?? finalMetadata.DebugName,
+                StructuredRewriteSummary = _structuredCBufferRewriter.LastRewriteSummary,
+                FinalMetadata = finalMetadata
             };
         }
         catch (Exception ex)
@@ -438,7 +447,6 @@ public sealed class ShaderDecompiler : IDisposable
                             }
                         }
 
-                        bool patchedAnyMember = false;
                         foreach (var parameter in constantBuffer.CBParams.Where(p => !string.IsNullOrWhiteSpace(p.ParamName)))
                         {
                             int? targetIndex = FindMemberIndexByMetadata(match, parameter.Index);
@@ -446,7 +454,6 @@ public sealed class ShaderDecompiler : IDisposable
                             if (targetIndex.HasValue)
                             {
                                 memberPatches.Add((match.StructTypeId.Value, (uint)targetIndex.Value, parameter.ParamName));
-                                patchedAnyMember = true;
                             }
                         }
                     }

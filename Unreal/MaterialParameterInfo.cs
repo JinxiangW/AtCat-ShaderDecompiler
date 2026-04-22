@@ -116,6 +116,33 @@ namespace Ruri.ShaderDecompiler.Unreal
     }
 
     /// <summary>
+    /// FMaterialTextureParameterInfo (MaterialShared.h:481-502)
+    /// </summary>
+    public class FMaterialTextureParameterInfo
+    {
+        public FMaterialParameterInfo ParameterInfo { get; set; } = new();
+        public int TextureIndex { get; set; } = -1;
+        public string SamplerSource { get; set; } = string.Empty;
+        public int VirtualTextureLayerIndex { get; set; }
+
+        public override string ToString() =>
+            $"{ParameterInfo} TextureIndex={TextureIndex} SamplerSource={SamplerSource} VirtualTextureLayerIndex={VirtualTextureLayerIndex}";
+    }
+
+    /// <summary>
+    /// FMaterialExternalTextureParameterInfo (MaterialShared.h:505-523)
+    /// </summary>
+    public class FMaterialExternalTextureParameterInfo
+    {
+        public string ParameterName { get; set; } = string.Empty;
+        public Guid ExternalTextureGuid { get; set; }
+        public int SourceTextureIndex { get; set; }
+
+        public override string ToString() =>
+            $"ParameterName={ParameterName} ExternalTextureGuid={ExternalTextureGuid} SourceTextureIndex={SourceTextureIndex}";
+    }
+
+    /// <summary>
     /// FRuntimeVirtualTextureParameterValue (MaterialInstance.h:287-331)
     /// </summary>
     public class FRuntimeVirtualTextureParameterValue

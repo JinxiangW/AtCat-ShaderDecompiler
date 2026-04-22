@@ -19,7 +19,8 @@ namespace Ruri.ShaderDecompiler.Unreal
     /// - VirtualTexturePhysical_{i}                 → Virtual (RVT/SVT)
     /// - SparseVolumeTexturePageTable_{i}           → SparseVolume
     /// 
-    /// NOTE: For precise parameter name mapping, use PreciseParameterMapper instead.
+    /// NOTE: This parser only recognizes UE-generated resource member name shapes.
+    /// It does not provide a parameter-name-to-final-binding mapping.
     /// </summary>
     public static class TextureBindingParser
     {
