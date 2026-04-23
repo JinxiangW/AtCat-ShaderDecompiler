@@ -26,6 +26,7 @@ internal sealed class StructuredCBufferRewriter
         summary.Add($"Metadata resources={metadata.Resources.Count}, constantBuffers={metadata.ConstantBuffers.Count}");
         summary.Add($"Analyzed decoratedIds={analysis.SetBindingById.Count}, variables={analysis.VariablePointerTypes.Count}, pointers={analysis.PointerTypes.Count}, structs={analysis.StructMembers.Count}, arrays={analysis.ArrayTypes.Count}");
         var flatBuffers = BuildFlatUniformBufferMap(metadata, analysis, summary);
+        var metadataBuffers = BuildMetadataBufferCandidates(metadata, summary);
         if (flatBuffers.Count == 0)
         {
             LastRewriteSummary = summary.Count == 0
@@ -38,67 +39,20 @@ internal sealed class StructuredCBufferRewriter
         var types = AnalyzeTypes(module, analysis);
         var rewrites = new List<BufferRewritePlan>();
 
+        var assignedMetadataNames = new HashSet<string>(StringComparer.Ordinal);
         foreach (FlatUniformBufferInfo flatBuffer in flatBuffers.Values)
         {
-            FlatUniformBufferInfo candidateBuffer = flatBuffer;
-            StructuredBufferLayout? layout = BuildStructuredLayout(candidateBuffer);
-
-            if (layout == null)
+            if (!TryPlanRewrite(module, types, constants, flatBuffer, metadataBuffers, assignedMetadataNames, summary, out BufferRewritePlan? plan) || plan == null)
             {
-                summary.Add($"[{candidateBuffer.Metadata.Name}] layout build failed");
                 continue;
             }
-
-            if (!IsStrictFlatUniformArray(candidateBuffer, layout))
-            {
-                summary.Add($"[{candidateBuffer.Metadata.Name}] strict flat array check failed: stride={candidateBuffer.ArrayStride}, arrayLength={candidateBuffer.ArrayLength}, requiredRegisters={layout.RequiredRegisterCount}");
-                continue;
-            }
-
-            var memberTypeIds = new List<uint>(layout.Members.Count);
-            bool failed = false;
-            foreach (StructuredMemberLayout member in layout.Members)
-            {
-                uint typeId = ResolveMemberTypeId(module, types, member);
-                if (typeId == 0)
-                {
-                    failed = true;
-                    break;
-                }
-
-                member.ResolvedTypeId = typeId;
-                memberTypeIds.Add(typeId);
-            }
-
-            if (failed)
-            {
-                summary.Add($"[{candidateBuffer.Metadata.Name}] member type resolution failed");
-                continue;
-            }
-
-            if (!CanRewriteAllAccessChains(module, candidateBuffer, layout, constants, out string? validationFailure))
-            {
-                summary.Add($"[{candidateBuffer.Metadata.Name}] rewrite validation failed: {validationFailure}");
-                continue;
-            }
-
-            uint newStructTypeId = module.AllocateId();
-            uint newPointerTypeId = module.AllocateId();
-
-            var plan = new BufferRewritePlan
-            {
-                Info = candidateBuffer,
-                Layout = layout,
-                NewStructTypeId = newStructTypeId,
-                NewPointerTypeId = newPointerTypeId,
-                MemberTypeIds = memberTypeIds
-            };
 
             rewrites.Add(plan);
-            _resolvedBufferNames[(candidateBuffer.Metadata.Set, candidateBuffer.Metadata.Binding)] = candidateBuffer.Metadata.Name;
+            assignedMetadataNames.Add(plan.Info.Metadata.Name);
+            _resolvedBufferNames[(plan.Info.ActualSet, plan.Info.ActualBinding)] = plan.Info.Metadata.Name;
             InsertStructuredType(module, plan);
             InsertStructuredNames(module, plan);
-            summary.Add($"[{candidateBuffer.Metadata.Name}] rewrite planned with {layout.Members.Count} members");
+            summary.Add($"[{plan.Info.Metadata.Name}] rewrite planned with {plan.Layout.Members.Count} members");
         }
 
         if (rewrites.Count == 0)
@@ -164,6 +118,9 @@ internal sealed class StructuredCBufferRewriter
                     break;
                 case SpvOpCode.OpTypeStruct when instruction.Words.Length >= 3:
                     analysis.StructMembers[instruction[1]] = instruction.Words.Skip(2).ToArray();
+                    break;
+                case SpvOpCode.OpTypeVector when instruction.Words.Length >= 4:
+                    analysis.VectorShapes[instruction[1]] = (instruction[2], instruction[3]);
                     break;
                 case SpvOpCode.OpTypeArray when instruction.Words.Length >= 4:
                     analysis.ArrayTypes[instruction[1]] = (instruction[2], instruction[3]);
@@ -233,6 +190,8 @@ internal sealed class StructuredCBufferRewriter
 
                 result[(resource.Set, resource.Binding)] = new FlatUniformBufferInfo
                 {
+                    ActualSet = resource.Set,
+                    ActualBinding = resource.Binding,
                     VariableId = candidateId,
                     PointerTypeId = pointerTypeId,
                     StructTypeId = pointerInfo.TypeId,
@@ -255,6 +214,134 @@ internal sealed class StructuredCBufferRewriter
         }
 
         return result;
+    }
+
+    private static List<MetadataBufferCandidate> BuildMetadataBufferCandidates(ShaderSymbolData metadata, List<string> summary)
+    {
+        var result = new List<MetadataBufferCandidate>();
+        foreach (ResourceBinding resource in metadata.Resources.Where(r => r.RegisterType == 'b'))
+        {
+            ConstantBuffer? constantBuffer = metadata.ConstantBuffers.FirstOrDefault(cb => string.Equals(cb.Name, resource.Name, StringComparison.Ordinal));
+            if (constantBuffer == null)
+            {
+                summary.Add($"[{resource.Name}] no USC constant buffer metadata found");
+                continue;
+            }
+
+            result.Add(new MetadataBufferCandidate
+            {
+                Resource = resource,
+                ConstantBuffer = constantBuffer
+            });
+        }
+
+        return result;
+    }
+
+    private static bool TryPlanRewrite(
+        SpirvModule module,
+        TypeInfo types,
+        ConstantMaps constants,
+        FlatUniformBufferInfo actualBuffer,
+        List<MetadataBufferCandidate> metadataBuffers,
+        HashSet<string> assignedMetadataNames,
+        List<string> summary,
+        out BufferRewritePlan? plan)
+    {
+        plan = null;
+        List<MetadataBufferCandidate> orderedCandidates = BuildOrderedMetadataCandidates(actualBuffer, metadataBuffers, assignedMetadataNames);
+        List<string> failures = new();
+
+        foreach (MetadataBufferCandidate metadataCandidate in orderedCandidates)
+        {
+            FlatUniformBufferInfo candidateBuffer = actualBuffer.WithMetadata(metadataCandidate.Resource, metadataCandidate.ConstantBuffer);
+            if (!TryCreateRewritePlan(module, types, constants, candidateBuffer, out plan, out string failure))
+            {
+                failures.Add($"[{metadataCandidate.Resource.Name}] {failure}");
+                continue;
+            }
+
+            if (!string.Equals(metadataCandidate.Resource.Name, actualBuffer.Metadata.Name, StringComparison.Ordinal))
+            {
+                summary.Add($"[{actualBuffer.Metadata.Name}] remapped binding {actualBuffer.Metadata.Set}:{actualBuffer.Metadata.Binding} -> {metadataCandidate.Resource.Name}");
+            }
+
+            return true;
+        }
+
+        foreach (string failure in failures)
+        {
+            summary.Add(failure);
+        }
+
+        return false;
+    }
+
+    private static List<MetadataBufferCandidate> BuildOrderedMetadataCandidates(
+        FlatUniformBufferInfo actualBuffer,
+        List<MetadataBufferCandidate> metadataBuffers,
+        HashSet<string> assignedMetadataNames)
+    {
+        return metadataBuffers
+            .Where(candidate => !assignedMetadataNames.Contains(candidate.Resource.Name) || string.Equals(candidate.Resource.Name, actualBuffer.Metadata.Name, StringComparison.Ordinal))
+            .OrderByDescending(candidate => candidate.Resource.Set == actualBuffer.Metadata.Set && candidate.Resource.Binding == actualBuffer.Metadata.Binding)
+            .ThenByDescending(candidate => string.Equals(candidate.Resource.Name, actualBuffer.Metadata.Name, StringComparison.Ordinal))
+            .ThenBy(candidate => candidate.Resource.Name, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private static bool TryCreateRewritePlan(
+        SpirvModule module,
+        TypeInfo types,
+        ConstantMaps constants,
+        FlatUniformBufferInfo candidateBuffer,
+        out BufferRewritePlan? plan,
+        out string failure)
+    {
+        plan = null;
+            StructuredBufferLayout? layout = BuildStructuredLayout(candidateBuffer, module, constants);
+        if (layout == null)
+        {
+            failure = "layout build failed";
+            return false;
+        }
+
+        if (!IsStrictFlatUniformArray(candidateBuffer, layout))
+        {
+            failure = $"strict flat array check failed: stride={candidateBuffer.ArrayStride}, arrayLength={candidateBuffer.ArrayLength}, requiredRegisters={layout.RequiredRegisterCount}";
+            return false;
+        }
+
+        var memberTypeIds = new List<uint>(layout.Members.Count);
+        foreach (StructuredMemberLayout member in layout.Members)
+        {
+            uint typeId = ResolveMemberTypeId(module, types, member);
+            if (typeId == 0)
+            {
+                failure = "member type resolution failed";
+                return false;
+            }
+
+            member.ResolvedTypeId = typeId;
+            memberTypeIds.Add(typeId);
+        }
+
+        if (!CanRewriteAllAccessChains(module, candidateBuffer, layout, constants, out string? validationFailure))
+        {
+            failure = $"rewrite validation failed: {validationFailure}";
+            return false;
+        }
+
+        plan = new BufferRewritePlan
+        {
+            Info = candidateBuffer,
+            Layout = layout,
+            NewStructTypeId = module.AllocateId(),
+            NewPointerTypeId = module.AllocateId(),
+            MemberTypeIds = memberTypeIds
+        };
+        failure = string.Empty;
+        return true;
     }
 
     private static ConstantMaps BuildConstantMaps(SpirvModule module)
@@ -301,7 +388,7 @@ internal sealed class StructuredCBufferRewriter
             }
 
             accessChainCount++;
-            if (!TryParseFlatAccessChain(instruction, constants, out FlatAccessPath? accessPath))
+            if (!TryParseFlatAccessChain(instruction, constants, out FlatAccessPath accessPath))
             {
                 failure = $"unsupported access chain parse for resultId={instruction[2]} op={instruction.OpCode} words=[{string.Join(",", instruction.Words)}]";
                 return false;
@@ -401,7 +488,7 @@ internal sealed class StructuredCBufferRewriter
         return layout.RequiredRegisterCount == flatBuffer.ArrayLength;
     }
 
-    private static StructuredBufferLayout? BuildStructuredLayout(FlatUniformBufferInfo flatBuffer)
+    private static StructuredBufferLayout? BuildStructuredLayout(FlatUniformBufferInfo flatBuffer, SpirvModule module, ConstantMaps constants)
     {
         if (flatBuffer.ConstantBuffer.CBParams.Count == 0 && flatBuffer.ConstantBuffer.StructParams.Count == 0)
         {
@@ -411,6 +498,13 @@ internal sealed class StructuredCBufferRewriter
         var layout = new StructuredBufferLayout();
         var rawMembers = new List<StructuredMemberLayout>();
         int maxAvailableByteOffset = flatBuffer.ArrayLength * 16;
+
+        if (TryCreateSyntheticRepeatedStruct(flatBuffer, module, constants, out StructuredMemberLayout? repeatedStructMember))
+        {
+            rawMembers.Add(repeatedStructMember);
+        }
+        else
+        {
         foreach (ConstantBufferParameter metadataParameter in flatBuffer.ConstantBuffer.CBParams.OrderBy(p => p.Index))
         {
             MemberLogicalType? logicalType = TryCreateLogicalTypeFromUscLayout(metadataParameter);
@@ -506,6 +600,7 @@ internal sealed class StructuredCBufferRewriter
 
             rawMembers.Add(structMember);
         }
+        }
 
         rawMembers.Sort((left, right) => left.Metadata.Index.CompareTo(right.Metadata.Index));
 
@@ -526,6 +621,201 @@ internal sealed class StructuredCBufferRewriter
             : flatBuffer.ArrayLength;
         layout.MaxUsedRegisterCount = Math.Max(1, (maxUsedByteOffset + 15) / 16);
         return layout;
+    }
+
+    private static bool TryCreateSyntheticRepeatedStruct(
+        FlatUniformBufferInfo flatBuffer,
+        SpirvModule module,
+        ConstantMaps constants,
+        out StructuredMemberLayout? repeatedStructMember)
+    {
+        repeatedStructMember = null;
+
+        if (flatBuffer.ConstantBuffer.StructParams.Count != 0 || flatBuffer.ConstantBuffer.CBParams.Count == 0)
+        {
+            return false;
+        }
+
+        if (!TryAnalyzeRepeatedRecordPattern(module, flatBuffer, constants, out RepeatedRecordPattern? pattern))
+        {
+            return false;
+        }
+
+        int strideBytes = pattern.RegisterStride * 16;
+        if (flatBuffer.ConstantBuffer.CBParams.Any(parameter => parameter.Index < 0 || parameter.Index >= strideBytes))
+        {
+            return false;
+        }
+
+        int arrayLength = Math.Max(1, (flatBuffer.ArrayLength + pattern.RegisterStride - 1) / pattern.RegisterStride);
+        var structMember = new StructuredMemberLayout
+        {
+            Metadata = new ConstantBufferParameter
+            {
+                ParamName = flatBuffer.ConstantBuffer.Name,
+                Index = 0,
+                ParamType = ShaderParamType.Float,
+                Rows = 1,
+                Columns = 1,
+                IsMatrix = false,
+                ArraySize = arrayLength
+            },
+            LogicalType = new MemberLogicalType
+            {
+                Kind = LogicalTypeKind.Struct,
+                ScalarKind = ScalarKind.Float,
+                Rows = 1,
+                Columns = 1,
+                ArrayLength = arrayLength,
+                DeclaredByteSize = strideBytes,
+                UscIndex = 0,
+                IsMatrix = false
+            },
+            RegisterOffset = 0,
+            RegisterCount = pattern.RegisterStride * arrayLength,
+            StructName = $"{flatBuffer.ConstantBuffer.Name}_Record",
+            ParentBufferName = flatBuffer.ConstantBuffer.Name
+        };
+
+        foreach (int registerOffset in Enumerable.Range(0, pattern.RegisterStride))
+        {
+            string aliasName = ResolveRegisterAliasName(flatBuffer.ConstantBuffer, registerOffset);
+            structMember.Children.Add(new StructuredMemberLayout
+            {
+                Metadata = new ConstantBufferParameter
+                {
+                    ParamName = aliasName,
+                    ParamType = ShaderParamType.Float,
+                    Rows = 4,
+                    Columns = 1,
+                    IsMatrix = false,
+                    ArraySize = 1,
+                    Index = registerOffset * 16
+                },
+                LogicalType = new MemberLogicalType
+                {
+                    Kind = LogicalTypeKind.Vector,
+                    ScalarKind = ScalarKind.Float,
+                    Rows = 4,
+                    Columns = 1,
+                    ArrayLength = 1,
+                    DeclaredByteSize = 16,
+                    UscIndex = registerOffset * 16,
+                    IsMatrix = false
+                },
+                RegisterOffset = registerOffset,
+                RegisterCount = 1,
+                RelativeOffset = registerOffset * 16
+            });
+        }
+
+        if (structMember.Children.Count == 0)
+        {
+            return false;
+        }
+
+        structMember.Children.Sort((left, right) => left.RelativeOffset.CompareTo(right.RelativeOffset));
+        repeatedStructMember = structMember;
+        return true;
+    }
+
+    private static bool TryAnalyzeRepeatedRecordPattern(
+        SpirvModule module,
+        FlatUniformBufferInfo flatBuffer,
+        ConstantMaps constants,
+        out RepeatedRecordPattern? pattern)
+    {
+        pattern = null;
+        var strideCounts = new Dictionary<int, int>();
+        var accessedRegistersByStride = new Dictionary<int, HashSet<int>>();
+
+        foreach (SpirvInstruction instruction in module.Instructions)
+        {
+            if ((instruction.OpCode != SpvOpCode.OpAccessChain && instruction.OpCode != SpvOpCode.OpInBoundsAccessChain) || instruction.Words.Length < 5)
+            {
+                continue;
+            }
+
+            if (instruction[3] != flatBuffer.VariableId || !TryParseFlatAccessChain(instruction, constants, out FlatAccessPath accessPath))
+            {
+                continue;
+            }
+
+            if (accessPath.Slot.DynamicIndexId != 0 && accessPath.Slot.DynamicIndexStride > 1)
+            {
+                if (!strideCounts.ContainsKey(accessPath.Slot.DynamicIndexStride))
+                {
+                    strideCounts[accessPath.Slot.DynamicIndexStride] = 0;
+                    accessedRegistersByStride[accessPath.Slot.DynamicIndexStride] = new HashSet<int>();
+                }
+
+                strideCounts[accessPath.Slot.DynamicIndexStride]++;
+                accessedRegistersByStride[accessPath.Slot.DynamicIndexStride].Add(accessPath.Slot.ConstantRegisterOffset);
+            }
+        }
+
+        if (strideCounts.Count == 0)
+        {
+            return false;
+        }
+
+        int dominantStride = strideCounts
+            .OrderByDescending(entry => entry.Value)
+            .ThenByDescending(entry => entry.Key)
+            .First()
+            .Key;
+
+        HashSet<int> accessedRegisters = accessedRegistersByStride[dominantStride];
+        foreach (SpirvInstruction instruction in module.Instructions)
+        {
+            if ((instruction.OpCode != SpvOpCode.OpAccessChain && instruction.OpCode != SpvOpCode.OpInBoundsAccessChain) || instruction.Words.Length < 5)
+            {
+                continue;
+            }
+
+            if (instruction[3] != flatBuffer.VariableId || !TryParseFlatAccessChain(instruction, constants, out FlatAccessPath accessPath))
+            {
+                continue;
+            }
+
+            if (accessPath.Slot.DynamicIndexId == 0)
+            {
+                accessedRegisters.Add(Mod(accessPath.Slot.ConstantRegisterOffset, dominantStride));
+            }
+        }
+
+        pattern = new RepeatedRecordPattern
+        {
+            RegisterStride = dominantStride,
+            AccessedRegisters = accessedRegisters
+        };
+        return true;
+    }
+
+    private static string ResolveRegisterAliasName(ConstantBuffer constantBuffer, int registerOffset)
+    {
+        ConstantBufferParameter? alias = constantBuffer.CBParams
+            .Where(parameter => parameter.Index / 16 == registerOffset && !string.IsNullOrWhiteSpace(parameter.ParamName))
+            .OrderBy(parameter => parameter.Index % 16)
+            .ThenBy(parameter => parameter.Index)
+            .FirstOrDefault();
+
+        if (alias != null)
+        {
+            string leafName = alias.ParamName.Split('.').Last();
+            if (!string.IsNullOrWhiteSpace(leafName))
+            {
+                return leafName;
+            }
+        }
+
+        return $"slot_{registerOffset}";
+    }
+
+    private static int Mod(int value, int modulus)
+    {
+        int remainder = value % modulus;
+        return remainder < 0 ? remainder + modulus : remainder;
     }
 
     private static int GetMemberSpanBytes(StructuredMemberLayout member)
@@ -1117,7 +1407,7 @@ internal sealed class StructuredCBufferRewriter
                 continue;
             }
 
-            if (!TryParseFlatAccessChain(instruction, constants, out FlatAccessPath? accessPath))
+            if (!TryParseFlatAccessChain(instruction, constants, out FlatAccessPath accessPath))
             {
                 continue;
             }
@@ -1354,9 +1644,9 @@ internal sealed class StructuredCBufferRewriter
         };
     }
 
-    private static bool TryParseFlatAccessChain(SpirvInstruction instruction, ConstantMaps constants, out FlatAccessPath? accessPath)
+    private static bool TryParseFlatAccessChain(SpirvInstruction instruction, ConstantMaps constants, out FlatAccessPath accessPath)
     {
-        accessPath = null;
+        accessPath = null!;
         if (instruction.Words.Length < 5)
         {
             return false;
@@ -1368,7 +1658,7 @@ internal sealed class StructuredCBufferRewriter
             slotOperandIndex = 5;
         }
 
-        if (!TryParseSlotExpression(instruction.Words[slotOperandIndex], constants, out SlotExpression? slotExpression))
+        if (!TryParseSlotExpression(instruction.Words[slotOperandIndex], constants, out SlotExpression slotExpression))
         {
             return false;
         }
@@ -1386,7 +1676,7 @@ internal sealed class StructuredCBufferRewriter
 
         accessPath = new FlatAccessPath
         {
-            Slot = slotExpression!,
+            Slot = slotExpression,
             ExtraIndices = extraIndices
         };
         return true;
@@ -1678,9 +1968,9 @@ internal sealed class StructuredCBufferRewriter
         return null;
     }
 
-    private static bool TryParseSlotExpression(uint operandId, ConstantMaps constants, out SlotExpression? expression)
+    private static bool TryParseSlotExpression(uint operandId, ConstantMaps constants, out SlotExpression expression)
     {
-        expression = null;
+        expression = null!;
         if (constants.IdToValue.TryGetValue(operandId, out uint constantValue))
         {
             expression = new SlotExpression { ConstantRegisterOffset = checked((int)constantValue) };
@@ -1804,34 +2094,26 @@ internal sealed class StructuredCBufferRewriter
         return false;
     }
 
-    private static bool IsMetadataConstantBuffer(ResourceBinding resource)
-    {
-        return resource.RegisterType == 'b';
-    }
-
-    private static List<ConstantBufferParameter> GetAllConstantBufferParameters(ConstantBuffer constantBuffer)
-    {
-        var result = new List<ConstantBufferParameter>(constantBuffer.CBParams);
-        foreach (StructParameter structParameter in constantBuffer.StructParams)
-        {
-            result.AddRange(structParameter.CBParams);
-        }
-
-        return result;
-    }
-
     private sealed class ModuleAnalysis
     {
         public Dictionary<uint, (int? Set, int? Binding)> SetBindingById { get; } = new();
         public Dictionary<uint, (uint StorageClass, uint TypeId)> PointerTypes { get; } = new();
         public Dictionary<uint, uint> VariablePointerTypes { get; } = new();
         public Dictionary<uint, uint[]> StructMembers { get; } = new();
+        public Dictionary<uint, (uint ComponentTypeId, uint ComponentCount)> VectorShapes { get; } = new();
         public Dictionary<uint, (uint ElementTypeId, uint LengthId)> ArrayTypes { get; } = new();
         public Dictionary<uint, uint> Constants { get; } = new();
         public Dictionary<uint, uint> ArrayStrides { get; } = new();
 
         public bool TryGetVectorShape(uint vectorTypeId, out uint componentTypeId, out uint componentCount)
         {
+            if (VectorShapes.TryGetValue(vectorTypeId, out (uint ComponentTypeId, uint ComponentCount) shape))
+            {
+                componentTypeId = shape.ComponentTypeId;
+                componentCount = shape.ComponentCount;
+                return true;
+            }
+
             componentTypeId = 0;
             componentCount = 0;
             return false;
@@ -1950,8 +2232,16 @@ internal sealed class StructuredCBufferRewriter
         public Dictionary<uint, SpirvInstruction> Definitions { get; } = new();
     }
 
+    private sealed class RepeatedRecordPattern
+    {
+        public int RegisterStride { get; set; }
+        public HashSet<int> AccessedRegisters { get; set; } = new();
+    }
+
     private sealed class FlatUniformBufferInfo
     {
+        public int ActualSet { get; set; }
+        public int ActualBinding { get; set; }
         public uint VariableId { get; set; }
         public uint PointerTypeId { get; set; }
         public uint StructTypeId { get; set; }
@@ -1960,6 +2250,30 @@ internal sealed class StructuredCBufferRewriter
         public int ArrayLength { get; set; }
         public int ArrayStride { get; set; }
         public ResourceBinding Metadata { get; set; } = null!;
+        public ConstantBuffer ConstantBuffer { get; set; } = null!;
+
+        public FlatUniformBufferInfo WithMetadata(ResourceBinding metadata, ConstantBuffer constantBuffer)
+        {
+            return new FlatUniformBufferInfo
+            {
+                ActualSet = ActualSet,
+                ActualBinding = ActualBinding,
+                VariableId = VariableId,
+                PointerTypeId = PointerTypeId,
+                StructTypeId = StructTypeId,
+                ArrayTypeId = ArrayTypeId,
+                ElementTypeId = ElementTypeId,
+                ArrayLength = ArrayLength,
+                ArrayStride = ArrayStride,
+                Metadata = metadata,
+                ConstantBuffer = constantBuffer
+            };
+        }
+    }
+
+    private sealed class MetadataBufferCandidate
+    {
+        public ResourceBinding Resource { get; set; } = null!;
         public ConstantBuffer ConstantBuffer { get; set; } = null!;
     }
 }
