@@ -37,19 +37,11 @@ internal sealed class StructuredCBufferRewriter
         var constants = BuildConstantMaps(module);
         var types = AnalyzeTypes(module, analysis);
         var rewrites = new List<BufferRewritePlan>();
-        var assignedMetadataNames = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (FlatUniformBufferInfo flatBuffer in flatBuffers.Values)
         {
             FlatUniformBufferInfo candidateBuffer = flatBuffer;
             StructuredBufferLayout? layout = BuildStructuredLayout(candidateBuffer);
-            if ((layout == null || !IsStrictFlatUniformArray(candidateBuffer, layout) || !CanRewriteAllAccessChains(module, candidateBuffer, layout, constants, out _)) &&
-                TryRemapFlatBufferMetadata(metadata, module, candidateBuffer, constants, assignedMetadataNames, out FlatUniformBufferInfo? remappedBuffer, out StructuredBufferLayout? remappedLayout, out string? remapReason))
-            {
-                candidateBuffer = remappedBuffer!;
-                layout = remappedLayout;
-                summary.Add(remapReason!);
-            }
 
             if (layout == null)
             {
@@ -103,7 +95,6 @@ internal sealed class StructuredCBufferRewriter
             };
 
             rewrites.Add(plan);
-            assignedMetadataNames.Add(candidateBuffer.Metadata.Name);
             _resolvedBufferNames[(candidateBuffer.Metadata.Set, candidateBuffer.Metadata.Binding)] = candidateBuffer.Metadata.Name;
             InsertStructuredType(module, plan);
             InsertStructuredNames(module, plan);
@@ -1773,83 +1764,6 @@ internal sealed class StructuredCBufferRewriter
         dynamicStride = 1;
         constantOffset = 0;
         return true;
-    }
-
-    private static bool TryRemapFlatBufferMetadata(
-        ShaderSymbolData metadata,
-        SpirvModule module,
-        FlatUniformBufferInfo original,
-        ConstantMaps constants,
-        HashSet<string> assignedMetadataNames,
-        out FlatUniformBufferInfo? remapped,
-        out StructuredBufferLayout? remappedLayout,
-        out string? remapReason)
-    {
-        remapped = null;
-        remappedLayout = null;
-        remapReason = null;
-
-        foreach (ResourceBinding candidateResource in metadata.Resources.Where(r => r.RegisterType == 'b'))
-        {
-            if (string.Equals(candidateResource.Name, original.Metadata.Name, StringComparison.Ordinal) || assignedMetadataNames.Contains(candidateResource.Name))
-            {
-                continue;
-            }
-
-            ConstantBuffer? candidateConstantBuffer = metadata.ConstantBuffers.FirstOrDefault(cb => string.Equals(cb.Name, candidateResource.Name, StringComparison.Ordinal));
-            if (candidateConstantBuffer == null)
-            {
-                continue;
-            }
-
-            var rebound = new FlatUniformBufferInfo
-            {
-                VariableId = original.VariableId,
-                PointerTypeId = original.PointerTypeId,
-                StructTypeId = original.StructTypeId,
-                ArrayTypeId = original.ArrayTypeId,
-                ElementTypeId = original.ElementTypeId,
-                ArrayLength = original.ArrayLength,
-                ArrayStride = original.ArrayStride,
-                // IMPORTANT:
-                // Remap here means "borrow this USC cbuffer layout to explain the live flat buffer's
-                // accesses", not "rename or rebind the live SPIR-V resource". Unity metadata can
-                // legitimately contain extra logical cbuffers that do not survive as separate live UBO
-                // variables in the final binary. If we overwrite the live resource identity here, we end
-                // up emitting nonsense like `UnityInstancing_SRP_UnityPerDraw : register(b1)` even though
-                // the actual resource at binding 1 is still the original live buffer slot. Keep the
-                // physical resource name/set/binding from the matched metadata resource and only swap the
-                // USC layout source used for structured recovery.
-                Metadata = new ResourceBinding
-                {
-                    Name = original.Metadata.Name,
-                    RegisterType = original.Metadata.RegisterType,
-                    Type = original.Metadata.Type,
-                    Tag = original.Metadata.Tag,
-                    Set = original.Metadata.Set,
-                    Binding = original.Metadata.Binding
-                },
-                ConstantBuffer = candidateConstantBuffer
-            };
-
-            StructuredBufferLayout? candidateLayout = BuildStructuredLayout(rebound);
-            if (candidateLayout == null || !IsStrictFlatUniformArray(rebound, candidateLayout))
-            {
-                continue;
-            }
-
-            if (!CanRewriteAllAccessChains(module, rebound, candidateLayout, constants, out _))
-            {
-                continue;
-            }
-
-            remapped = rebound;
-            remappedLayout = candidateLayout;
-            remapReason = $"[{original.Metadata.Name}] kept live binding {original.Metadata.Binding} but borrowed USC layout from {candidateResource.Name} after exact binding validation failed";
-            return true;
-        }
-
-        return false;
     }
 
     private static uint FindOrCreateUniformPointerType(SpirvModule module, uint memberTypeId)
