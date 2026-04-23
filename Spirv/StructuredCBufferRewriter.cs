@@ -20,12 +20,17 @@ internal sealed class StructuredCBufferRewriter
     {
         LastRewriteApplied = false;
         _resolvedBufferNames.Clear();
+
         var summary = new List<string>();
         var module = SpirvModule.Parse(spirv);
-        var analysis = AnalyzeModule(module);
+        ModuleAnalysis analysis = AnalyzeModule(module);
+        ConstantMaps constants = BuildConstantMaps(module);
+        TypeInfo types = AnalyzeTypes(module, analysis);
+
         summary.Add($"Metadata resources={metadata.Resources.Count}, constantBuffers={metadata.ConstantBuffers.Count}");
         summary.Add($"Analyzed decoratedIds={analysis.SetBindingById.Count}, variables={analysis.VariablePointerTypes.Count}, pointers={analysis.PointerTypes.Count}, structs={analysis.StructMembers.Count}, arrays={analysis.ArrayTypes.Count}");
-        var flatBuffers = BuildFlatUniformBufferMap(metadata, analysis, summary);
+
+        List<FlatUniformBufferInfo> flatBuffers = BuildFlatUniformBuffers(metadata, analysis, summary);
         if (flatBuffers.Count == 0)
         {
             LastRewriteSummary = summary.Count == 0
@@ -34,70 +39,63 @@ internal sealed class StructuredCBufferRewriter
             return spirv;
         }
 
-        var constants = BuildConstantMaps(module);
-        var types = AnalyzeTypes(module, analysis);
         var rewrites = new List<BufferRewritePlan>();
-
-        foreach (FlatUniformBufferInfo flatBuffer in flatBuffers.Values)
+        foreach (FlatUniformBufferInfo flatBuffer in flatBuffers)
         {
-            FlatUniformBufferInfo candidateBuffer = flatBuffer;
-            StructuredBufferLayout? layout = BuildStructuredLayout(candidateBuffer);
+            StructuredBufferLayout? layout = BuildStructuredLayout(flatBuffer);
             if (layout == null)
             {
-                summary.Add($"[{candidateBuffer.Metadata.Name}] layout build failed");
+                summary.Add($"[{flatBuffer.Metadata.Name}] layout build failed");
                 continue;
             }
 
-            if (!IsStrictFlatUniformArray(candidateBuffer, layout))
+            if (!IsValidFlatUniformBuffer(flatBuffer, layout))
             {
-                summary.Add($"[{candidateBuffer.Metadata.Name}] strict flat array check failed: stride={candidateBuffer.ArrayStride}, arrayLength={candidateBuffer.ArrayLength}, requiredRegisters={layout.RequiredRegisterCount}");
+                summary.Add($"[{flatBuffer.Metadata.Name}] layout does not fit flat buffer: stride={flatBuffer.ArrayStride}, arrayLength={flatBuffer.ArrayLength}, usedRegisters={layout.MaxUsedRegisterCount}");
                 continue;
             }
 
             var memberTypeIds = new List<uint>(layout.Members.Count);
-            bool failed = false;
+            bool typeResolutionFailed = false;
             foreach (StructuredMemberLayout member in layout.Members)
             {
-                uint typeId = ResolveMemberTypeId(module, types, member);
-                if (typeId == 0)
+                uint memberTypeId = ResolveMemberTypeId(module, types, member);
+                if (memberTypeId == 0)
                 {
-                    failed = true;
+                    typeResolutionFailed = true;
                     break;
                 }
 
-                member.ResolvedTypeId = typeId;
-                memberTypeIds.Add(typeId);
+                member.ResolvedTypeId = memberTypeId;
+                memberTypeIds.Add(memberTypeId);
             }
 
-            if (failed)
+            if (typeResolutionFailed)
             {
-                summary.Add($"[{candidateBuffer.Metadata.Name}] member type resolution failed");
+                summary.Add($"[{flatBuffer.Metadata.Name}] member type resolution failed");
                 continue;
             }
 
-            if (!CanRewriteAllAccessChains(module, candidateBuffer, layout, constants, out string? validationFailure))
+            if (!CanRewriteAllAccessChains(module, flatBuffer, layout, constants, out string? validationFailure))
             {
-                summary.Add($"[{candidateBuffer.Metadata.Name}] rewrite validation failed: {validationFailure}");
+                summary.Add($"[{flatBuffer.Metadata.Name}] rewrite validation failed: {validationFailure}");
                 continue;
             }
-
-            uint newStructTypeId = module.AllocateId();
-            uint newPointerTypeId = module.AllocateId();
 
             var plan = new BufferRewritePlan
             {
-                Info = candidateBuffer,
+                Info = flatBuffer,
                 Layout = layout,
-                NewStructTypeId = newStructTypeId,
-                NewPointerTypeId = newPointerTypeId,
+                NewStructTypeId = module.AllocateId(),
+                NewPointerTypeId = module.AllocateId(),
                 MemberTypeIds = memberTypeIds
             };
 
             rewrites.Add(plan);
-            _resolvedBufferNames[(candidateBuffer.Metadata.Set, candidateBuffer.Metadata.Binding)] = candidateBuffer.Metadata.Name;
+            _resolvedBufferNames[(flatBuffer.Metadata.Set, flatBuffer.Metadata.Binding)] = flatBuffer.Metadata.Name;
             InsertStructuredType(module, plan);
             InsertStructuredNames(module, plan);
-            summary.Add($"[{candidateBuffer.Metadata.Name}] rewrite planned with {layout.Members.Count} members");
+            summary.Add($"[{flatBuffer.Metadata.Name}] rewrite planned with {layout.Members.Count} members");
         }
 
         if (rewrites.Count == 0)
@@ -115,7 +113,6 @@ internal sealed class StructuredCBufferRewriter
     private static ModuleAnalysis AnalyzeModule(SpirvModule module)
     {
         var analysis = new ModuleAnalysis();
-
         foreach (SpirvInstruction instruction in module.Instructions)
         {
             switch (instruction.OpCode)
@@ -127,26 +124,14 @@ internal sealed class StructuredCBufferRewriter
                         if (decoration == SpvOpCode.DecorationDescriptorSet)
                         {
                             int set = (int)instruction[3];
-                            if (!analysis.SetBindingById.ContainsKey(targetId))
-                            {
-                                analysis.SetBindingById[targetId] = (set, null);
-                            }
-                            else
-                            {
-                                analysis.SetBindingById[targetId] = (set, analysis.SetBindingById[targetId].Binding);
-                            }
+                            (int? Set, int? Binding) existing = analysis.SetBindingById.TryGetValue(targetId, out var value) ? value : (null, null);
+                            analysis.SetBindingById[targetId] = (set, existing.Binding);
                         }
                         else if (decoration == SpvOpCode.DecorationBinding)
                         {
                             int binding = (int)instruction[3];
-                            if (!analysis.SetBindingById.ContainsKey(targetId))
-                            {
-                                analysis.SetBindingById[targetId] = (null, binding);
-                            }
-                            else
-                            {
-                                analysis.SetBindingById[targetId] = (analysis.SetBindingById[targetId].Set, binding);
-                            }
+                            (int? Set, int? Binding) existing = analysis.SetBindingById.TryGetValue(targetId, out var value) ? value : (null, null);
+                            analysis.SetBindingById[targetId] = (existing.Set, binding);
                         }
                         else if (decoration == SpvOpCode.DecorationArrayStride)
                         {
@@ -179,10 +164,10 @@ internal sealed class StructuredCBufferRewriter
         return analysis;
     }
 
-    private static Dictionary<(int Set, int Binding), FlatUniformBufferInfo> BuildFlatUniformBufferMap(ShaderSymbolData metadata, ModuleAnalysis analysis, List<string> summary)
+    private static List<FlatUniformBufferInfo> BuildFlatUniformBuffers(ShaderSymbolData metadata, ModuleAnalysis analysis, List<string> summary)
     {
-        var result = new Dictionary<(int Set, int Binding), FlatUniformBufferInfo>();
-        foreach (ResourceBinding resource in metadata.Resources.Where(r => r.RegisterType == 'b'))
+        var result = new List<FlatUniformBufferInfo>();
+        foreach (ResourceBinding resource in metadata.Resources.Where(static resource => resource.RegisterType == 'b'))
         {
             ConstantBuffer? constantBuffer = metadata.ConstantBuffers.FirstOrDefault(cb => string.Equals(cb.Name, resource.Name, StringComparison.Ordinal));
             if (constantBuffer == null)
@@ -191,69 +176,60 @@ internal sealed class StructuredCBufferRewriter
                 continue;
             }
 
-            var candidateIds = analysis.SetBindingById
-                .Where(kvp => kvp.Value.Set == resource.Set && kvp.Value.Binding == resource.Binding)
-                .Select(kvp => kvp.Key)
-                .ToList();
+            uint? variableId = analysis.SetBindingById
+                .Where(static entry => entry.Value.Set.HasValue && entry.Value.Binding.HasValue)
+                .Where(entry => entry.Value.Set == resource.Set && entry.Value.Binding == resource.Binding)
+                .Select(entry => entry.Key)
+                .FirstOrDefault();
 
-            if (candidateIds.Count == 0)
+            if (variableId == 0)
             {
                 summary.Add($"[{resource.Name}] no decorated id for set={resource.Set} binding={resource.Binding}");
                 continue;
             }
 
-            bool matched = false;
-            foreach (uint candidateId in candidateIds)
+            if (!analysis.VariablePointerTypes.TryGetValue(variableId.Value, out uint pointerTypeId))
             {
-                if (!analysis.VariablePointerTypes.TryGetValue(candidateId, out uint pointerTypeId))
-                {
-                    continue;
-                }
-
-                if (!analysis.PointerTypes.TryGetValue(pointerTypeId, out var pointerInfo) || pointerInfo.StorageClass != SpvOpCode.StorageClassUniform)
-                {
-                    continue;
-                }
-
-                if (!analysis.StructMembers.TryGetValue(pointerInfo.TypeId, out uint[]? members) || members.Length != 1)
-                {
-                    summary.Add($"[{resource.Name}] candidate variable {candidateId} is not a single-member wrapper struct");
-                    continue;
-                }
-
-                uint arrayTypeId = members[0];
-                if (!analysis.ArrayTypes.TryGetValue(arrayTypeId, out var arrayInfo) ||
-                    !analysis.Constants.TryGetValue(arrayInfo.LengthId, out uint arrayLength))
-                {
-                    summary.Add($"[{resource.Name}] candidate variable {candidateId} member is not a fixed array type");
-                    continue;
-                }
-
-                int arrayStride = analysis.ArrayStrides.TryGetValue(arrayTypeId, out uint declaredArrayStride)
-                    ? checked((int)declaredArrayStride)
-                    : 16;
-
-                result[(resource.Set, resource.Binding)] = new FlatUniformBufferInfo
-                {
-                    VariableId = candidateId,
-                    PointerTypeId = pointerTypeId,
-                    StructTypeId = pointerInfo.TypeId,
-                    ArrayTypeId = arrayTypeId,
-                    ElementTypeId = arrayInfo.ElementTypeId,
-                    ArrayLength = checked((int)arrayLength),
-                    ArrayStride = arrayStride,
-                    Metadata = resource,
-                    ConstantBuffer = constantBuffer
-                };
-
-                matched = true;
-                break;
+                summary.Add($"[{resource.Name}] decorated id {variableId.Value} is not an OpVariable");
+                continue;
             }
 
-            if (!matched)
+            if (!analysis.PointerTypes.TryGetValue(pointerTypeId, out (uint StorageClass, uint TypeId) pointerInfo) || pointerInfo.StorageClass != SpvOpCode.StorageClassUniform)
             {
-                summary.Add($"[{resource.Name}] no uniform flat-array variable matched strict binding");
+                summary.Add($"[{resource.Name}] variable {variableId.Value} is not a uniform pointer");
+                continue;
             }
+
+            if (!analysis.StructMembers.TryGetValue(pointerInfo.TypeId, out uint[]? wrapperMembers) || wrapperMembers.Length != 1)
+            {
+                summary.Add($"[{resource.Name}] variable {variableId.Value} is not a single-member wrapper struct");
+                continue;
+            }
+
+            uint arrayTypeId = wrapperMembers[0];
+            if (!analysis.ArrayTypes.TryGetValue(arrayTypeId, out (uint ElementTypeId, uint LengthId) arrayInfo) ||
+                !analysis.Constants.TryGetValue(arrayInfo.LengthId, out uint arrayLength))
+            {
+                summary.Add($"[{resource.Name}] wrapper member is not a fixed array type");
+                continue;
+            }
+
+            int arrayStride = analysis.ArrayStrides.TryGetValue(arrayTypeId, out uint strideValue)
+                ? checked((int)strideValue)
+                : 16;
+
+            result.Add(new FlatUniformBufferInfo
+            {
+                VariableId = variableId.Value,
+                PointerTypeId = pointerTypeId,
+                StructTypeId = pointerInfo.TypeId,
+                ArrayTypeId = arrayTypeId,
+                ElementTypeId = arrayInfo.ElementTypeId,
+                ArrayLength = checked((int)arrayLength),
+                ArrayStride = arrayStride,
+                Metadata = resource,
+                ConstantBuffer = constantBuffer
+            });
         }
 
         return result;
@@ -278,51 +254,6 @@ internal sealed class StructuredCBufferRewriter
         }
 
         return result;
-    }
-
-    private static bool CanRewriteAllAccessChains(
-        SpirvModule module,
-        FlatUniformBufferInfo flatBuffer,
-        StructuredBufferLayout layout,
-        ConstantMaps constants,
-        out string? failure)
-    {
-        failure = null;
-        int accessChainCount = 0;
-
-        foreach (SpirvInstruction instruction in module.Instructions)
-        {
-            if ((instruction.OpCode != SpvOpCode.OpAccessChain && instruction.OpCode != SpvOpCode.OpInBoundsAccessChain) || instruction.Words.Length < 5)
-            {
-                continue;
-            }
-
-            if (instruction[3] != flatBuffer.VariableId)
-            {
-                continue;
-            }
-
-            accessChainCount++;
-            if (!TryParseFlatAccessChain(instruction, constants, out FlatAccessPath accessPath))
-            {
-                failure = $"unsupported access chain parse for resultId={instruction[2]} op={instruction.OpCode} words=[{string.Join(",", instruction.Words)}]";
-                return false;
-            }
-
-            if (TranslateFlatAccess(layout, accessPath, constants) == null)
-            {
-                failure = $"unsupported access translation for resultId={instruction[2]} slotConst={accessPath.Slot.ConstantRegisterOffset} slotDynamic={accessPath.Slot.DynamicIndexId} stride={accessPath.Slot.DynamicIndexStride} extra=[{string.Join(",", accessPath.ExtraIndices)}] op={instruction.OpCode} words=[{string.Join(",", instruction.Words)}]";
-                return false;
-            }
-        }
-
-        if (accessChainCount == 0)
-        {
-            failure = "no access chains found for variable";
-            return false;
-        }
-
-        return true;
     }
 
     private static TypeInfo AnalyzeTypes(SpirvModule module, ModuleAnalysis analysis)
@@ -371,12 +302,7 @@ internal sealed class StructuredCBufferRewriter
 
     private static void RecordMatrixType(TypeInfo info, ModuleAnalysis analysis, uint typeId, uint vectorTypeId, uint columnCount)
     {
-        if (!analysis.TryGetVectorShape(vectorTypeId, out uint componentTypeId, out uint rowCount))
-        {
-            return;
-        }
-
-        if (componentTypeId != info.FloatTypeId)
+        if (!analysis.TryGetVectorShape(vectorTypeId, out uint componentTypeId, out uint rowCount) || componentTypeId != info.FloatTypeId)
         {
             return;
         }
@@ -384,23 +310,14 @@ internal sealed class StructuredCBufferRewriter
         info.MatrixTypeIds[(checked((int)rowCount), checked((int)columnCount))] = typeId;
     }
 
-    private static bool IsStrictFlatUniformArray(FlatUniformBufferInfo flatBuffer, StructuredBufferLayout layout)
+    private static bool IsValidFlatUniformBuffer(FlatUniformBufferInfo flatBuffer, StructuredBufferLayout layout)
     {
         if (flatBuffer.ArrayStride != 16)
         {
             return false;
         }
 
-        if (flatBuffer.ConstantBuffer.Partial)
-        {
-            // Unity/USC partial constant buffers only serialize the members that were actually
-            // referenced by the shader. Large unmapped gaps are expected and must stay unmapped;
-            // forcing the reconstructed struct to cover the full flat array recreates m0[N]-style
-            // output and destroys the exact symbol recovery we want.
-            return layout.MaxUsedRegisterCount > 0 && layout.MaxUsedRegisterCount <= flatBuffer.ArrayLength;
-        }
-
-        return layout.RequiredRegisterCount == flatBuffer.ArrayLength;
+        return layout.MaxUsedRegisterCount > 0 && layout.MaxUsedRegisterCount <= flatBuffer.ArrayLength;
     }
 
     private static StructuredBufferLayout? BuildStructuredLayout(FlatUniformBufferInfo flatBuffer)
@@ -411,172 +328,111 @@ internal sealed class StructuredCBufferRewriter
         }
 
         var layout = new StructuredBufferLayout();
-        var rawMembers = new List<StructuredMemberLayout>();
+        var members = new List<StructuredMemberLayout>();
         int maxAvailableByteOffset = flatBuffer.ArrayLength * 16;
 
-        foreach (ConstantBufferParameter metadataParameter in flatBuffer.ConstantBuffer.CBParams.OrderBy(p => p.Index))
+        foreach (ConstantBufferParameter parameter in flatBuffer.ConstantBuffer.CBParams.OrderBy(static parameter => parameter.Index))
         {
-            MemberLogicalType? logicalType = TryCreateLogicalTypeFromUscLayout(metadataParameter);
+            if (parameter.Index < 0 || parameter.Index >= maxAvailableByteOffset)
+            {
+                continue;
+            }
+
+            MemberLogicalType? logicalType = TryCreateLogicalTypeFromMetadata(parameter);
             if (logicalType == null)
             {
                 return null;
             }
 
-            // Unity partial constant buffers only expose the slots that survived codegen for this
-            // concrete shader. USC may still carry later members from the original logical buffer;
-            // keep the known in-range members and drop anything beyond the actual flat array length
-            // instead of rejecting the whole reconstruction and falling back to m0[N].
-            if (flatBuffer.ConstantBuffer.Partial && metadataParameter.Index >= maxAvailableByteOffset)
+            members.Add(new StructuredMemberLayout
             {
-                continue;
-            }
-
-            int registerCount = GetRequiredRegisterCount(metadataParameter.Index, logicalType);
-            var member = new StructuredMemberLayout
-            {
-                Metadata = metadataParameter,
+                Metadata = parameter,
                 LogicalType = logicalType,
-                RegisterCount = registerCount,
-                RegisterOffset = metadataParameter.Index / 16
-            };
-
-            rawMembers.Add(member);
+                RegisterOffset = parameter.Index / 16,
+                RegisterCount = GetRequiredRegisterCount(parameter.Index, logicalType)
+            });
         }
 
-        foreach (StructParameter structParameter in flatBuffer.ConstantBuffer.StructParams.OrderBy(s => s.Index))
+        foreach (StructParameter structParameter in flatBuffer.ConstantBuffer.StructParams.OrderBy(static parameter => parameter.Index))
         {
-            if (structParameter.CBParams.Count == 0)
+            if (structParameter.Index < 0 || structParameter.Index >= maxAvailableByteOffset || structParameter.CBParams.Count == 0)
             {
                 continue;
             }
 
-            if (flatBuffer.ConstantBuffer.Partial && structParameter.Index >= maxAvailableByteOffset)
+            foreach (ConstantBufferParameter child in structParameter.CBParams.OrderBy(static parameter => parameter.Index))
             {
-                continue;
-            }
-
-            var structMember = new StructuredMemberLayout
-            {
-                Metadata = new ConstantBufferParameter
-                {
-                    ParamName = structParameter.Name,
-                    Index = structParameter.Index,
-                    ParamType = ShaderParamType.Float,
-                    Rows = 1,
-                    Columns = 1,
-                    IsMatrix = false,
-                    ArraySize = Math.Max(structParameter.ArraySize, 1)
-                },
-                LogicalType = new MemberLogicalType
-                {
-                    Kind = LogicalTypeKind.Struct,
-                    ScalarKind = ScalarKind.Float,
-                    Rows = 1,
-                    Columns = 1,
-                    ArrayLength = Math.Max(structParameter.ArraySize, 1),
-                    DeclaredByteSize = Math.Max(structParameter.Size, 16),
-                    UscIndex = structParameter.Index,
-                    IsMatrix = false
-                },
-                RegisterOffset = structParameter.Index / 16,
-                RegisterCount = Math.Max(1, ((Math.Max(structParameter.Size, 16) * Math.Max(structParameter.ArraySize, 1)) + 15) / 16),
-                StructName = structParameter.Name,
-                ParentBufferName = flatBuffer.ConstantBuffer.Name
-            };
-
-            foreach (ConstantBufferParameter childParameter in structParameter.CBParams.OrderBy(p => p.Index))
-            {
-                if (flatBuffer.ConstantBuffer.Partial && childParameter.Index >= maxAvailableByteOffset)
+                if (child.Index < 0 || child.Index >= maxAvailableByteOffset)
                 {
                     continue;
                 }
 
-                MemberLogicalType? childLogicalType = TryCreateLogicalTypeFromUscLayout(childParameter);
-                if (childLogicalType == null)
+                MemberLogicalType? logicalType = TryCreateLogicalTypeFromMetadata(child);
+                if (logicalType == null)
                 {
                     return null;
                 }
 
-                structMember.Children.Add(new StructuredMemberLayout
+                members.Add(new StructuredMemberLayout
                 {
-                    Metadata = childParameter,
-                    LogicalType = childLogicalType,
-                    RegisterOffset = childParameter.Index / 16,
-                    RegisterCount = GetRequiredRegisterCount(childParameter.Index, childLogicalType),
-                    RelativeOffset = childParameter.Index - structParameter.Index
+                    Metadata = child,
+                    LogicalType = logicalType,
+                    RegisterOffset = child.Index / 16,
+                    RegisterCount = GetRequiredRegisterCount(child.Index, logicalType)
                 });
             }
-
-            rawMembers.Add(structMember);
         }
 
-        rawMembers.Sort((left, right) => left.Metadata.Index.CompareTo(right.Metadata.Index));
-
-        if (rawMembers.Count == 0)
+        members.Sort(static (left, right) => left.Metadata.Index.CompareTo(right.Metadata.Index));
+        if (members.Count == 0)
         {
             return null;
         }
 
         int maxUsedByteOffset = 0;
-        foreach (StructuredMemberLayout member in rawMembers)
+        foreach (StructuredMemberLayout member in members)
         {
             layout.Members.Add(member);
             maxUsedByteOffset = Math.Max(maxUsedByteOffset, member.Metadata.Index + GetMemberSpanBytes(member));
         }
 
-        layout.RequiredRegisterCount = flatBuffer.ConstantBuffer.Partial
-            ? Math.Max(1, (maxUsedByteOffset + 15) / 16)
-            : flatBuffer.ArrayLength;
-        layout.MaxUsedRegisterCount = Math.Max(1, (maxUsedByteOffset + 15) / 16);
+        layout.RequiredRegisterCount = Math.Max(1, (maxUsedByteOffset + 15) / 16);
+        layout.MaxUsedRegisterCount = layout.RequiredRegisterCount;
         return layout;
     }
 
     private static int GetMemberSpanBytes(StructuredMemberLayout member)
     {
-        if (member.LogicalType.Kind == LogicalTypeKind.Struct)
-        {
-            // For Unity partial constant buffers, struct arrays represent a repeated per-instance
-            // stride. The metadata does not guarantee that the backing flat array preserves the
-            // fully serialized tail of every array element, so span calculations must be based on
-            // one logical struct stride rather than the entire repeated array extent.
-            return Math.Max(member.LogicalType.DeclaredByteSize, 16);
-        }
-
-        if (member.LogicalType.Kind == LogicalTypeKind.Matrix)
-        {
-            return member.LogicalType.Columns * 16 * Math.Max(member.LogicalType.ArrayLength, 1);
-        }
-
-        return member.LogicalType.DeclaredByteSize;
+        return member.LogicalType.Kind == LogicalTypeKind.Matrix
+            ? member.LogicalType.Columns * 16 * Math.Max(member.LogicalType.ArrayLength, 1)
+            : member.LogicalType.DeclaredByteSize;
     }
 
-    private static MemberLogicalType? TryCreateLogicalTypeFromUscLayout(ConstantBufferParameter metadataParameter)
+    private static MemberLogicalType? TryCreateLogicalTypeFromMetadata(ConstantBufferParameter parameter)
     {
-        if (metadataParameter.Rows <= 0 || metadataParameter.Columns <= 0)
+        if (parameter.Rows <= 0 || parameter.Columns <= 0)
         {
             return null;
         }
 
-        ScalarKind? scalarKind = TryResolveScalarKind(metadataParameter.ParamType);
+        ScalarKind? scalarKind = TryResolveScalarKind(parameter.ParamType);
         if (scalarKind == null)
         {
             return null;
         }
 
-        int declaredByteSize = GetDeclaredByteSize(metadataParameter);
-
         return new MemberLogicalType
         {
-            Kind = metadataParameter.IsMatrix
+            Kind = parameter.IsMatrix
                 ? LogicalTypeKind.Matrix
-                : metadataParameter.Rows == 1 ? LogicalTypeKind.Scalar : LogicalTypeKind.Vector,
+                : parameter.Rows == 1 ? LogicalTypeKind.Scalar : LogicalTypeKind.Vector,
             ScalarKind = scalarKind.Value,
-            Rows = metadataParameter.Rows,
-            Columns = metadataParameter.Columns,
-            ArrayLength = Math.Max(metadataParameter.ArraySize, 1),
-            DeclaredByteSize = declaredByteSize,
-            UscIndex = metadataParameter.Index,
-            IsMatrix = metadataParameter.IsMatrix
+            Rows = parameter.Rows,
+            Columns = parameter.Columns,
+            ArrayLength = Math.Max(parameter.ArraySize, 1),
+            DeclaredByteSize = GetDeclaredByteSize(parameter),
+            UscIndex = parameter.Index,
+            IsMatrix = parameter.IsMatrix
         };
     }
 
@@ -592,19 +448,22 @@ internal sealed class StructuredCBufferRewriter
         };
     }
 
-    private static int GetDeclaredByteSize(ConstantBufferParameter metadataParameter)
+    private static int GetDeclaredByteSize(ConstantBufferParameter parameter)
     {
-        int elementCount = metadataParameter.Rows * metadataParameter.Columns * Math.Max(metadataParameter.ArraySize, 1);
-        return metadataParameter.IsMatrix
-            ? metadataParameter.Columns * 16 * Math.Max(metadataParameter.ArraySize, 1)
-            : elementCount * 4;
+        int arrayLength = Math.Max(parameter.ArraySize, 1);
+        if (parameter.IsMatrix)
+        {
+            return parameter.Columns * 16 * arrayLength;
+        }
+
+        return parameter.Rows * parameter.Columns * arrayLength * 4;
     }
 
     private static int GetRequiredRegisterCount(int byteOffset, MemberLogicalType type)
     {
         if (type.Kind == LogicalTypeKind.Matrix)
         {
-            return Math.Max(1, type.DeclaredByteSize / 16);
+            return Math.Max(1, type.Columns * Math.Max(type.ArrayLength, 1));
         }
 
         int startRegister = byteOffset / 16;
@@ -621,7 +480,6 @@ internal sealed class StructuredCBufferRewriter
             LogicalTypeKind.Scalar => EnsureScalarType(module, types, logicalType.ScalarKind),
             LogicalTypeKind.Vector => EnsureVectorType(module, types, logicalType.ScalarKind, logicalType.Rows),
             LogicalTypeKind.Matrix => EnsureMatrixType(module, types, logicalType.Rows, logicalType.Columns),
-            LogicalTypeKind.Struct => EnsureStructType(module, types, member),
             _ => 0
         };
 
@@ -630,17 +488,14 @@ internal sealed class StructuredCBufferRewriter
             return 0;
         }
 
-        if (logicalType.Kind == LogicalTypeKind.Struct && logicalType.ArrayLength > 1)
+        if (logicalType.ArrayLength > 1)
         {
-            return EnsureArrayType(module, types, baseTypeId, logicalType.ArrayLength, Math.Max(logicalType.DeclaredByteSize, 16));
-        }
-
-        if ((logicalType.Kind == LogicalTypeKind.Scalar || logicalType.Kind == LogicalTypeKind.Vector) && logicalType.ArrayLength > 1)
-        {
-            int arrayStride = logicalType.Kind == LogicalTypeKind.Vector && logicalType.Rows == 4
-                ? 16
-                : logicalType.DeclaredByteSize / logicalType.ArrayLength;
-            return EnsureArrayType(module, types, baseTypeId, logicalType.ArrayLength, arrayStride);
+            int stride = logicalType.Kind == LogicalTypeKind.Matrix
+                ? logicalType.Columns * 16
+                : logicalType.Kind == LogicalTypeKind.Vector && logicalType.Rows == 4
+                    ? 16
+                    : logicalType.DeclaredByteSize / logicalType.ArrayLength;
+            return EnsureArrayType(module, types, baseTypeId, logicalType.ArrayLength, Math.Max(stride, 4));
         }
 
         return baseTypeId;
@@ -649,11 +504,9 @@ internal sealed class StructuredCBufferRewriter
     private static uint EnsureArrayType(SpirvModule module, TypeInfo types, uint elementTypeId, int arrayLength, int arrayStride)
     {
         uint lengthConstantId = FindOrCreateUIntConstant(module, types, checked((uint)arrayLength));
-
         foreach (SpirvInstruction instruction in module.Instructions)
         {
-            if (instruction.OpCode == SpvOpCode.OpTypeArray && instruction.Words.Length >= 4 &&
-                instruction[2] == elementTypeId && instruction[3] == lengthConstantId)
+            if (instruction.OpCode == SpvOpCode.OpTypeArray && instruction.Words.Length >= 4 && instruction[2] == elementTypeId && instruction[3] == lengthConstantId)
             {
                 return instruction[1];
             }
@@ -700,8 +553,7 @@ internal sealed class StructuredCBufferRewriter
         uint uintTypeId = EnsureUIntType(module, types);
         foreach (SpirvInstruction instruction in module.Instructions)
         {
-            if (instruction.OpCode == SpvOpCode.OpConstant && instruction.Words.Length >= 4 &&
-                instruction[1] == uintTypeId && instruction[3] == value)
+            if (instruction.OpCode == SpvOpCode.OpConstant && instruction.Words.Length >= 4 && instruction[1] == uintTypeId && instruction[3] == value)
             {
                 return instruction[2];
             }
@@ -723,102 +575,6 @@ internal sealed class StructuredCBufferRewriter
         return resultId;
     }
 
-    private static uint EnsureStructType(SpirvModule module, TypeInfo types, StructuredMemberLayout member)
-    {
-        if (string.IsNullOrWhiteSpace(member.StructName) || member.Children.Count == 0)
-        {
-            return 0;
-        }
-
-        var childTypeIds = new List<uint>(member.Children.Count);
-        foreach (StructuredMemberLayout child in member.Children)
-        {
-            uint childTypeId = ResolveMemberTypeId(module, types, child);
-            if (childTypeId == 0)
-            {
-                return 0;
-            }
-
-            child.ResolvedTypeId = childTypeId;
-            childTypeIds.Add(childTypeId);
-        }
-
-        uint structTypeId = module.AllocateId();
-        int decorationInsertIndex = module.FindFirstTypeInstructionIndex();
-        while (decorationInsertIndex > 0 &&
-               (module.Instructions[decorationInsertIndex - 1].OpCode == SpvOpCode.OpDecorate ||
-                module.Instructions[decorationInsertIndex - 1].OpCode == SpvOpCode.OpMemberDecorate))
-        {
-            decorationInsertIndex--;
-        }
-
-        var decorations = new List<SpirvInstruction>();
-        for (int i = 0; i < member.Children.Count; i++)
-        {
-            StructuredMemberLayout child = member.Children[i];
-            decorations.Add(new SpirvInstruction
-            {
-                OpCode = SpvOpCode.OpMemberDecorate,
-                Words =
-                [
-                    SpvOpCode.MakeInstructionWord(SpvOpCode.OpMemberDecorate, 5),
-                    structTypeId,
-                    (uint)i,
-                    SpvOpCode.DecorationOffset,
-                    (uint)child.RelativeOffset
-                ]
-            });
-
-            if (child.LogicalType.Kind == LogicalTypeKind.Matrix)
-            {
-                decorations.Add(new SpirvInstruction
-                {
-                    OpCode = SpvOpCode.OpMemberDecorate,
-                    Words =
-                    [
-                        SpvOpCode.MakeInstructionWord(SpvOpCode.OpMemberDecorate, 4),
-                        structTypeId,
-                        (uint)i,
-                        SpvOpCode.DecorationRowMajor
-                    ]
-                });
-                decorations.Add(new SpirvInstruction
-                {
-                    OpCode = SpvOpCode.OpMemberDecorate,
-                    Words =
-                    [
-                        SpvOpCode.MakeInstructionWord(SpvOpCode.OpMemberDecorate, 5),
-                        structTypeId,
-                        (uint)i,
-                        SpvOpCode.DecorationMatrixStride,
-                        16
-                    ]
-                });
-            }
-        }
-
-        module.Instructions.InsertRange(decorationInsertIndex, decorations);
-        module.Instructions.Insert(module.FindTypeSectionEndIndex(), new SpirvInstruction
-        {
-            OpCode = SpvOpCode.OpTypeStruct,
-            Words = new[] { SpvOpCode.MakeInstructionWord(SpvOpCode.OpTypeStruct, (ushort)(2 + childTypeIds.Count)), structTypeId }
-                .Concat(childTypeIds)
-                .ToArray()
-        });
-
-        module.InsertDebugName(structTypeId, member.StructName);
-        for (int i = 0; i < member.Children.Count; i++)
-        {
-            string leafName = member.Children[i].Metadata.ParamName.Split('.').Last();
-            string fullName = string.IsNullOrWhiteSpace(member.ParentBufferName)
-                ? $"{member.StructName}.{leafName}"
-                : $"{member.ParentBufferName}.{member.StructName}.{leafName}";
-            module.InsertDebugMemberName(structTypeId, (uint)i, fullName);
-        }
-
-        return structTypeId;
-    }
-
     private static uint EnsureScalarType(SpirvModule module, TypeInfo types, ScalarKind scalarKind)
     {
         return scalarKind switch
@@ -838,8 +594,7 @@ internal sealed class StructuredCBufferRewriter
         }
 
         uint resultId = module.AllocateId();
-        int insertIndex = module.FindTypeSectionEndIndex();
-        module.Instructions.Insert(insertIndex, new SpirvInstruction
+        module.Instructions.Insert(module.FindTypeSectionEndIndex(), new SpirvInstruction
         {
             OpCode = SpvOpCode.OpTypeFloat,
             Words =
@@ -849,7 +604,6 @@ internal sealed class StructuredCBufferRewriter
                 32
             ]
         });
-
         types.FloatTypeId = resultId;
         return resultId;
     }
@@ -862,8 +616,7 @@ internal sealed class StructuredCBufferRewriter
         }
 
         uint resultId = module.AllocateId();
-        int insertIndex = module.FindTypeSectionEndIndex();
-        module.Instructions.Insert(insertIndex, new SpirvInstruction
+        module.Instructions.Insert(module.FindTypeSectionEndIndex(), new SpirvInstruction
         {
             OpCode = SpvOpCode.OpTypeInt,
             Words =
@@ -874,7 +627,6 @@ internal sealed class StructuredCBufferRewriter
                 1
             ]
         });
-
         types.IntTypeId = resultId;
         return resultId;
     }
@@ -887,8 +639,7 @@ internal sealed class StructuredCBufferRewriter
         }
 
         uint resultId = module.AllocateId();
-        int insertIndex = module.FindTypeSectionEndIndex();
-        module.Instructions.Insert(insertIndex, new SpirvInstruction
+        module.Instructions.Insert(module.FindTypeSectionEndIndex(), new SpirvInstruction
         {
             OpCode = SpvOpCode.OpTypeInt,
             Words =
@@ -899,7 +650,6 @@ internal sealed class StructuredCBufferRewriter
                 0
             ]
         });
-
         types.UIntTypeId = resultId;
         return resultId;
     }
@@ -911,7 +661,7 @@ internal sealed class StructuredCBufferRewriter
             return EnsureScalarType(module, types, scalarKind);
         }
 
-        Dictionary<int, uint> typeMap = scalarKind switch
+        Dictionary<int, uint> map = scalarKind switch
         {
             ScalarKind.Float => types.FloatVectorTypeIds,
             ScalarKind.Int => types.IntVectorTypeIds,
@@ -919,15 +669,14 @@ internal sealed class StructuredCBufferRewriter
             _ => throw new InvalidOperationException("Unsupported vector scalar kind.")
         };
 
-        if (typeMap.TryGetValue(componentCount, out uint existingTypeId) && existingTypeId != 0)
+        if (map.TryGetValue(componentCount, out uint existingTypeId) && existingTypeId != 0)
         {
             return existingTypeId;
         }
 
         uint componentTypeId = EnsureScalarType(module, types, scalarKind);
         uint resultId = module.AllocateId();
-        int insertIndex = module.FindTypeSectionEndIndex();
-        module.Instructions.Insert(insertIndex, new SpirvInstruction
+        module.Instructions.Insert(module.FindTypeSectionEndIndex(), new SpirvInstruction
         {
             OpCode = SpvOpCode.OpTypeVector,
             Words =
@@ -938,8 +687,7 @@ internal sealed class StructuredCBufferRewriter
                 (uint)componentCount
             ]
         });
-
-        typeMap[componentCount] = resultId;
+        map[componentCount] = resultId;
         return resultId;
     }
 
@@ -952,8 +700,7 @@ internal sealed class StructuredCBufferRewriter
 
         uint vectorTypeId = EnsureVectorType(module, types, ScalarKind.Float, rowCount);
         uint resultId = module.AllocateId();
-        int insertIndex = module.FindTypeSectionEndIndex();
-        module.Instructions.Insert(insertIndex, new SpirvInstruction
+        module.Instructions.Insert(module.FindTypeSectionEndIndex(), new SpirvInstruction
         {
             OpCode = SpvOpCode.OpTypeMatrix,
             Words =
@@ -964,7 +711,6 @@ internal sealed class StructuredCBufferRewriter
                 (uint)columnCount
             ]
         });
-
         types.MatrixTypeIds[(rowCount, columnCount)] = resultId;
         return resultId;
     }
@@ -973,7 +719,6 @@ internal sealed class StructuredCBufferRewriter
     {
         int typeInsertIndex = module.FindFirstTypeInstructionIndex();
         int decorationInsertIndex = typeInsertIndex;
-
         while (decorationInsertIndex > 0 &&
                (module.Instructions[decorationInsertIndex - 1].OpCode == SpvOpCode.OpDecorate ||
                 module.Instructions[decorationInsertIndex - 1].OpCode == SpvOpCode.OpMemberDecorate))
@@ -995,9 +740,9 @@ internal sealed class StructuredCBufferRewriter
             }
         };
 
-        for (int i = 0; i < rewrite.Layout.Members.Count; i++)
+        for (int memberIndex = 0; memberIndex < rewrite.Layout.Members.Count; memberIndex++)
         {
-            StructuredMemberLayout member = rewrite.Layout.Members[i];
+            StructuredMemberLayout member = rewrite.Layout.Members[memberIndex];
             decorations.Add(new SpirvInstruction
             {
                 OpCode = SpvOpCode.OpMemberDecorate,
@@ -1005,7 +750,7 @@ internal sealed class StructuredCBufferRewriter
                 [
                     SpvOpCode.MakeInstructionWord(SpvOpCode.OpMemberDecorate, 5),
                     rewrite.NewStructTypeId,
-                    (uint)i,
+                    (uint)memberIndex,
                     SpvOpCode.DecorationOffset,
                     (uint)member.Metadata.Index
                 ]
@@ -1020,7 +765,7 @@ internal sealed class StructuredCBufferRewriter
                     [
                         SpvOpCode.MakeInstructionWord(SpvOpCode.OpMemberDecorate, 4),
                         rewrite.NewStructTypeId,
-                        (uint)i,
+                        (uint)memberIndex,
                         SpvOpCode.DecorationRowMajor
                     ]
                 });
@@ -1031,7 +776,7 @@ internal sealed class StructuredCBufferRewriter
                     [
                         SpvOpCode.MakeInstructionWord(SpvOpCode.OpMemberDecorate, 5),
                         rewrite.NewStructTypeId,
-                        (uint)i,
+                        (uint)memberIndex,
                         SpvOpCode.DecorationMatrixStride,
                         16
                     ]
@@ -1040,14 +785,14 @@ internal sealed class StructuredCBufferRewriter
         }
 
         module.Instructions.InsertRange(decorationInsertIndex, decorations);
-
-        int structInsertIndex = module.FindTypeSectionEndIndex();
-        module.Instructions.Insert(structInsertIndex, new SpirvInstruction
+        module.Instructions.Insert(module.FindTypeSectionEndIndex(), new SpirvInstruction
         {
             OpCode = SpvOpCode.OpTypeStruct,
-            Words = new[] { SpvOpCode.MakeInstructionWord(SpvOpCode.OpTypeStruct, (ushort)(2 + rewrite.MemberTypeIds.Count)), rewrite.NewStructTypeId }
-                .Concat(rewrite.MemberTypeIds)
-                .ToArray()
+            Words = new[]
+            {
+                SpvOpCode.MakeInstructionWord(SpvOpCode.OpTypeStruct, (ushort)(2 + rewrite.MemberTypeIds.Count)),
+                rewrite.NewStructTypeId
+            }.Concat(rewrite.MemberTypeIds).ToArray()
         });
 
         module.Instructions.Insert(module.FindTypeSectionEndIndex(), new SpirvInstruction
@@ -1067,31 +812,29 @@ internal sealed class StructuredCBufferRewriter
     {
         module.InsertDebugName(rewrite.NewStructTypeId, rewrite.Info.Metadata.Name);
         module.InsertDebugName(rewrite.Info.VariableId, $"__ruri_{rewrite.Info.Metadata.Name}_var");
-
-        for (int i = 0; i < rewrite.Layout.Members.Count; i++)
+        for (int memberIndex = 0; memberIndex < rewrite.Layout.Members.Count; memberIndex++)
         {
-            string memberName = rewrite.Layout.Members[i].Metadata.ParamName;
-            if (string.IsNullOrWhiteSpace(memberName))
+            string name = rewrite.Layout.Members[memberIndex].Metadata.ParamName;
+            if (!string.IsNullOrWhiteSpace(name))
             {
-                continue;
+                module.InsertDebugMemberName(rewrite.NewStructTypeId, (uint)memberIndex, name);
             }
-
-            module.InsertDebugMemberName(rewrite.NewStructTypeId, (uint)i, memberName);
         }
     }
 
     private static void RewriteVariablesAndAccessChains(SpirvModule module, List<BufferRewritePlan> rewrites, ConstantMaps constants)
     {
-        var rewriteByVariableId = rewrites.ToDictionary(r => r.Info.VariableId);
-        var uniformPointerTypes = new Dictionary<uint, uint>();
+        var rewriteByVariableId = rewrites.ToDictionary(static rewrite => rewrite.Info.VariableId);
+        var pointerTypeByMemberTypeId = new Dictionary<uint, uint>();
         var rewrittenAccessChains = new Dictionary<uint, RewrittenAccessChainInfo>();
+
         foreach (BufferRewritePlan rewrite in rewrites)
         {
             foreach (uint memberTypeId in rewrite.MemberTypeIds)
             {
-                if (!uniformPointerTypes.ContainsKey(memberTypeId))
+                if (!pointerTypeByMemberTypeId.ContainsKey(memberTypeId))
                 {
-                    uniformPointerTypes[memberTypeId] = FindOrCreateUniformPointerType(module, memberTypeId);
+                    pointerTypeByMemberTypeId[memberTypeId] = FindOrCreateUniformPointerType(module, memberTypeId);
                 }
             }
         }
@@ -1100,8 +843,7 @@ internal sealed class StructuredCBufferRewriter
         {
             if (instruction.OpCode == SpvOpCode.OpVariable && instruction.Words.Length >= 4)
             {
-                uint resultId = instruction[2];
-                if (rewriteByVariableId.TryGetValue(resultId, out BufferRewritePlan? rewrite))
+                if (rewriteByVariableId.TryGetValue(instruction[2], out BufferRewritePlan? rewrite))
                 {
                     instruction[1] = rewrite.NewPointerTypeId;
                 }
@@ -1114,53 +856,37 @@ internal sealed class StructuredCBufferRewriter
                 continue;
             }
 
-            uint baseId = instruction[3];
-            if (!rewriteByVariableId.TryGetValue(baseId, out BufferRewritePlan? plan))
-            {
-                continue;
-            }
-
-            if (!TryParseFlatAccessChain(instruction, constants, out FlatAccessPath accessPath))
+            if (!rewriteByVariableId.TryGetValue(instruction[3], out BufferRewritePlan? plan) || !TryParseFlatAccessChain(instruction, constants, out FlatAccessPath accessPath))
             {
                 continue;
             }
 
             StructuredAccessTranslation? translated = TranslateFlatAccess(plan.Layout, accessPath, constants);
-            if (translated == null || !uniformPointerTypes.TryGetValue(translated.MemberTypeId, out uint pointerTypeId))
+            if (translated == null || !pointerTypeByMemberTypeId.TryGetValue(translated.MemberTypeId, out uint pointerTypeId))
             {
                 continue;
             }
 
-            var newWords = new List<uint>
+            instruction.Words = new[]
             {
                 SpvOpCode.MakeInstructionWord(instruction.OpCode, (ushort)(4 + translated.Indices.Count)),
                 pointerTypeId,
                 instruction[2],
                 instruction[3]
-            };
-            newWords.AddRange(translated.Indices);
-            instruction.Words = newWords.ToArray();
+            }.Concat(translated.Indices).ToArray();
+
             rewrittenAccessChains[instruction[2]] = new RewrittenAccessChainInfo
             {
                 AccessChainResultId = instruction[2],
                 BaseVariableId = instruction[3],
                 InstructionOpCode = instruction.OpCode,
                 Plan = plan,
-                OriginalAccessPath = new FlatAccessPath
-                {
-                    Slot = new SlotExpression
-                    {
-                        ConstantRegisterOffset = accessPath.Slot.ConstantRegisterOffset,
-                        DynamicIndexId = accessPath.Slot.DynamicIndexId,
-                        DynamicIndexStride = accessPath.Slot.DynamicIndexStride
-                    },
-                    ExtraIndices = accessPath.ExtraIndices.ToList()
-                },
+                OriginalAccessPath = accessPath.Clone(),
                 Translation = translated
             };
         }
 
-        RewriteLoadsAndCompositeExtracts(module, rewrittenAccessChains, constants, uniformPointerTypes);
+        RewriteLoadsAndCompositeExtracts(module, rewrittenAccessChains, constants, pointerTypeByMemberTypeId);
     }
 
     private static void RewriteLoadsAndCompositeExtracts(
@@ -1176,20 +902,20 @@ internal sealed class StructuredCBufferRewriter
 
         var loadInfos = new Dictionary<uint, RewrittenLoadInfo>();
         var compositeExtractUseCounts = new Dictionary<uint, int>();
-        var totalUseCounts = CountResultUses(module);
+        Dictionary<uint, int> totalUseCounts = CountResultUses(module);
 
-        for (int i = 0; i < module.Instructions.Count; i++)
+        for (int index = 0; index < module.Instructions.Count; index++)
         {
-            SpirvInstruction instruction = module.Instructions[i];
+            SpirvInstruction instruction = module.Instructions[index];
             if (instruction.OpCode == SpvOpCode.OpLoad && instruction.Words.Length >= 4 && rewrittenAccessChains.TryGetValue(instruction[3], out RewrittenAccessChainInfo? accessInfo))
             {
                 loadInfos[instruction[2]] = new RewrittenLoadInfo
                 {
-                    InstructionIndex = i,
+                    InstructionIndex = index,
                     ResultId = instruction[2],
-                    AccessChain = accessInfo,
                     OriginalResultTypeId = instruction[1],
-                    HasCompositeExtractUsers = false
+                    HasCompositeExtractUsers = false,
+                    AccessChain = accessInfo
                 };
                 continue;
             }
@@ -1197,24 +923,10 @@ internal sealed class StructuredCBufferRewriter
             if (instruction.OpCode == SpvOpCode.OpCompositeExtract && instruction.Words.Length >= 5 && loadInfos.TryGetValue(instruction[3], out RewrittenLoadInfo? loadInfo))
             {
                 loadInfo.HasCompositeExtractUsers = true;
-                if (!compositeExtractUseCounts.ContainsKey(loadInfo.ResultId))
-                {
-                    compositeExtractUseCounts[loadInfo.ResultId] = 0;
-                }
+                compositeExtractUseCounts[loadInfo.ResultId] = compositeExtractUseCounts.TryGetValue(loadInfo.ResultId, out int count) ? count + 1 : 1;
 
-                compositeExtractUseCounts[loadInfo.ResultId]++;
-
-                List<int> extractIndices = instruction.Words.Skip(4).Select(v => checked((int)v)).ToList();
-                FlatAccessPath directAccessPath = new()
-                {
-                    Slot = new SlotExpression
-                    {
-                        ConstantRegisterOffset = loadInfo.AccessChain.OriginalAccessPath.Slot.ConstantRegisterOffset,
-                        DynamicIndexId = loadInfo.AccessChain.OriginalAccessPath.Slot.DynamicIndexId,
-                        DynamicIndexStride = loadInfo.AccessChain.OriginalAccessPath.Slot.DynamicIndexStride
-                    },
-                    ExtraIndices = loadInfo.AccessChain.OriginalAccessPath.ExtraIndices.Concat(extractIndices).ToList()
-                };
+                FlatAccessPath directAccessPath = loadInfo.AccessChain.OriginalAccessPath.Clone();
+                directAccessPath.ExtraIndices.AddRange(instruction.Words.Skip(4).Select(static value => checked((int)value)));
 
                 StructuredAccessTranslation? translated = TranslateFlatAccess(loadInfo.AccessChain.Plan.Layout, directAccessPath, constants);
                 if (translated == null || !uniformPointerTypes.TryGetValue(translated.MemberTypeId, out uint pointerTypeId))
@@ -1223,7 +935,7 @@ internal sealed class StructuredCBufferRewriter
                 }
 
                 uint pointerResultId = module.AllocateId();
-                var pointerInstruction = new SpirvInstruction
+                module.Instructions.Insert(index, new SpirvInstruction
                 {
                     OpCode = loadInfo.AccessChain.InstructionOpCode,
                     Words = new[]
@@ -1233,9 +945,8 @@ internal sealed class StructuredCBufferRewriter
                         pointerResultId,
                         loadInfo.AccessChain.BaseVariableId
                     }.Concat(translated.Indices).ToArray()
-                };
-
-                var loadInstruction = new SpirvInstruction
+                });
+                module.Instructions.Insert(index + 1, new SpirvInstruction
                 {
                     OpCode = SpvOpCode.OpLoad,
                     Words =
@@ -1245,11 +956,9 @@ internal sealed class StructuredCBufferRewriter
                         instruction[2],
                         pointerResultId
                     ]
-                };
+                });
 
-                module.Instructions.Insert(i, pointerInstruction);
-                module.Instructions.Insert(i + 1, loadInstruction);
-                i += 2;
+                index += 2;
                 instruction.OpCode = SpvOpCode.OpNop;
                 instruction.Words = [SpvOpCode.MakeInstructionWord(SpvOpCode.OpNop, 1)];
             }
@@ -1269,9 +978,9 @@ internal sealed class StructuredCBufferRewriter
                 continue;
             }
 
-            int compositeExtractUsers = compositeExtractUseCounts.TryGetValue(loadInfo.ResultId, out int count) ? count : 0;
-            int totalUses = totalUseCounts.TryGetValue(loadInfo.ResultId, out int uses) ? uses : 0;
-            if (compositeExtractUsers == totalUses)
+            int compositeUsers = compositeExtractUseCounts.TryGetValue(loadInfo.ResultId, out int compositeCount) ? compositeCount : 0;
+            int totalUsers = totalUseCounts.TryGetValue(loadInfo.ResultId, out int totalCount) ? totalCount : 0;
+            if (compositeUsers == totalUsers)
             {
                 loadInstruction.OpCode = SpvOpCode.OpNop;
                 loadInstruction.Words = [SpvOpCode.MakeInstructionWord(SpvOpCode.OpNop, 1)];
@@ -1294,12 +1003,7 @@ internal sealed class StructuredCBufferRewriter
                 }
 
                 uint operand = instruction[operandIndex];
-                if (!uses.ContainsKey(operand))
-                {
-                    uses[operand] = 0;
-                }
-
-                uses[operand]++;
+                uses[operand] = uses.TryGetValue(operand, out int count) ? count + 1 : 1;
             }
         }
 
@@ -1377,9 +1081,9 @@ internal sealed class StructuredCBufferRewriter
         }
 
         var extraIndices = new List<int>();
-        for (int i = slotOperandIndex + 1; i < instruction.Words.Length; i++)
+        for (int operandIndex = slotOperandIndex + 1; operandIndex < instruction.Words.Length; operandIndex++)
         {
-            if (!constants.IdToValue.TryGetValue(instruction.Words[i], out uint value))
+            if (!constants.IdToValue.TryGetValue(instruction.Words[operandIndex], out uint value))
             {
                 return false;
             }
@@ -1398,7 +1102,6 @@ internal sealed class StructuredCBufferRewriter
     private static StructuredAccessTranslation? TranslateFlatAccess(StructuredBufferLayout layout, FlatAccessPath accessPath, ConstantMaps constants)
     {
         int componentIndex = accessPath.ExtraIndices.Count > 0 ? accessPath.ExtraIndices[0] : 0;
-
         if (accessPath.Slot.DynamicIndexId != 0)
         {
             return TranslateDynamicFlatAccess(layout, accessPath, constants, componentIndex);
@@ -1406,70 +1109,11 @@ internal sealed class StructuredCBufferRewriter
 
         int absoluteRegister = accessPath.Slot.ConstantRegisterOffset;
         int absoluteByteOffset = (absoluteRegister * 16) + (componentIndex * 4);
-
-        foreach (StructuredMemberLayout member in layout.Members)
+        for (int memberIndex = 0; memberIndex < layout.Members.Count; memberIndex++)
         {
+            StructuredMemberLayout member = layout.Members[memberIndex];
             if (absoluteRegister < member.RegisterOffset || absoluteRegister >= member.RegisterOffset + member.RegisterCount)
             {
-                continue;
-            }
-
-            if (member.LogicalType.Kind == LogicalTypeKind.Struct)
-            {
-                int structRegisterCount = Math.Max(1, (Math.Max(member.LogicalType.DeclaredByteSize, 16) + 15) / 16);
-                int structArrayIndex = member.LogicalType.ArrayLength > 1 ? (absoluteRegister - member.RegisterOffset) / structRegisterCount : -1;
-                int structArrayRegisterOffset = member.LogicalType.ArrayLength > 1 ? structArrayIndex * structRegisterCount : 0;
-
-                for (int childIndex = 0; childIndex < member.Children.Count; childIndex++)
-                {
-                    StructuredMemberLayout child = member.Children[childIndex];
-                    int childAbsoluteRegisterOffset = member.RegisterOffset + structArrayRegisterOffset + (child.RelativeOffset / 16);
-                    if (absoluteRegister < childAbsoluteRegisterOffset || absoluteRegister >= childAbsoluteRegisterOffset + child.RegisterCount)
-                    {
-                        continue;
-                    }
-
-                    List<int>? childLogicalIndices = TranslateMemberAccess(child, absoluteRegister - structArrayRegisterOffset, componentIndex, accessPath.ExtraIndices);
-                    if (childLogicalIndices == null)
-                    {
-                        continue;
-                    }
-
-                    if (!TryGetConstantId(constants, (uint)layout.Members.IndexOf(member), out uint parentIndexConstId) ||
-                        !TryGetConstantId(constants, (uint)childIndex, out uint childIndexConstId))
-                    {
-                        return null;
-                    }
-
-                    var nestedIndices = new List<uint> { parentIndexConstId };
-                    if (member.LogicalType.ArrayLength > 1)
-                    {
-                        if (structArrayIndex < 0 || structArrayIndex >= member.LogicalType.ArrayLength || !TryGetConstantId(constants, (uint)structArrayIndex, out uint structArrayIndexConstId))
-                        {
-                            return null;
-                        }
-
-                        nestedIndices.Add(structArrayIndexConstId);
-                    }
-
-                    nestedIndices.Add(childIndexConstId);
-                    foreach (int logicalIndex in childLogicalIndices)
-                    {
-                        if (!TryGetConstantId(constants, (uint)logicalIndex, out uint logicalIndexConstId))
-                        {
-                            return null;
-                        }
-
-                        nestedIndices.Add(logicalIndexConstId);
-                    }
-
-                    return new StructuredAccessTranslation
-                    {
-                        Indices = nestedIndices,
-                        MemberTypeId = child.ResolvedTypeId
-                    };
-                }
-
                 continue;
             }
 
@@ -1479,25 +1123,20 @@ internal sealed class StructuredCBufferRewriter
             }
 
             List<int>? logicalIndices = TranslateMemberAccess(member, absoluteRegister, componentIndex, accessPath.ExtraIndices);
-            if (logicalIndices == null)
+            if (logicalIndices == null || !TryGetConstantId(constants, (uint)memberIndex, out uint memberIndexConstantId))
             {
                 continue;
             }
 
-            if (!TryGetConstantId(constants, (uint)layout.Members.IndexOf(member), out uint memberIndexConstId))
-            {
-                return null;
-            }
-
-            var indices = new List<uint> { memberIndexConstId };
+            var indices = new List<uint> { memberIndexConstantId };
             foreach (int logicalIndex in logicalIndices)
             {
-                if (!TryGetConstantId(constants, (uint)logicalIndex, out uint logicalIndexConstId))
+                if (!TryGetConstantId(constants, (uint)logicalIndex, out uint logicalIndexConstantId))
                 {
                     return null;
                 }
 
-                indices.Add(logicalIndexConstId);
+                indices.Add(logicalIndexConstantId);
             }
 
             return new StructuredAccessTranslation
@@ -1512,97 +1151,61 @@ internal sealed class StructuredCBufferRewriter
 
     private static bool IsMemberByteMatch(StructuredMemberLayout member, int absoluteByteOffset, List<int> extraIndices)
     {
-        if (member.LogicalType.Kind == LogicalTypeKind.Struct)
-        {
-            return false;
-        }
-
         int memberStart = member.Metadata.Index;
-        int memberSize = Math.Max(member.LogicalType.DeclaredByteSize, 4);
-        int memberEnd = memberStart + memberSize;
-
+        int memberEnd = memberStart + Math.Max(member.LogicalType.DeclaredByteSize, 4);
         if (member.LogicalType.Kind == LogicalTypeKind.Matrix)
         {
             return absoluteByteOffset >= memberStart && absoluteByteOffset < memberEnd;
         }
 
-        if (extraIndices.Count == 0)
-        {
-            return absoluteByteOffset == memberStart;
-        }
-
-        return absoluteByteOffset >= memberStart && absoluteByteOffset < memberEnd;
+        return extraIndices.Count == 0
+            ? absoluteByteOffset == memberStart
+            : absoluteByteOffset >= memberStart && absoluteByteOffset < memberEnd;
     }
 
     private static List<int>? TranslateMemberAccess(StructuredMemberLayout member, int absoluteRegister, int componentIndex, List<int> extraIndices)
     {
-        MemberLogicalType logicalType = member.LogicalType;
         int localRegister = absoluteRegister - member.RegisterOffset;
-        List<int> trailingIndices = extraIndices.Count > 1 ? extraIndices.Skip(1).ToList() : [];
         int memberComponentOffset = (member.Metadata.Index % 16) / 4;
+        List<int> trailingIndices = extraIndices.Count > 1 ? extraIndices.Skip(1).ToList() : [];
 
-        if (logicalType.Kind == LogicalTypeKind.Matrix)
+        if (member.LogicalType.Kind == LogicalTypeKind.Matrix)
         {
-            if (localRegister < 0 || localRegister >= logicalType.Columns)
+            if (localRegister < 0 || localRegister >= member.LogicalType.Columns)
             {
                 return null;
             }
 
-            if (extraIndices.Count > 0)
+            if (extraIndices.Count == 0)
             {
-                if (componentIndex < 0 || componentIndex >= logicalType.Rows)
-                {
-                    return null;
-                }
-
-                if (trailingIndices.Count > 0)
-                {
-                    return null;
-                }
-
-                return [localRegister, componentIndex];
+                return [localRegister];
             }
 
-            return [localRegister];
+            if (componentIndex < 0 || componentIndex >= member.LogicalType.Rows || trailingIndices.Count > 0)
+            {
+                return null;
+            }
+
+            return [localRegister, componentIndex];
         }
 
         if (member.RegisterCount == 1)
         {
-            if (extraIndices.Count == 0)
+            if (member.LogicalType.Kind == LogicalTypeKind.Scalar)
             {
-                return memberComponentOffset == 0 ? [] : null;
+                return componentIndex == memberComponentOffset && trailingIndices.Count == 0 ? [] : null;
             }
 
-            if (logicalType.Kind == LogicalTypeKind.Vector)
+            if (member.LogicalType.Kind == LogicalTypeKind.Vector)
             {
                 int relativeComponentIndex = componentIndex - memberComponentOffset;
-                if (relativeComponentIndex < 0 || relativeComponentIndex >= logicalType.Rows || trailingIndices.Count > 0)
-                {
-                    return null;
-                }
-
-                return [relativeComponentIndex];
+                return relativeComponentIndex >= 0 && relativeComponentIndex < member.LogicalType.Rows && trailingIndices.Count == 0
+                    ? [relativeComponentIndex]
+                    : null;
             }
-
-            if (logicalType.Kind == LogicalTypeKind.Scalar)
-            {
-                if (componentIndex != memberComponentOffset || trailingIndices.Count > 0)
-                {
-                    return null;
-                }
-
-                return [];
-            }
-
-            return null;
         }
 
-        if (localRegister < 0 || localRegister >= member.RegisterCount)
-        {
-            return null;
-        }
-
-        if (trailingIndices.Count > 0)
+        if (localRegister < 0 || localRegister >= member.RegisterCount || trailingIndices.Count > 0)
         {
             return null;
         }
@@ -1612,72 +1215,6 @@ internal sealed class StructuredCBufferRewriter
 
     private static StructuredAccessTranslation? TranslateDynamicFlatAccess(StructuredBufferLayout layout, FlatAccessPath accessPath, ConstantMaps constants, int componentIndex)
     {
-        foreach (StructuredMemberLayout member in layout.Members)
-        {
-            if (member.LogicalType.Kind != LogicalTypeKind.Struct || member.LogicalType.ArrayLength <= 1)
-            {
-                continue;
-            }
-
-            int structRegisterCount = Math.Max(1, (Math.Max(member.LogicalType.DeclaredByteSize, 16) + 15) / 16);
-            if (accessPath.Slot.DynamicIndexStride != structRegisterCount)
-            {
-                continue;
-            }
-
-            int registerWithinStruct = accessPath.Slot.ConstantRegisterOffset;
-            if (registerWithinStruct < 0 || registerWithinStruct >= structRegisterCount)
-            {
-                continue;
-            }
-
-            for (int childIndex = 0; childIndex < member.Children.Count; childIndex++)
-            {
-                StructuredMemberLayout child = member.Children[childIndex];
-                int childRegisterOffset = child.RelativeOffset / 16;
-                if (registerWithinStruct < childRegisterOffset || registerWithinStruct >= childRegisterOffset + child.RegisterCount)
-                {
-                    continue;
-                }
-
-                int absoluteRegister = member.RegisterOffset + registerWithinStruct;
-                List<int>? childLogicalIndices = TranslateMemberAccess(child, absoluteRegister, componentIndex, accessPath.ExtraIndices);
-                if (childLogicalIndices == null)
-                {
-                    continue;
-                }
-
-                if (!TryGetConstantId(constants, (uint)layout.Members.IndexOf(member), out uint parentIndexConstId) ||
-                    !TryGetConstantId(constants, (uint)childIndex, out uint childIndexConstId))
-                {
-                    return null;
-                }
-
-                var indices = new List<uint>
-                {
-                    parentIndexConstId,
-                    accessPath.Slot.DynamicIndexId,
-                    childIndexConstId
-                };
-
-                foreach (int logicalIndex in childLogicalIndices)
-                {
-                    if (!TryGetConstantId(constants, (uint)logicalIndex, out uint logicalIndexConstId))
-                    {
-                        return null;
-                    }
-
-                    indices.Add(logicalIndexConstId);
-                }
-
-                return new StructuredAccessTranslation
-                {
-                    Indices = indices,
-                    MemberTypeId = child.ResolvedTypeId
-                };
-            }
-        }
-
         return null;
     }
 
@@ -1780,8 +1317,7 @@ internal sealed class StructuredCBufferRewriter
         }
 
         uint resultId = module.AllocateId();
-        int insertIndex = module.FindTypeSectionEndIndex();
-        module.Instructions.Insert(insertIndex, new SpirvInstruction
+        module.Instructions.Insert(module.FindTypeSectionEndIndex(), new SpirvInstruction
         {
             OpCode = SpvOpCode.OpTypePointer,
             Words =
@@ -1792,19 +1328,12 @@ internal sealed class StructuredCBufferRewriter
                 memberTypeId
             ]
         });
-
         return resultId;
     }
 
     private static bool TryGetConstantId(ConstantMaps constants, uint value, out uint constantId)
     {
-        if (constants.ValueToId.TryGetValue(value, out constantId))
-        {
-            return true;
-        }
-
-        constantId = 0;
-        return false;
+        return constants.ValueToId.TryGetValue(value, out constantId);
     }
 
     private sealed class ModuleAnalysis
@@ -1855,8 +1384,7 @@ internal sealed class StructuredCBufferRewriter
     {
         Scalar,
         Vector,
-        Matrix,
-        Struct
+        Matrix
     }
 
     private sealed class MemberLogicalType
@@ -1878,10 +1406,6 @@ internal sealed class StructuredCBufferRewriter
         public int RegisterOffset { get; set; }
         public int RegisterCount { get; set; }
         public uint ResolvedTypeId { get; set; }
-        public string? StructName { get; set; }
-        public string? ParentBufferName { get; set; }
-        public List<StructuredMemberLayout> Children { get; } = new();
-        public int RelativeOffset { get; set; }
     }
 
     private sealed class StructuredBufferLayout
@@ -1929,6 +1453,20 @@ internal sealed class StructuredCBufferRewriter
     {
         public SlotExpression Slot { get; set; } = new();
         public List<int> ExtraIndices { get; set; } = new();
+
+        public FlatAccessPath Clone()
+        {
+            return new FlatAccessPath
+            {
+                Slot = new SlotExpression
+                {
+                    ConstantRegisterOffset = Slot.ConstantRegisterOffset,
+                    DynamicIndexId = Slot.DynamicIndexId,
+                    DynamicIndexStride = Slot.DynamicIndexStride
+                },
+                ExtraIndices = ExtraIndices.ToList()
+            };
+        }
     }
 
     private sealed class SlotExpression
