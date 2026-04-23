@@ -499,9 +499,9 @@ internal sealed class StructuredCBufferRewriter
         var rawMembers = new List<StructuredMemberLayout>();
         int maxAvailableByteOffset = flatBuffer.ArrayLength * 16;
 
-        if (TryCreateSyntheticRepeatedStruct(flatBuffer, module, constants, out StructuredMemberLayout? repeatedStructMember))
+        if (TryCreateSyntheticRepeatedRegion(flatBuffer, module, constants, out StructuredMemberLayout? repeatedRegionMember))
         {
-            rawMembers.Add(repeatedStructMember);
+            rawMembers.Add(repeatedRegionMember);
         }
         else
         {
@@ -623,13 +623,13 @@ internal sealed class StructuredCBufferRewriter
         return layout;
     }
 
-    private static bool TryCreateSyntheticRepeatedStruct(
+    private static bool TryCreateSyntheticRepeatedRegion(
         FlatUniformBufferInfo flatBuffer,
         SpirvModule module,
         ConstantMaps constants,
-        out StructuredMemberLayout? repeatedStructMember)
+        out StructuredMemberLayout? repeatedRegionMember)
     {
-        repeatedStructMember = null;
+        repeatedRegionMember = null;
 
         if (flatBuffer.ConstantBuffer.StructParams.Count != 0 || flatBuffer.ConstantBuffer.CBParams.Count == 0)
         {
@@ -648,74 +648,34 @@ internal sealed class StructuredCBufferRewriter
         }
 
         int arrayLength = Math.Max(1, (flatBuffer.ArrayLength + pattern.RegisterStride - 1) / pattern.RegisterStride);
-        var structMember = new StructuredMemberLayout
+        repeatedRegionMember = new StructuredMemberLayout
         {
             Metadata = new ConstantBufferParameter
             {
-                ParamName = flatBuffer.ConstantBuffer.Name,
+                ParamName = $"{flatBuffer.ConstantBuffer.Name}_Region",
                 Index = 0,
                 ParamType = ShaderParamType.Float,
-                Rows = 1,
+                Rows = 4,
                 Columns = 1,
                 IsMatrix = false,
                 ArraySize = arrayLength
             },
             LogicalType = new MemberLogicalType
             {
-                Kind = LogicalTypeKind.Struct,
+                Kind = LogicalTypeKind.Vector,
                 ScalarKind = ScalarKind.Float,
-                Rows = 1,
+                Rows = 4,
                 Columns = 1,
                 ArrayLength = arrayLength,
-                DeclaredByteSize = strideBytes,
+                SecondaryArrayLength = pattern.RegisterStride,
+                DeclaredByteSize = strideBytes * arrayLength,
                 UscIndex = 0,
                 IsMatrix = false
             },
             RegisterOffset = 0,
             RegisterCount = pattern.RegisterStride * arrayLength,
-            StructName = $"{flatBuffer.ConstantBuffer.Name}_Record",
             ParentBufferName = flatBuffer.ConstantBuffer.Name
         };
-
-        foreach (int registerOffset in Enumerable.Range(0, pattern.RegisterStride))
-        {
-            string aliasName = ResolveRegisterAliasName(flatBuffer.ConstantBuffer, registerOffset);
-            structMember.Children.Add(new StructuredMemberLayout
-            {
-                Metadata = new ConstantBufferParameter
-                {
-                    ParamName = aliasName,
-                    ParamType = ShaderParamType.Float,
-                    Rows = 4,
-                    Columns = 1,
-                    IsMatrix = false,
-                    ArraySize = 1,
-                    Index = registerOffset * 16
-                },
-                LogicalType = new MemberLogicalType
-                {
-                    Kind = LogicalTypeKind.Vector,
-                    ScalarKind = ScalarKind.Float,
-                    Rows = 4,
-                    Columns = 1,
-                    ArrayLength = 1,
-                    DeclaredByteSize = 16,
-                    UscIndex = registerOffset * 16,
-                    IsMatrix = false
-                },
-                RegisterOffset = registerOffset,
-                RegisterCount = 1,
-                RelativeOffset = registerOffset * 16
-            });
-        }
-
-        if (structMember.Children.Count == 0)
-        {
-            return false;
-        }
-
-        structMember.Children.Sort((left, right) => left.RelativeOffset.CompareTo(right.RelativeOffset));
-        repeatedStructMember = structMember;
         return true;
     }
 
@@ -790,26 +750,6 @@ internal sealed class StructuredCBufferRewriter
             AccessedRegisters = accessedRegisters
         };
         return true;
-    }
-
-    private static string ResolveRegisterAliasName(ConstantBuffer constantBuffer, int registerOffset)
-    {
-        ConstantBufferParameter? alias = constantBuffer.CBParams
-            .Where(parameter => parameter.Index / 16 == registerOffset && !string.IsNullOrWhiteSpace(parameter.ParamName))
-            .OrderBy(parameter => parameter.Index % 16)
-            .ThenBy(parameter => parameter.Index)
-            .FirstOrDefault();
-
-        if (alias != null)
-        {
-            string leafName = alias.ParamName.Split('.').Last();
-            if (!string.IsNullOrWhiteSpace(leafName))
-            {
-                return leafName;
-            }
-        }
-
-        return $"slot_{registerOffset}";
     }
 
     private static int Mod(int value, int modulus)
@@ -920,6 +860,14 @@ internal sealed class StructuredCBufferRewriter
         if (logicalType.Kind == LogicalTypeKind.Struct && logicalType.ArrayLength > 1)
         {
             return EnsureArrayType(module, types, baseTypeId, logicalType.ArrayLength, Math.Max(logicalType.DeclaredByteSize, 16));
+        }
+
+        if (logicalType.SecondaryArrayLength > 1)
+        {
+            uint innerArrayTypeId = EnsureArrayType(module, types, baseTypeId, logicalType.SecondaryArrayLength, Math.Max(logicalType.DeclaredByteSize / Math.Max(logicalType.ArrayLength, 1) / Math.Max(logicalType.SecondaryArrayLength, 1), 16));
+            return logicalType.ArrayLength > 1
+                ? EnsureArrayType(module, types, innerArrayTypeId, logicalType.ArrayLength, Math.Max(logicalType.SecondaryArrayLength * 16, 16))
+                : innerArrayTypeId;
         }
 
         if ((logicalType.Kind == LogicalTypeKind.Scalar || logicalType.Kind == LogicalTypeKind.Vector) && logicalType.ArrayLength > 1)
@@ -1828,6 +1776,34 @@ internal sealed class StructuredCBufferRewriter
         List<int> trailingIndices = extraIndices.Count > 1 ? extraIndices.Skip(1).ToList() : [];
         int memberComponentOffset = (member.Metadata.Index % 16) / 4;
 
+        if (logicalType.SecondaryArrayLength > 1)
+        {
+            int innerLength = logicalType.SecondaryArrayLength;
+            if (localRegister < 0 || localRegister >= member.RegisterCount)
+            {
+                return null;
+            }
+
+            int outerIndex = localRegister / innerLength;
+            int innerIndex = localRegister % innerLength;
+            if (outerIndex < 0 || outerIndex >= logicalType.ArrayLength)
+            {
+                return null;
+            }
+
+            if (trailingIndices.Count > 0)
+            {
+                return null;
+            }
+
+            if (extraIndices.Count > 0)
+            {
+                return [outerIndex, innerIndex, componentIndex];
+            }
+
+            return [outerIndex, innerIndex];
+        }
+
         if (logicalType.Kind == LogicalTypeKind.Matrix)
         {
             if (localRegister < 0 || localRegister >= logicalType.Columns)
@@ -1901,6 +1877,48 @@ internal sealed class StructuredCBufferRewriter
     {
         foreach (StructuredMemberLayout member in layout.Members)
         {
+            if (member.LogicalType.SecondaryArrayLength > 1 && member.LogicalType.ArrayLength > 1)
+            {
+                if (accessPath.Slot.DynamicIndexStride != member.LogicalType.SecondaryArrayLength)
+                {
+                    continue;
+                }
+
+                int registerWithinRecord = accessPath.Slot.ConstantRegisterOffset;
+                if (registerWithinRecord < 0 || registerWithinRecord >= member.LogicalType.SecondaryArrayLength)
+                {
+                    continue;
+                }
+
+                List<int>? logicalIndices = TranslateMemberAccess(member, member.RegisterOffset + registerWithinRecord, componentIndex, accessPath.ExtraIndices);
+                if (logicalIndices == null || logicalIndices.Count < 2)
+                {
+                    continue;
+                }
+
+                if (!TryGetConstantId(constants, (uint)layout.Members.IndexOf(member), out uint memberIndexConstId))
+                {
+                    return null;
+                }
+
+                var indices = new List<uint> { memberIndexConstId, accessPath.Slot.DynamicIndexId };
+                for (int i = 1; i < logicalIndices.Count; i++)
+                {
+                    if (!TryGetConstantId(constants, (uint)logicalIndices[i], out uint logicalIndexConstId))
+                    {
+                        return null;
+                    }
+
+                    indices.Add(logicalIndexConstId);
+                }
+
+                return new StructuredAccessTranslation
+                {
+                    Indices = indices,
+                    MemberTypeId = member.ResolvedTypeId
+                };
+            }
+
             if (member.LogicalType.Kind != LogicalTypeKind.Struct || member.LogicalType.ArrayLength <= 1)
             {
                 continue;
@@ -2153,6 +2171,7 @@ internal sealed class StructuredCBufferRewriter
         public int Rows { get; set; }
         public int Columns { get; set; }
         public int ArrayLength { get; set; }
+        public int SecondaryArrayLength { get; set; }
         public int DeclaredByteSize { get; set; }
         public int UscIndex { get; set; }
         public bool IsMatrix { get; set; }
