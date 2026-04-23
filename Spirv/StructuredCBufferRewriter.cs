@@ -256,6 +256,51 @@ internal sealed class StructuredCBufferRewriter
         return result;
     }
 
+    private static bool CanRewriteAllAccessChains(
+        SpirvModule module,
+        FlatUniformBufferInfo flatBuffer,
+        StructuredBufferLayout layout,
+        ConstantMaps constants,
+        out string? failure)
+    {
+        failure = null;
+        int accessChainCount = 0;
+
+        foreach (SpirvInstruction instruction in module.Instructions)
+        {
+            if ((instruction.OpCode != SpvOpCode.OpAccessChain && instruction.OpCode != SpvOpCode.OpInBoundsAccessChain) || instruction.Words.Length < 5)
+            {
+                continue;
+            }
+
+            if (instruction[3] != flatBuffer.VariableId)
+            {
+                continue;
+            }
+
+            accessChainCount++;
+            if (!TryParseFlatAccessChain(instruction, constants, out FlatAccessPath accessPath))
+            {
+                failure = $"unsupported access chain parse for resultId={instruction[2]} op={instruction.OpCode} words=[{string.Join(",", instruction.Words)}]";
+                return false;
+            }
+
+            if (TranslateFlatAccess(layout, accessPath, constants) == null)
+            {
+                failure = $"unsupported access translation for resultId={instruction[2]} slotConst={accessPath.Slot.ConstantRegisterOffset} slotDynamic={accessPath.Slot.DynamicIndexId} stride={accessPath.Slot.DynamicIndexStride} extra=[{string.Join(",", accessPath.ExtraIndices)}] op={instruction.OpCode} words=[{string.Join(",", instruction.Words)}]";
+                return false;
+            }
+        }
+
+        if (accessChainCount == 0)
+        {
+            failure = "no access chains found for variable";
+            return false;
+        }
+
+        return true;
+    }
+
     private static TypeInfo AnalyzeTypes(SpirvModule module, ModuleAnalysis analysis)
     {
         var info = new TypeInfo();
