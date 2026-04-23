@@ -309,7 +309,7 @@ public class SpirvPatcher
             }
 
             ConstantBuffer? constantBuffer = symbols.ConstantBuffers.FirstOrDefault(cb => string.Equals(cb.Name, resource.Name, StringComparison.Ordinal));
-            if (constantBuffer == null || constantBuffer.CBParams.Count == 0)
+            if (constantBuffer == null)
             {
                 continue;
             }
@@ -318,6 +318,28 @@ public class SpirvPatcher
             if (match?.StructTypeId == null)
             {
                 continue;
+            }
+
+            foreach (StructParameter structParameter in constantBuffer.StructParams.Where(s => !string.IsNullOrWhiteSpace(s.Name)))
+            {
+                int? structTargetIndex = null;
+
+                if (structParameter.Index >= 0 && match.MemberOffsets.Count > 0)
+                {
+                    foreach (var offsetKvp in match.MemberOffsets)
+                    {
+                        if (offsetKvp.Value == (uint)structParameter.Index)
+                        {
+                            structTargetIndex = offsetKvp.Key;
+                            break;
+                        }
+                    }
+                }
+
+                if (structTargetIndex.HasValue)
+                {
+                    memberNames.Add((match.StructTypeId.Value, (uint)structTargetIndex.Value, structParameter.Name));
+                }
             }
 
             foreach (var parameter in constantBuffer.CBParams.Where(p => !string.IsNullOrWhiteSpace(p.ParamName)))

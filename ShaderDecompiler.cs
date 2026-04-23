@@ -137,9 +137,10 @@ public sealed class ShaderDecompiler : IDisposable
             // assistants will be tempted to reintroduce HLSL text post-processing.
             spirv = _structuredCBufferRewriter.Rewrite(spirv, finalMetadata);
             byte[] patchedSpirv = PatchSpirvSymbols(spirv, finalMetadata);
-            bool hasStructuredCbuffers = HasStructuredConstantBuffers(patchedSpirv, finalMetadata);
-            bool useStructuredPath = _structuredCBufferRewriter.LastRewriteApplied || hasStructuredCbuffers;
-            string hlsl = CompileSpirVToHlsl(patchedSpirv, shaderModel, tempSpv, tempHlsl, !useStructuredPath);
+            // USC-driven metadata already describes the intended cbuffer structure. Forcing
+            // spirv-cross to flatten UBOs destroys struct member recovery even when rewrite did
+            // not trigger, so keep structured UBO emission enabled for all metadata-guided paths.
+            string hlsl = CompileSpirVToHlsl(patchedSpirv, shaderModel, tempSpv, tempHlsl);
 
             return new DecompileResult
             {
@@ -380,7 +381,7 @@ public sealed class ShaderDecompiler : IDisposable
         return File.ReadAllBytes(tempSpv);
     }
 
-    private string CompileSpirVToHlsl(byte[] spirv, uint shaderModel, string tempSpv, string tempHlsl, bool flattenUbo)
+    private string CompileSpirVToHlsl(byte[] spirv, uint shaderModel, string tempSpv, string tempHlsl)
     {
         File.WriteAllBytes(tempSpv, spirv);
 
@@ -392,11 +393,6 @@ public sealed class ShaderDecompiler : IDisposable
             tempHlsl,
             "--hlsl"
         };
-
-        if (flattenUbo)
-        {
-            args.Add("--flatten-ubo");
-        }
 
         args.Add("--shader-model");
         args.Add(shaderModel.ToString());

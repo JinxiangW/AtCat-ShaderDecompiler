@@ -770,6 +770,33 @@ internal sealed class StructuredCBufferRewriter
                     (uint)child.RelativeOffset
                 ]
             });
+
+            if (child.LogicalType.Kind == LogicalTypeKind.Matrix)
+            {
+                decorations.Add(new SpirvInstruction
+                {
+                    OpCode = SpvOpCode.OpMemberDecorate,
+                    Words =
+                    [
+                        SpvOpCode.MakeInstructionWord(SpvOpCode.OpMemberDecorate, 4),
+                        structTypeId,
+                        (uint)i,
+                        SpvOpCode.DecorationRowMajor
+                    ]
+                });
+                decorations.Add(new SpirvInstruction
+                {
+                    OpCode = SpvOpCode.OpMemberDecorate,
+                    Words =
+                    [
+                        SpvOpCode.MakeInstructionWord(SpvOpCode.OpMemberDecorate, 5),
+                        structTypeId,
+                        (uint)i,
+                        SpvOpCode.DecorationMatrixStride,
+                        16
+                    ]
+                });
+            }
         }
 
         module.Instructions.InsertRange(decorationInsertIndex, decorations);
@@ -1262,6 +1289,7 @@ internal sealed class StructuredCBufferRewriter
     {
         MemberLogicalType logicalType = member.LogicalType;
         int localRegister = absoluteRegister - member.RegisterOffset;
+        List<int> trailingIndices = extraIndices.Count > 1 ? extraIndices.Skip(1).ToList() : [];
 
         if (logicalType.Kind == LogicalTypeKind.Matrix)
         {
@@ -1272,6 +1300,16 @@ internal sealed class StructuredCBufferRewriter
 
             if (extraIndices.Count > 0)
             {
+                if (componentIndex < 0 || componentIndex >= logicalType.Rows)
+                {
+                    return null;
+                }
+
+                if (trailingIndices.Count > 0)
+                {
+                    return null;
+                }
+
                 return [localRegister, componentIndex];
             }
 
@@ -1280,7 +1318,22 @@ internal sealed class StructuredCBufferRewriter
 
         if (member.RegisterCount == 1)
         {
-            return extraIndices.Count > 0 ? [componentIndex] : [];
+            if (extraIndices.Count == 0)
+            {
+                return [];
+            }
+
+            if (logicalType.Kind == LogicalTypeKind.Vector)
+            {
+                if (componentIndex < 0 || componentIndex >= logicalType.Rows || trailingIndices.Count > 0)
+                {
+                    return null;
+                }
+
+                return [componentIndex];
+            }
+
+            return null;
         }
 
         if (localRegister < 0 || localRegister >= member.RegisterCount)
@@ -1288,7 +1341,12 @@ internal sealed class StructuredCBufferRewriter
             return null;
         }
 
-        return [localRegister];
+        if (trailingIndices.Count > 0)
+        {
+            return null;
+        }
+
+        return extraIndices.Count > 0 ? [localRegister, componentIndex] : [localRegister];
     }
 
     private static uint FindOrCreateUniformPointerType(SpirvModule module, uint memberTypeId)
