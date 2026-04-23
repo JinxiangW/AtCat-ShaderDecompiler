@@ -405,7 +405,7 @@ internal sealed class StructuredCBufferRewriter
         return layout.RequiredRegisterCount == flatBuffer.ArrayLength;
     }
 
-    private static StructuredBufferLayout? BuildStructuredLayout(FlatUniformBufferInfo flatBuffer, SpirvModule module, ConstantMaps constants)
+    private static StructuredBufferLayout? BuildStructuredLayout(FlatUniformBufferInfo flatBuffer)
     {
         if (flatBuffer.ConstantBuffer.CBParams.Count == 0 && flatBuffer.ConstantBuffer.StructParams.Count == 0)
         {
@@ -416,12 +416,6 @@ internal sealed class StructuredCBufferRewriter
         var rawMembers = new List<StructuredMemberLayout>();
         int maxAvailableByteOffset = flatBuffer.ArrayLength * 16;
 
-        if (TryCreateSyntheticRepeatedRegion(flatBuffer, module, constants, out StructuredMemberLayout? repeatedRegionMember))
-        {
-            rawMembers.Add(repeatedRegionMember);
-        }
-        else
-        {
         foreach (ConstantBufferParameter metadataParameter in flatBuffer.ConstantBuffer.CBParams.OrderBy(p => p.Index))
         {
             MemberLogicalType? logicalType = TryCreateLogicalTypeFromUscLayout(metadataParameter);
@@ -517,7 +511,6 @@ internal sealed class StructuredCBufferRewriter
 
             rawMembers.Add(structMember);
         }
-        }
 
         rawMembers.Sort((left, right) => left.Metadata.Index.CompareTo(right.Metadata.Index));
 
@@ -538,141 +531,6 @@ internal sealed class StructuredCBufferRewriter
             : flatBuffer.ArrayLength;
         layout.MaxUsedRegisterCount = Math.Max(1, (maxUsedByteOffset + 15) / 16);
         return layout;
-    }
-
-    private static bool TryCreateSyntheticRepeatedRegion(
-        FlatUniformBufferInfo flatBuffer,
-        SpirvModule module,
-        ConstantMaps constants,
-        out StructuredMemberLayout? repeatedRegionMember)
-    {
-        repeatedRegionMember = null;
-
-        if (flatBuffer.ConstantBuffer.StructParams.Count != 0 || flatBuffer.ConstantBuffer.CBParams.Count == 0)
-        {
-            return false;
-        }
-
-        if (!TryAnalyzeRepeatedRecordPattern(module, flatBuffer, constants, out RepeatedRecordPattern? pattern))
-        {
-            return false;
-        }
-
-        int strideBytes = pattern.RegisterStride * 16;
-        if (flatBuffer.ConstantBuffer.CBParams.Any(parameter => parameter.Index < 0 || parameter.Index >= strideBytes))
-        {
-            return false;
-        }
-
-        int arrayLength = Math.Max(1, (flatBuffer.ArrayLength + pattern.RegisterStride - 1) / pattern.RegisterStride);
-        repeatedRegionMember = new StructuredMemberLayout
-        {
-            Metadata = new ConstantBufferParameter
-            {
-                ParamName = $"{flatBuffer.ConstantBuffer.Name}_Region",
-                Index = 0,
-                ParamType = ShaderParamType.Float,
-                Rows = 4,
-                Columns = 1,
-                IsMatrix = false,
-                ArraySize = arrayLength
-            },
-            LogicalType = new MemberLogicalType
-            {
-                Kind = LogicalTypeKind.Vector,
-                ScalarKind = ScalarKind.Float,
-                Rows = 4,
-                Columns = 1,
-                ArrayLength = arrayLength,
-                SecondaryArrayLength = pattern.RegisterStride,
-                DeclaredByteSize = strideBytes * arrayLength,
-                UscIndex = 0,
-                IsMatrix = false
-            },
-            RegisterOffset = 0,
-            RegisterCount = pattern.RegisterStride * arrayLength,
-            ParentBufferName = flatBuffer.ConstantBuffer.Name
-        };
-        return true;
-    }
-
-    private static bool TryAnalyzeRepeatedRecordPattern(
-        SpirvModule module,
-        FlatUniformBufferInfo flatBuffer,
-        ConstantMaps constants,
-        out RepeatedRecordPattern? pattern)
-    {
-        pattern = null;
-        var strideCounts = new Dictionary<int, int>();
-        var accessedRegistersByStride = new Dictionary<int, HashSet<int>>();
-
-        foreach (SpirvInstruction instruction in module.Instructions)
-        {
-            if ((instruction.OpCode != SpvOpCode.OpAccessChain && instruction.OpCode != SpvOpCode.OpInBoundsAccessChain) || instruction.Words.Length < 5)
-            {
-                continue;
-            }
-
-            if (instruction[3] != flatBuffer.VariableId || !TryParseFlatAccessChain(instruction, constants, out FlatAccessPath accessPath))
-            {
-                continue;
-            }
-
-            if (accessPath.Slot.DynamicIndexId != 0 && accessPath.Slot.DynamicIndexStride > 1)
-            {
-                if (!strideCounts.ContainsKey(accessPath.Slot.DynamicIndexStride))
-                {
-                    strideCounts[accessPath.Slot.DynamicIndexStride] = 0;
-                    accessedRegistersByStride[accessPath.Slot.DynamicIndexStride] = new HashSet<int>();
-                }
-
-                strideCounts[accessPath.Slot.DynamicIndexStride]++;
-                accessedRegistersByStride[accessPath.Slot.DynamicIndexStride].Add(accessPath.Slot.ConstantRegisterOffset);
-            }
-        }
-
-        if (strideCounts.Count == 0)
-        {
-            return false;
-        }
-
-        int dominantStride = strideCounts
-            .OrderByDescending(entry => entry.Value)
-            .ThenByDescending(entry => entry.Key)
-            .First()
-            .Key;
-
-        HashSet<int> accessedRegisters = accessedRegistersByStride[dominantStride];
-        foreach (SpirvInstruction instruction in module.Instructions)
-        {
-            if ((instruction.OpCode != SpvOpCode.OpAccessChain && instruction.OpCode != SpvOpCode.OpInBoundsAccessChain) || instruction.Words.Length < 5)
-            {
-                continue;
-            }
-
-            if (instruction[3] != flatBuffer.VariableId || !TryParseFlatAccessChain(instruction, constants, out FlatAccessPath accessPath))
-            {
-                continue;
-            }
-
-            if (accessPath.Slot.DynamicIndexId == 0)
-            {
-                accessedRegisters.Add(Mod(accessPath.Slot.ConstantRegisterOffset, dominantStride));
-            }
-        }
-
-        pattern = new RepeatedRecordPattern
-        {
-            RegisterStride = dominantStride,
-            AccessedRegisters = accessedRegisters
-        };
-        return true;
-    }
-
-    private static int Mod(int value, int modulus)
-    {
-        int remainder = value % modulus;
-        return remainder < 0 ? remainder + modulus : remainder;
     }
 
     private static int GetMemberSpanBytes(StructuredMemberLayout member)
