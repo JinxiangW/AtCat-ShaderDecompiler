@@ -1811,12 +1811,21 @@ internal sealed class StructuredCBufferRewriter
                 ElementTypeId = original.ElementTypeId,
                 ArrayLength = original.ArrayLength,
                 ArrayStride = original.ArrayStride,
+                // IMPORTANT:
+                // Remap here means "borrow this USC cbuffer layout to explain the live flat buffer's
+                // accesses", not "rename or rebind the live SPIR-V resource". Unity metadata can
+                // legitimately contain extra logical cbuffers that do not survive as separate live UBO
+                // variables in the final binary. If we overwrite the live resource identity here, we end
+                // up emitting nonsense like `UnityInstancing_SRP_UnityPerDraw : register(b1)` even though
+                // the actual resource at binding 1 is still the original live buffer slot. Keep the
+                // physical resource name/set/binding from the matched metadata resource and only swap the
+                // USC layout source used for structured recovery.
                 Metadata = new ResourceBinding
                 {
-                    Name = candidateResource.Name,
-                    RegisterType = candidateResource.RegisterType,
-                    Type = candidateResource.Type,
-                    Tag = candidateResource.Tag,
+                    Name = original.Metadata.Name,
+                    RegisterType = original.Metadata.RegisterType,
+                    Type = original.Metadata.Type,
+                    Tag = original.Metadata.Tag,
                     Set = original.Metadata.Set,
                     Binding = original.Metadata.Binding
                 },
@@ -1836,7 +1845,7 @@ internal sealed class StructuredCBufferRewriter
 
             remapped = rebound;
             remappedLayout = candidateLayout;
-            remapReason = $"[{original.Metadata.Name}] remapped binding {original.Metadata.Binding} to USC buffer {candidateResource.Name} after exact binding validation failed";
+            remapReason = $"[{original.Metadata.Name}] kept live binding {original.Metadata.Binding} but borrowed USC layout from {candidateResource.Name} after exact binding validation failed";
             return true;
         }
 
