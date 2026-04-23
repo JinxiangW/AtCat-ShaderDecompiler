@@ -18,5 +18,5 @@ Source/Ruri.RipperHook/PyTools/TypeTreeDump
 Source/Ruri.RipperHook/PyTools/TypeTreeOutput
 Source/Ruri.SourceGenerated/*
 !Source/Ruri.SourceGenerated/Ruri.SourceGenerated.csproj
-SelfTestOutput/
 Testing/Session
+Testing/Assets/Shaders/UnityBinary
