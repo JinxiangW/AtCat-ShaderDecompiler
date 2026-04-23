@@ -62,6 +62,12 @@ internal sealed class StructuredCBufferRewriter
                 continue;
             }
 
+            if (!CanRewriteAllAccessChains(module, flatBuffer, layout, constants, out string? validationFailure))
+            {
+                summary.Add($"[{flatBuffer.Metadata.Name}] rewrite validation failed: {validationFailure}");
+                continue;
+            }
+
             uint newStructTypeId = module.AllocateId();
             uint newPointerTypeId = module.AllocateId();
 
@@ -249,6 +255,51 @@ internal sealed class StructuredCBufferRewriter
         }
 
         return result;
+    }
+
+    private static bool CanRewriteAllAccessChains(
+        SpirvModule module,
+        FlatUniformBufferInfo flatBuffer,
+        StructuredBufferLayout layout,
+        ConstantMaps constants,
+        out string? failure)
+    {
+        failure = null;
+        int accessChainCount = 0;
+
+        foreach (SpirvInstruction instruction in module.Instructions)
+        {
+            if ((instruction.OpCode != SpvOpCode.OpAccessChain && instruction.OpCode != SpvOpCode.OpInBoundsAccessChain) || instruction.Words.Length < 5)
+            {
+                continue;
+            }
+
+            if (instruction[3] != flatBuffer.VariableId)
+            {
+                continue;
+            }
+
+            accessChainCount++;
+            if (!TryParseFlatAccessChain(instruction, constants, out FlatAccessPath? accessPath))
+            {
+                failure = $"unsupported access chain parse for resultId={instruction[2]}";
+                return false;
+            }
+
+            if (TranslateFlatAccess(layout, accessPath, constants) == null)
+            {
+                failure = $"unsupported access translation for resultId={instruction[2]} slot={accessPath.SlotIndex}";
+                return false;
+            }
+        }
+
+        if (accessChainCount == 0)
+        {
+            failure = "no access chains found for variable";
+            return false;
+        }
+
+        return true;
     }
 
     private static TypeInfo AnalyzeTypes(SpirvModule module, ModuleAnalysis analysis)
@@ -1086,6 +1137,7 @@ internal sealed class StructuredCBufferRewriter
     {
         var rewriteByVariableId = rewrites.ToDictionary(r => r.Info.VariableId);
         var uniformPointerTypes = new Dictionary<uint, uint>();
+        var rewrittenAccessChains = new Dictionary<uint, RewrittenAccessChainInfo>();
         foreach (BufferRewritePlan rewrite in rewrites)
         {
             foreach (uint memberTypeId in rewrite.MemberTypeIds)
@@ -1141,7 +1193,203 @@ internal sealed class StructuredCBufferRewriter
             };
             newWords.AddRange(translated.Indices);
             instruction.Words = newWords.ToArray();
+            rewrittenAccessChains[instruction[2]] = new RewrittenAccessChainInfo
+            {
+                AccessChainResultId = instruction[2],
+                BaseVariableId = instruction[3],
+                InstructionOpCode = instruction.OpCode,
+                Plan = plan,
+                OriginalAccessPath = new FlatAccessPath
+                {
+                    SlotIndex = accessPath.SlotIndex,
+                    ExtraIndices = accessPath.ExtraIndices.ToList()
+                },
+                Translation = translated
+            };
         }
+
+        RewriteLoadsAndCompositeExtracts(module, rewrittenAccessChains, constants, uniformPointerTypes);
+    }
+
+    private static void RewriteLoadsAndCompositeExtracts(
+        SpirvModule module,
+        Dictionary<uint, RewrittenAccessChainInfo> rewrittenAccessChains,
+        ConstantMaps constants,
+        Dictionary<uint, uint> uniformPointerTypes)
+    {
+        if (rewrittenAccessChains.Count == 0)
+        {
+            return;
+        }
+
+        var loadInfos = new Dictionary<uint, RewrittenLoadInfo>();
+        var compositeExtractUseCounts = new Dictionary<uint, int>();
+        var totalUseCounts = CountResultUses(module);
+
+        for (int i = 0; i < module.Instructions.Count; i++)
+        {
+            SpirvInstruction instruction = module.Instructions[i];
+            if (instruction.OpCode == SpvOpCode.OpLoad && instruction.Words.Length >= 4 && rewrittenAccessChains.TryGetValue(instruction[3], out RewrittenAccessChainInfo? accessInfo))
+            {
+                loadInfos[instruction[2]] = new RewrittenLoadInfo
+                {
+                    InstructionIndex = i,
+                    ResultId = instruction[2],
+                    AccessChain = accessInfo,
+                    OriginalResultTypeId = instruction[1],
+                    HasCompositeExtractUsers = false
+                };
+                continue;
+            }
+
+            if (instruction.OpCode == SpvOpCode.OpCompositeExtract && instruction.Words.Length >= 5 && loadInfos.TryGetValue(instruction[3], out RewrittenLoadInfo? loadInfo))
+            {
+                loadInfo.HasCompositeExtractUsers = true;
+                if (!compositeExtractUseCounts.ContainsKey(loadInfo.ResultId))
+                {
+                    compositeExtractUseCounts[loadInfo.ResultId] = 0;
+                }
+
+                compositeExtractUseCounts[loadInfo.ResultId]++;
+
+                List<int> extractIndices = instruction.Words.Skip(4).Select(v => checked((int)v)).ToList();
+                FlatAccessPath directAccessPath = new()
+                {
+                    SlotIndex = loadInfo.AccessChain.OriginalAccessPath.SlotIndex,
+                    ExtraIndices = loadInfo.AccessChain.OriginalAccessPath.ExtraIndices.Concat(extractIndices).ToList()
+                };
+
+                StructuredAccessTranslation? translated = TranslateFlatAccess(loadInfo.AccessChain.Plan.Layout, directAccessPath, constants);
+                if (translated == null || !uniformPointerTypes.TryGetValue(translated.MemberTypeId, out uint pointerTypeId))
+                {
+                    continue;
+                }
+
+                uint pointerResultId = module.AllocateId();
+                var pointerInstruction = new SpirvInstruction
+                {
+                    OpCode = loadInfo.AccessChain.InstructionOpCode,
+                    Words = new[]
+                    {
+                        SpvOpCode.MakeInstructionWord(loadInfo.AccessChain.InstructionOpCode, (ushort)(4 + translated.Indices.Count)),
+                        pointerTypeId,
+                        pointerResultId,
+                        loadInfo.AccessChain.BaseVariableId
+                    }.Concat(translated.Indices).ToArray()
+                };
+
+                var loadInstruction = new SpirvInstruction
+                {
+                    OpCode = SpvOpCode.OpLoad,
+                    Words =
+                    [
+                        SpvOpCode.MakeInstructionWord(SpvOpCode.OpLoad, 4),
+                        translated.MemberTypeId,
+                        instruction[2],
+                        pointerResultId
+                    ]
+                };
+
+                module.Instructions.Insert(i, pointerInstruction);
+                module.Instructions.Insert(i + 1, loadInstruction);
+                i += 2;
+                instruction.OpCode = SpvOpCode.OpNop;
+                instruction.Words = [SpvOpCode.MakeInstructionWord(SpvOpCode.OpNop, 1)];
+            }
+        }
+
+        foreach (RewrittenLoadInfo loadInfo in loadInfos.Values)
+        {
+            SpirvInstruction loadInstruction = module.Instructions[loadInfo.InstructionIndex];
+            if (loadInstruction.OpCode != SpvOpCode.OpLoad || loadInstruction.Words.Length < 4)
+            {
+                continue;
+            }
+
+            if (!loadInfo.HasCompositeExtractUsers)
+            {
+                loadInstruction[1] = loadInfo.AccessChain.Translation.MemberTypeId;
+                continue;
+            }
+
+            int compositeExtractUsers = compositeExtractUseCounts.TryGetValue(loadInfo.ResultId, out int count) ? count : 0;
+            int totalUses = totalUseCounts.TryGetValue(loadInfo.ResultId, out int uses) ? uses : 0;
+            if (compositeExtractUsers == totalUses)
+            {
+                loadInstruction.OpCode = SpvOpCode.OpNop;
+                loadInstruction.Words = [SpvOpCode.MakeInstructionWord(SpvOpCode.OpNop, 1)];
+            }
+        }
+    }
+
+    private static Dictionary<uint, int> CountResultUses(SpirvModule module)
+    {
+        var uses = new Dictionary<uint, int>();
+        foreach (SpirvInstruction instruction in module.Instructions)
+        {
+            int? resultIdIndex = GetResultIdIndex(instruction.OpCode, instruction.Words.Length);
+            int? resultTypeIndex = GetResultTypeIdIndex(instruction.OpCode, instruction.Words.Length);
+            for (int operandIndex = 1; operandIndex < instruction.Words.Length; operandIndex++)
+            {
+                if ((resultIdIndex.HasValue && operandIndex == resultIdIndex.Value) || (resultTypeIndex.HasValue && operandIndex == resultTypeIndex.Value))
+                {
+                    continue;
+                }
+
+                uint operand = instruction[operandIndex];
+                if (!uses.ContainsKey(operand))
+                {
+                    uses[operand] = 0;
+                }
+
+                uses[operand]++;
+            }
+        }
+
+        return uses;
+    }
+
+    private static int? GetResultTypeIdIndex(ushort opCode, int wordCount)
+    {
+        return opCode switch
+        {
+            SpvOpCode.OpConstant => wordCount >= 3 ? 1 : null,
+            SpvOpCode.OpConstantComposite => wordCount >= 3 ? 1 : null,
+            SpvOpCode.OpLoad => wordCount >= 3 ? 1 : null,
+            SpvOpCode.OpAccessChain => wordCount >= 3 ? 1 : null,
+            SpvOpCode.OpInBoundsAccessChain => wordCount >= 3 ? 1 : null,
+            SpvOpCode.OpCompositeExtract => wordCount >= 3 ? 1 : null,
+            _ => null
+        };
+    }
+
+    private static int? GetResultIdIndex(ushort opCode, int wordCount)
+    {
+        return opCode switch
+        {
+            SpvOpCode.OpTypeVoid => wordCount >= 2 ? 1 : null,
+            SpvOpCode.OpTypeBool => wordCount >= 2 ? 1 : null,
+            SpvOpCode.OpTypeInt => wordCount >= 2 ? 1 : null,
+            SpvOpCode.OpTypeFloat => wordCount >= 2 ? 1 : null,
+            SpvOpCode.OpTypeVector => wordCount >= 2 ? 1 : null,
+            SpvOpCode.OpTypeMatrix => wordCount >= 2 ? 1 : null,
+            SpvOpCode.OpTypeImage => wordCount >= 2 ? 1 : null,
+            SpvOpCode.OpTypeSampler => wordCount >= 2 ? 1 : null,
+            SpvOpCode.OpTypeSampledImage => wordCount >= 2 ? 1 : null,
+            SpvOpCode.OpTypeArray => wordCount >= 2 ? 1 : null,
+            SpvOpCode.OpTypeRuntimeArray => wordCount >= 2 ? 1 : null,
+            SpvOpCode.OpTypeStruct => wordCount >= 2 ? 1 : null,
+            SpvOpCode.OpTypeOpaque => wordCount >= 2 ? 1 : null,
+            SpvOpCode.OpTypePointer => wordCount >= 2 ? 1 : null,
+            SpvOpCode.OpConstant => wordCount >= 3 ? 2 : null,
+            SpvOpCode.OpConstantComposite => wordCount >= 3 ? 2 : null,
+            SpvOpCode.OpVariable => wordCount >= 3 ? 2 : null,
+            SpvOpCode.OpLoad => wordCount >= 3 ? 2 : null,
+            SpvOpCode.OpAccessChain => wordCount >= 3 ? 2 : null,
+            SpvOpCode.OpInBoundsAccessChain => wordCount >= 3 ? 2 : null,
+            SpvOpCode.OpCompositeExtract => wordCount >= 3 ? 2 : null,
+            _ => null
+        };
     }
 
     private static bool TryParseFlatAccessChain(SpirvInstruction instruction, ConstantMaps constants, out FlatAccessPath? accessPath)
@@ -1186,6 +1434,7 @@ internal sealed class StructuredCBufferRewriter
     {
         int absoluteRegister = accessPath.SlotIndex;
         int componentIndex = accessPath.ExtraIndices.Count > 0 ? accessPath.ExtraIndices[0] : 0;
+        int absoluteByteOffset = (absoluteRegister * 16) + (componentIndex * 4);
 
         foreach (StructuredMemberLayout member in layout.Members)
         {
@@ -1212,7 +1461,7 @@ internal sealed class StructuredCBufferRewriter
                     List<int>? childLogicalIndices = TranslateMemberAccess(child, absoluteRegister - structArrayRegisterOffset, componentIndex, accessPath.ExtraIndices);
                     if (childLogicalIndices == null)
                     {
-                        return null;
+                        continue;
                     }
 
                     if (!TryGetConstantId(constants, (uint)layout.Members.IndexOf(member), out uint parentIndexConstId) ||
@@ -1253,10 +1502,15 @@ internal sealed class StructuredCBufferRewriter
                 continue;
             }
 
+            if (!IsMemberByteMatch(member, absoluteByteOffset, accessPath.ExtraIndices))
+            {
+                continue;
+            }
+
             List<int>? logicalIndices = TranslateMemberAccess(member, absoluteRegister, componentIndex, accessPath.ExtraIndices);
             if (logicalIndices == null)
             {
-                return null;
+                continue;
             }
 
             if (!TryGetConstantId(constants, (uint)layout.Members.IndexOf(member), out uint memberIndexConstId))
@@ -1285,11 +1539,31 @@ internal sealed class StructuredCBufferRewriter
         return null;
     }
 
+    private static bool IsMemberByteMatch(StructuredMemberLayout member, int absoluteByteOffset, List<int> extraIndices)
+    {
+        if (member.LogicalType.Kind == LogicalTypeKind.Struct)
+        {
+            return false;
+        }
+
+        int memberStart = member.Metadata.Index;
+        int memberSize = Math.Max(member.LogicalType.DeclaredByteSize, 4);
+        int memberEnd = memberStart + memberSize;
+
+        if (extraIndices.Count == 0)
+        {
+            return absoluteByteOffset == memberStart;
+        }
+
+        return absoluteByteOffset >= memberStart && absoluteByteOffset < memberEnd;
+    }
+
     private static List<int>? TranslateMemberAccess(StructuredMemberLayout member, int absoluteRegister, int componentIndex, List<int> extraIndices)
     {
         MemberLogicalType logicalType = member.LogicalType;
         int localRegister = absoluteRegister - member.RegisterOffset;
         List<int> trailingIndices = extraIndices.Count > 1 ? extraIndices.Skip(1).ToList() : [];
+        int memberComponentOffset = (member.Metadata.Index % 16) / 4;
 
         if (logicalType.Kind == LogicalTypeKind.Matrix)
         {
@@ -1320,17 +1594,28 @@ internal sealed class StructuredCBufferRewriter
         {
             if (extraIndices.Count == 0)
             {
-                return [];
+                return memberComponentOffset == 0 ? [] : null;
             }
 
             if (logicalType.Kind == LogicalTypeKind.Vector)
             {
-                if (componentIndex < 0 || componentIndex >= logicalType.Rows || trailingIndices.Count > 0)
+                int relativeComponentIndex = componentIndex - memberComponentOffset;
+                if (relativeComponentIndex < 0 || relativeComponentIndex >= logicalType.Rows || trailingIndices.Count > 0)
                 {
                     return null;
                 }
 
-                return [componentIndex];
+                return [relativeComponentIndex];
+            }
+
+            if (logicalType.Kind == LogicalTypeKind.Scalar)
+            {
+                if (componentIndex != memberComponentOffset || trailingIndices.Count > 0)
+                {
+                    return null;
+                }
+
+                return [];
             }
 
             return null;
@@ -1491,6 +1776,25 @@ internal sealed class StructuredCBufferRewriter
     {
         public List<uint> Indices { get; set; } = new();
         public uint MemberTypeId { get; set; }
+    }
+
+    private sealed class RewrittenAccessChainInfo
+    {
+        public uint AccessChainResultId { get; set; }
+        public uint BaseVariableId { get; set; }
+        public ushort InstructionOpCode { get; set; }
+        public BufferRewritePlan Plan { get; set; } = null!;
+        public FlatAccessPath OriginalAccessPath { get; set; } = null!;
+        public StructuredAccessTranslation Translation { get; set; } = null!;
+    }
+
+    private sealed class RewrittenLoadInfo
+    {
+        public int InstructionIndex { get; set; }
+        public uint ResultId { get; set; }
+        public uint OriginalResultTypeId { get; set; }
+        public bool HasCompositeExtractUsers { get; set; }
+        public RewrittenAccessChainInfo AccessChain { get; set; } = null!;
     }
 
     private sealed class FlatAccessPath
