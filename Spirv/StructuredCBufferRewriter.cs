@@ -235,8 +235,6 @@ internal sealed class StructuredCBufferRewriter
 
                 result[(resource.Set, resource.Binding)] = new FlatUniformBufferInfo
                 {
-                    ActualSet = resource.Set,
-                    ActualBinding = resource.Binding,
                     VariableId = candidateId,
                     PointerTypeId = pointerTypeId,
                     StructTypeId = pointerInfo.TypeId,
@@ -635,14 +633,6 @@ internal sealed class StructuredCBufferRewriter
         if (logicalType.Kind == LogicalTypeKind.Struct && logicalType.ArrayLength > 1)
         {
             return EnsureArrayType(module, types, baseTypeId, logicalType.ArrayLength, Math.Max(logicalType.DeclaredByteSize, 16));
-        }
-
-        if (logicalType.SecondaryArrayLength > 1)
-        {
-            uint innerArrayTypeId = EnsureArrayType(module, types, baseTypeId, logicalType.SecondaryArrayLength, Math.Max(logicalType.DeclaredByteSize / Math.Max(logicalType.ArrayLength, 1) / Math.Max(logicalType.SecondaryArrayLength, 1), 16));
-            return logicalType.ArrayLength > 1
-                ? EnsureArrayType(module, types, innerArrayTypeId, logicalType.ArrayLength, Math.Max(logicalType.SecondaryArrayLength * 16, 16))
-                : innerArrayTypeId;
         }
 
         if ((logicalType.Kind == LogicalTypeKind.Scalar || logicalType.Kind == LogicalTypeKind.Vector) && logicalType.ArrayLength > 1)
@@ -1551,34 +1541,6 @@ internal sealed class StructuredCBufferRewriter
         List<int> trailingIndices = extraIndices.Count > 1 ? extraIndices.Skip(1).ToList() : [];
         int memberComponentOffset = (member.Metadata.Index % 16) / 4;
 
-        if (logicalType.SecondaryArrayLength > 1)
-        {
-            int innerLength = logicalType.SecondaryArrayLength;
-            if (localRegister < 0 || localRegister >= member.RegisterCount)
-            {
-                return null;
-            }
-
-            int outerIndex = localRegister / innerLength;
-            int innerIndex = localRegister % innerLength;
-            if (outerIndex < 0 || outerIndex >= logicalType.ArrayLength)
-            {
-                return null;
-            }
-
-            if (trailingIndices.Count > 0)
-            {
-                return null;
-            }
-
-            if (extraIndices.Count > 0)
-            {
-                return [outerIndex, innerIndex, componentIndex];
-            }
-
-            return [outerIndex, innerIndex];
-        }
-
         if (logicalType.Kind == LogicalTypeKind.Matrix)
         {
             if (localRegister < 0 || localRegister >= logicalType.Columns)
@@ -1652,48 +1614,6 @@ internal sealed class StructuredCBufferRewriter
     {
         foreach (StructuredMemberLayout member in layout.Members)
         {
-            if (member.LogicalType.SecondaryArrayLength > 1 && member.LogicalType.ArrayLength > 1)
-            {
-                if (accessPath.Slot.DynamicIndexStride != member.LogicalType.SecondaryArrayLength)
-                {
-                    continue;
-                }
-
-                int registerWithinRecord = accessPath.Slot.ConstantRegisterOffset;
-                if (registerWithinRecord < 0 || registerWithinRecord >= member.LogicalType.SecondaryArrayLength)
-                {
-                    continue;
-                }
-
-                List<int>? logicalIndices = TranslateMemberAccess(member, member.RegisterOffset + registerWithinRecord, componentIndex, accessPath.ExtraIndices);
-                if (logicalIndices == null || logicalIndices.Count < 2)
-                {
-                    continue;
-                }
-
-                if (!TryGetConstantId(constants, (uint)layout.Members.IndexOf(member), out uint memberIndexConstId))
-                {
-                    return null;
-                }
-
-                var indices = new List<uint> { memberIndexConstId, accessPath.Slot.DynamicIndexId };
-                for (int i = 1; i < logicalIndices.Count; i++)
-                {
-                    if (!TryGetConstantId(constants, (uint)logicalIndices[i], out uint logicalIndexConstId))
-                    {
-                        return null;
-                    }
-
-                    indices.Add(logicalIndexConstId);
-                }
-
-                return new StructuredAccessTranslation
-                {
-                    Indices = indices,
-                    MemberTypeId = member.ResolvedTypeId
-                };
-            }
-
             if (member.LogicalType.Kind != LogicalTypeKind.Struct || member.LogicalType.ArrayLength <= 1)
             {
                 continue;
@@ -1946,7 +1866,6 @@ internal sealed class StructuredCBufferRewriter
         public int Rows { get; set; }
         public int Columns { get; set; }
         public int ArrayLength { get; set; }
-        public int SecondaryArrayLength { get; set; }
         public int DeclaredByteSize { get; set; }
         public int UscIndex { get; set; }
         public bool IsMatrix { get; set; }
@@ -2026,16 +1945,8 @@ internal sealed class StructuredCBufferRewriter
         public Dictionary<uint, SpirvInstruction> Definitions { get; } = new();
     }
 
-    private sealed class RepeatedRecordPattern
-    {
-        public int RegisterStride { get; set; }
-        public HashSet<int> AccessedRegisters { get; set; } = new();
-    }
-
     private sealed class FlatUniformBufferInfo
     {
-        public int ActualSet { get; set; }
-        public int ActualBinding { get; set; }
         public uint VariableId { get; set; }
         public uint PointerTypeId { get; set; }
         public uint StructTypeId { get; set; }
@@ -2044,30 +1955,6 @@ internal sealed class StructuredCBufferRewriter
         public int ArrayLength { get; set; }
         public int ArrayStride { get; set; }
         public ResourceBinding Metadata { get; set; } = null!;
-        public ConstantBuffer ConstantBuffer { get; set; } = null!;
-
-        public FlatUniformBufferInfo WithMetadata(ResourceBinding metadata, ConstantBuffer constantBuffer)
-        {
-            return new FlatUniformBufferInfo
-            {
-                ActualSet = ActualSet,
-                ActualBinding = ActualBinding,
-                VariableId = VariableId,
-                PointerTypeId = PointerTypeId,
-                StructTypeId = StructTypeId,
-                ArrayTypeId = ArrayTypeId,
-                ElementTypeId = ElementTypeId,
-                ArrayLength = ArrayLength,
-                ArrayStride = ArrayStride,
-                Metadata = metadata,
-                ConstantBuffer = constantBuffer
-            };
-        }
-    }
-
-    private sealed class MetadataBufferCandidate
-    {
-        public ResourceBinding Resource { get; set; } = null!;
         public ConstantBuffer ConstantBuffer { get; set; } = null!;
     }
 }
