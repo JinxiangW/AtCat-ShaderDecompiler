@@ -118,7 +118,7 @@ public sealed class ShaderDecompiler : IDisposable
             Console.WriteLine($"[Decompile] merged resources={finalMetadata.Resources.Count} constantBuffers={finalMetadata.ConstantBuffers.Count}");
             foreach (ConstantBuffer constantBuffer in finalMetadata.ConstantBuffers)
             {
-                Console.WriteLine($"[Decompile]   CB {constantBuffer.Name} members={constantBuffer.CBParams.Count} structs={constantBuffer.StructParams.Count}");
+                Console.WriteLine($"[Decompile]   CB {constantBuffer.Name} members={constantBuffer.CBParams.Count} structs={constantBuffer.StructParams.Length}");
             }
 
             byte[] spirv = format switch
@@ -278,7 +278,7 @@ public sealed class ShaderDecompiler : IDisposable
                 continue;
             }
 
-            int structureIndex = constantBuffer.StructParams.Count;
+            int structureIndex = constantBuffer.StructParams.Length;
             var syntheticStructs = new List<StructParameter>();
             FlushAlignmentGroup(
                 syntheticGroup,
@@ -294,7 +294,7 @@ public sealed class ShaderDecompiler : IDisposable
             }
 
             constantBuffer.CBParams = preservedTopLevel.OrderBy(static parameter => parameter.Index).ToList();
-            constantBuffer.StructParams.AddRange(syntheticStructs);
+            constantBuffer.StructParams = constantBuffer.StructParams.Concat(syntheticStructs).ToArray();
         }
     }
 
@@ -1104,7 +1104,7 @@ public sealed class ShaderDecompiler : IDisposable
                     IsMatrix = parameter.IsMatrix,
                     ArraySize = parameter.ArraySize
                 }).ToList()
-            }).ToList()
+            }).ToArray()
         };
     }
 

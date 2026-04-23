@@ -372,7 +372,7 @@ internal sealed class StructuredCBufferRewriter
 
     private static StructuredBufferLayout? BuildStructuredLayout(FlatUniformBufferInfo flatBuffer)
     {
-        if (flatBuffer.ConstantBuffer.CBParams.Count == 0 && flatBuffer.ConstantBuffer.StructParams.Count == 0)
+        if (flatBuffer.ConstantBuffer.CBParams.Count == 0 && flatBuffer.ConstantBuffer.StructParams.Length == 0)
         {
             return null;
         }
