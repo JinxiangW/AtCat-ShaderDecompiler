@@ -5,14 +5,21 @@ internal sealed class StructuredCBufferRewriter
     private const ushort OpIAdd = 128;
     private const ushort OpISub = 130;
     private const ushort OpIMul = 132;
-    private const ushort OpShiftLeftLogical = 122;
+    private const ushort OpShiftLeftLogical = 196;
+    private readonly Dictionary<(int Set, int Binding), string> _resolvedBufferNames = new();
 
     public bool LastRewriteApplied { get; private set; }
     public string LastRewriteSummary { get; private set; } = string.Empty;
 
+    public string? GetResolvedBufferName(int set, int binding)
+    {
+        return _resolvedBufferNames.TryGetValue((set, binding), out string? name) ? name : null;
+    }
+
     public byte[] Rewrite(byte[] spirv, ShaderSymbolData metadata)
     {
         LastRewriteApplied = false;
+        _resolvedBufferNames.Clear();
         var summary = new List<string>();
         var module = SpirvModule.Parse(spirv);
         var analysis = AnalyzeModule(module);
@@ -97,6 +104,7 @@ internal sealed class StructuredCBufferRewriter
 
             rewrites.Add(plan);
             assignedMetadataNames.Add(candidateBuffer.Metadata.Name);
+            _resolvedBufferNames[(candidateBuffer.Metadata.Set, candidateBuffer.Metadata.Binding)] = candidateBuffer.Metadata.Name;
             InsertStructuredType(module, plan);
             InsertStructuredNames(module, plan);
             summary.Add($"[{candidateBuffer.Metadata.Name}] rewrite planned with {layout.Members.Count} members");
@@ -533,7 +541,11 @@ internal sealed class StructuredCBufferRewriter
     {
         if (member.LogicalType.Kind == LogicalTypeKind.Struct)
         {
-            return member.RegisterCount * 16;
+            // For Unity partial constant buffers, struct arrays represent a repeated per-instance
+            // stride. The metadata does not guarantee that the backing flat array preserves the
+            // fully serialized tail of every array element, so span calculations must be based on
+            // one logical struct stride rather than the entire repeated array extent.
+            return Math.Max(member.LogicalType.DeclaredByteSize, 16);
         }
 
         if (member.LogicalType.Kind == LogicalTypeKind.Matrix)

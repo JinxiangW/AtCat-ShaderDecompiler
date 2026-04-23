@@ -439,12 +439,16 @@ public sealed class ShaderDecompiler : IDisposable
                     continue;
                 }
 
+                string resolvedResourceName = match.DescriptorType == "UniformBuffer"
+                    ? _structuredCBufferRewriter.GetResolvedBufferName(resource.Set, resource.Binding) ?? resource.Name
+                    : resource.Name;
+
                 if (match.DescriptorType == "UniformBuffer" && match.StructTypeId.HasValue && match.StructTypeId.Value != 0)
                 {
-                    patches.Add((match.StructTypeId.Value, resource.Name));
-                    patches.Add((match.Id, resource.Name));
+                    patches.Add((match.StructTypeId.Value, resolvedResourceName));
+                    patches.Add((match.Id, resolvedResourceName));
 
-                    ConstantBuffer? constantBuffer = metadata.ConstantBuffers.FirstOrDefault(cb => string.Equals(cb.Name, resource.Name, StringComparison.Ordinal));
+                    ConstantBuffer? constantBuffer = metadata.ConstantBuffers.FirstOrDefault(cb => string.Equals(cb.Name, resolvedResourceName, StringComparison.Ordinal));
                     if (constantBuffer != null)
                     {
                         List<ConstantBufferParameter> allParameters = GetAllConstantBufferParameters(constantBuffer);
@@ -482,7 +486,7 @@ public sealed class ShaderDecompiler : IDisposable
                     }
                 }
 
-                patches.Add((match.Id, resource.Name));
+                patches.Add((match.Id, resolvedResourceName));
             }
         }
 
