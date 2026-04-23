@@ -1,4 +1,58 @@
+using Newtonsoft.Json;
+
 namespace Ruri.ShaderDecompiler;
+
+public enum ShaderResourceType
+{
+    Unknown = 0,
+    Texture,
+    SampledImage,
+    SRV,
+    UAV,
+    Sampler,
+    SamplerComparison,
+    ConstantBuffer,
+    Buffer,
+    StructuredBuffer,
+    ByteAddressBuffer,
+    RWBuffer,
+    RWStructuredBuffer,
+    RWByteAddressBuffer,
+    Texture2D,
+    Texture2DArray,
+    Texture3D,
+    TextureCube,
+    TextureCubeArray,
+    Texture2DMS,
+    RWTexture2D,
+    RWTexture2DArray,
+    RWTexture3D,
+    RaytracingAccelerationStructure,
+    StorageImage,
+    StorageBuffer,
+    InputAttachment,
+}
+
+public class ResourceBinding
+{
+    public string Name { get; set; } = string.Empty;
+    public int Binding { get; set; }
+    public int Set { get; set; }
+    public ShaderResourceType Type { get; set; } = ShaderResourceType.Unknown;
+    public int Tag { get; set; }
+    public char RegisterType { get; set; }
+}
+
+public class ConstantBufferParameter
+{
+    public string ParamName = string.Empty;
+    public ShaderParamType ParamType;
+    public int Rows;
+    public int Columns;
+    public bool IsMatrix;
+    public int ArraySize;
+    public int Index;
+}
 
 public enum ShaderParamType
 {
@@ -21,6 +75,27 @@ public class NumericShaderParameter
     public byte RowCount { get; set; }
     public byte ColumnCount { get; set; }
     public bool IsMatrix { get; set; }
+
+    [JsonIgnore]
+    public ShaderParamType ParamType
+    {
+        get => Type;
+        set => Type = value;
+    }
+
+    [JsonIgnore]
+    public int Rows
+    {
+        get => RowCount;
+        set => RowCount = unchecked((byte)value);
+    }
+
+    [JsonIgnore]
+    public int Columns
+    {
+        get => ColumnCount;
+        set => ColumnCount = unchecked((byte)value);
+    }
 }
 
 public sealed class VectorParameter : NumericShaderParameter
@@ -45,6 +120,16 @@ public sealed class StructParameter
     public int StructSize { get; set; }
     public VectorParameter[] VectorMembers { get; set; } = Array.Empty<VectorParameter>();
     public MatrixParameter[] MatrixMembers { get; set; } = Array.Empty<MatrixParameter>();
+
+    [JsonIgnore]
+    public int Size
+    {
+        get => StructSize;
+        set => StructSize = value;
+    }
+
+    [JsonIgnore]
+    public List<ConstantBufferParameter> CBParams { get; set; } = new();
 
     public IEnumerable<NumericShaderParameter> AllNumericMembers
     {
@@ -73,6 +158,23 @@ public sealed class ConstantBuffer
     public int Size { get; set; }
     public bool IsPartialCB { get; set; }
 
+    [JsonIgnore]
+    public int UsedSize
+    {
+        get => Size;
+        set => Size = value;
+    }
+
+    [JsonIgnore]
+    public bool Partial
+    {
+        get => IsPartialCB;
+        set => IsPartialCB = value;
+    }
+
+    [JsonIgnore]
+    public List<ConstantBufferParameter> CBParams { get; set; } = new();
+
     public IEnumerable<NumericShaderParameter> AllNumericParams
     {
         get
@@ -95,6 +197,7 @@ public sealed record class TextureParameter
     public string Name { get; set; } = string.Empty;
     public int NameIndex { get; set; }
     public int Index { get; set; }
+    public int Set { get; set; }
     public int SamplerIndex { get; set; }
     public bool MultiSampled { get; set; }
     public byte Dim { get; set; }
@@ -104,6 +207,14 @@ public sealed record class SamplerParameter
 {
     public uint Sampler { get; set; }
     public int Index { get; set; }
+    public int Set { get; set; }
+
+    [JsonIgnore]
+    public int BindPoint
+    {
+        get => Index;
+        set => Index = value;
+    }
 }
 
 public sealed record class UAVParameter
@@ -111,6 +222,7 @@ public sealed record class UAVParameter
     public string Name { get; set; } = string.Empty;
     public int NameIndex { get; set; }
     public int Index { get; set; }
+    public int Set { get; set; }
     public int OriginalIndex { get; set; }
 }
 
@@ -119,6 +231,7 @@ public sealed record class BufferBinding
     public string Name { get; set; } = string.Empty;
     public int NameIndex { get; set; }
     public int Index { get; set; }
+    public int Set { get; set; }
     public int ArraySize { get; set; }
 }
 
@@ -133,6 +246,9 @@ public class ShaderSymbolData
     public string EntryPoint { get; set; } = "main";
     public ShaderStage Stage { get; set; } = ShaderStage.Unknown;
     public string? DebugName { get; set; }
+
+    [JsonIgnore]
+    public List<ResourceBinding> Resources { get; set; } = new();
 
     public IEnumerable<(string Name, int Index, char RegisterType)> EnumerateBindings()
     {
@@ -169,6 +285,81 @@ public class ShaderSymbolData
             || Samplers.Count > 0
             || Buffers.Count > 0
             || UAVs.Count > 0;
+    }
+
+    public void RefreshCompatibilityViews()
+    {
+        foreach (ConstantBuffer constantBuffer in ConstantBuffers)
+        {
+            constantBuffer.CBParams = constantBuffer.AllNumericParams
+                .Select(ToCompatibilityParameter)
+                .OrderBy(static parameter => parameter.Index)
+                .ToList();
+
+            foreach (StructParameter structParameter in constantBuffer.StructParams)
+            {
+                structParameter.CBParams = structParameter.AllNumericMembers
+                    .Select(ToCompatibilityParameter)
+                    .OrderBy(static parameter => parameter.Index)
+                    .ToList();
+            }
+        }
+
+        Resources.Clear();
+        Resources.AddRange(ConstantBufferBindings.Select(static binding => new ResourceBinding
+        {
+            Name = binding.Name,
+            Binding = binding.Index,
+            Set = binding.Set,
+            Type = ShaderResourceType.ConstantBuffer,
+            RegisterType = 'b',
+        }));
+        Resources.AddRange(TextureParameters.Select(static texture => new ResourceBinding
+        {
+            Name = texture.Name,
+            Binding = texture.Index,
+            Set = texture.Set,
+            Type = ShaderResourceType.Texture,
+            RegisterType = 't',
+        }));
+        Resources.AddRange(Samplers.Select(static sampler => new ResourceBinding
+        {
+            Name = $"sampler_{sampler.Index}",
+            Binding = sampler.Index,
+            Set = sampler.Set,
+            Type = ShaderResourceType.Sampler,
+            RegisterType = 's',
+        }));
+        Resources.AddRange(Buffers.Select(static buffer => new ResourceBinding
+        {
+            Name = buffer.Name,
+            Binding = buffer.Index,
+            Set = buffer.Set,
+            Type = ShaderResourceType.StructuredBuffer,
+            RegisterType = 't',
+        }));
+        Resources.AddRange(UAVs.Select(static uav => new ResourceBinding
+        {
+            Name = uav.Name,
+            Binding = uav.Index,
+            Set = uav.Set,
+            Type = ShaderResourceType.UAV,
+            RegisterType = 'u',
+        }));
+    }
+
+    private static ConstantBufferParameter ToCompatibilityParameter(NumericShaderParameter parameter)
+    {
+        return new ConstantBufferParameter
+        {
+            ParamName = parameter.Name ?? string.Empty,
+            ParamType = parameter.Type,
+            Rows = parameter.RowCount,
+            Columns = parameter.ColumnCount,
+            IsMatrix = parameter.IsMatrix,
+            ArraySize = parameter.ArraySize,
+            Index = parameter.Index,
+        };
     }
 }
 
