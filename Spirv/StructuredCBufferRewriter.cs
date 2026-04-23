@@ -380,7 +380,7 @@ internal sealed class StructuredCBufferRewriter
                     IsMatrix = false
                 },
                 RegisterOffset = structParameter.Index / 16,
-                RegisterCount = Math.Max(1, (Math.Max(structParameter.Size, 16) + 15) / 16),
+                RegisterCount = Math.Max(1, ((Math.Max(structParameter.Size, 16) * Math.Max(structParameter.ArraySize, 1)) + 15) / 16),
                 StructName = structParameter.Name,
                 ParentBufferName = flatBuffer.ConstantBuffer.Name
             };
@@ -630,6 +630,11 @@ internal sealed class StructuredCBufferRewriter
         if (baseTypeId == 0)
         {
             return 0;
+        }
+
+        if (logicalType.Kind == LogicalTypeKind.Struct && logicalType.ArrayLength > 1)
+        {
+            return EnsureArrayType(module, types, baseTypeId, logicalType.ArrayLength, Math.Max(logicalType.DeclaredByteSize, 16));
         }
 
         if ((logicalType.Kind == LogicalTypeKind.Scalar || logicalType.Kind == LogicalTypeKind.Vector) && logicalType.ArrayLength > 1)
@@ -1164,15 +1169,20 @@ internal sealed class StructuredCBufferRewriter
 
             if (member.LogicalType.Kind == LogicalTypeKind.Struct)
             {
+                int structRegisterCount = Math.Max(1, (Math.Max(member.LogicalType.DeclaredByteSize, 16) + 15) / 16);
+                int structArrayIndex = member.LogicalType.ArrayLength > 1 ? (absoluteRegister - member.RegisterOffset) / structRegisterCount : -1;
+                int structArrayRegisterOffset = member.LogicalType.ArrayLength > 1 ? structArrayIndex * structRegisterCount : 0;
+
                 for (int childIndex = 0; childIndex < member.Children.Count; childIndex++)
                 {
                     StructuredMemberLayout child = member.Children[childIndex];
-                    if (absoluteRegister < child.RegisterOffset || absoluteRegister >= child.RegisterOffset + child.RegisterCount)
+                    int childAbsoluteRegisterOffset = member.RegisterOffset + structArrayRegisterOffset + (child.RelativeOffset / 16);
+                    if (absoluteRegister < childAbsoluteRegisterOffset || absoluteRegister >= childAbsoluteRegisterOffset + child.RegisterCount)
                     {
                         continue;
                     }
 
-                    List<int>? childLogicalIndices = TranslateMemberAccess(child, absoluteRegister, componentIndex, accessPath.ExtraIndices);
+                    List<int>? childLogicalIndices = TranslateMemberAccess(child, absoluteRegister - structArrayRegisterOffset, componentIndex, accessPath.ExtraIndices);
                     if (childLogicalIndices == null)
                     {
                         return null;
@@ -1184,7 +1194,18 @@ internal sealed class StructuredCBufferRewriter
                         return null;
                     }
 
-                    var nestedIndices = new List<uint> { parentIndexConstId, childIndexConstId };
+                    var nestedIndices = new List<uint> { parentIndexConstId };
+                    if (member.LogicalType.ArrayLength > 1)
+                    {
+                        if (structArrayIndex < 0 || structArrayIndex >= member.LogicalType.ArrayLength || !TryGetConstantId(constants, (uint)structArrayIndex, out uint structArrayIndexConstId))
+                        {
+                            return null;
+                        }
+
+                        nestedIndices.Add(structArrayIndexConstId);
+                    }
+
+                    nestedIndices.Add(childIndexConstId);
                     foreach (int logicalIndex in childLogicalIndices)
                     {
                         if (!TryGetConstantId(constants, (uint)logicalIndex, out uint logicalIndexConstId))
