@@ -1,118 +1,5 @@
 namespace Ruri.ShaderDecompiler;
 
-/// <summary>
-/// Represents the type of a shader resource binding.
-/// Aligned with UE's EUniformBufferBaseType and EShaderCodeResourceBindingType.
-/// </summary>
-public enum ShaderResourceType
-{
-    Unknown = 0,
-    
-    // Basic types (matching UE's UBMT_*)
-    Texture,                // UBMT_TEXTURE
-    SampledImage,           // UBMT_TEXTURE (SPIR-V combined image+sampler)
-    SRV,                    // UBMT_SRV (ShaderResourceView)
-    UAV,                    // UBMT_UAV (UnorderedAccessView)
-    Sampler,                // UBMT_SAMPLER
-    SamplerComparison,      // UBMT_SAMPLER (comparison variant)
-    ConstantBuffer,         // Uniform buffer / cbuffer
-    
-    // Buffer subtypes (matching UE's EShaderCodeResourceBindingType)
-    Buffer,                 // Buffer<T>
-    StructuredBuffer,       // StructuredBuffer<T>
-    ByteAddressBuffer,      // ByteAddressBuffer
-    RWBuffer,               // RWBuffer<T>
-    RWStructuredBuffer,     // RWStructuredBuffer<T>
-    RWByteAddressBuffer,    // RWByteAddressBuffer
-    
-    // Texture subtypes
-    Texture2D,              // Texture2D<T>
-    Texture2DArray,         // Texture2DArray<T>
-    Texture3D,              // Texture3D<T>
-    TextureCube,            // TextureCube<T>
-    TextureCubeArray,       // TextureCubeArray<T>
-    Texture2DMS,            // Texture2DMS<T>
-    
-    // RW Texture subtypes
-    RWTexture2D,            // RWTexture2D<T>
-    RWTexture2DArray,       // RWTexture2DArray<T>
-    RWTexture3D,            // RWTexture3D<T>
-    
-    // Special types
-    RaytracingAccelerationStructure,
-    StorageImage,           // SPIR-V storage image
-    StorageBuffer,          // SPIR-V storage buffer
-    InputAttachment,        // Vulkan input attachment
-}
-
-/// <summary>
-/// Represents a single resource binding with its name and location info.
-/// </summary>
-public class ResourceBinding
-{
-    /// <summary>
-    /// The name of the resource (e.g., "DiffuseTexture", "SceneParams").
-    /// </summary>
-    public string Name { get; set; } = string.Empty;
-
-    /// <summary>
-    /// The binding point (register number in HLSL terms, binding in Vulkan).
-    /// </summary>
-    public int Binding { get; set; }
-
-    /// <summary>
-    /// The descriptor set (Vulkan). Default 0 for DX12/HLSL.
-    /// </summary>
-    public int Set { get; set; } = 0;
-
-    /// <summary>
-    /// The type of resource.
-    /// </summary>
-    public ShaderResourceType Type { get; set; } = ShaderResourceType.Unknown;
-
-    /// <summary>
-    /// Optional tag for storing extra info (e.g., SPIR-V ID).
-    /// </summary>
-    public int Tag { get; set; }
-    
-    /// <summary>
-    /// HLSL register type: 'b' for cbuffer, 't' for SRV, 'u' for UAV, 's' for sampler.
-    /// </summary>
-    public char RegisterType { get; set; }
-}
-
-/// <summary>
-/// USC-equivalent constant buffer parameter metadata.
-/// </summary>
-public class ConstantBufferParameter
-{
-    public string ParamName = string.Empty;
-    public ShaderParamType ParamType;
-    public int Rows;
-    public int Columns;
-    public bool IsMatrix;
-    public int ArraySize;
-    public int Index; // 这个等价于ByteOffset
-}
-
-public class ConstantBuffer
-{
-    public string Name = string.Empty;
-    public int UsedSize;
-    public bool Partial;
-    public List<ConstantBufferParameter> CBParams = new();
-    public List<StructParameter> StructParams = new();
-}
-
-public class StructParameter
-{
-    public string Name = string.Empty;
-    public int Index;
-    public int ArraySize;
-    public int Size;
-    public List<ConstantBufferParameter> CBParams = new();
-}
-
 public enum ShaderParamType
 {
     Float = 0,
@@ -124,53 +11,182 @@ public enum ShaderParamType
     TypeCount = 6,
 }
 
-/// <summary>
-/// Contains all symbol data for a shader, provided by the external engine (Unity/UE).
-/// This is the "Unified Receiver" class.
-/// </summary>
+public class NumericShaderParameter
+{
+    public string? Name { get; set; }
+    public int NameIndex { get; set; }
+    public int Index { get; set; }
+    public int ArraySize { get; set; }
+    public ShaderParamType Type { get; set; }
+    public byte RowCount { get; set; }
+    public byte ColumnCount { get; set; }
+    public bool IsMatrix { get; set; }
+}
+
+public sealed class VectorParameter : NumericShaderParameter
+{
+    public byte Dim
+    {
+        get => RowCount;
+        set => RowCount = value;
+    }
+}
+
+public sealed class MatrixParameter : NumericShaderParameter
+{
+}
+
+public sealed class StructParameter
+{
+    public string Name { get; set; } = string.Empty;
+    public int NameIndex { get; set; }
+    public int Index { get; set; }
+    public int ArraySize { get; set; }
+    public int StructSize { get; set; }
+    public VectorParameter[] VectorMembers { get; set; } = Array.Empty<VectorParameter>();
+    public MatrixParameter[] MatrixMembers { get; set; } = Array.Empty<MatrixParameter>();
+
+    public IEnumerable<NumericShaderParameter> AllNumericMembers
+    {
+        get
+        {
+            foreach (MatrixParameter matrix in MatrixMembers)
+            {
+                yield return matrix;
+            }
+
+            foreach (VectorParameter vector in VectorMembers)
+            {
+                yield return vector;
+            }
+        }
+    }
+}
+
+public sealed class ConstantBuffer
+{
+    public string Name { get; set; } = string.Empty;
+    public int NameIndex { get; set; }
+    public MatrixParameter[] MatrixParams { get; set; } = Array.Empty<MatrixParameter>();
+    public VectorParameter[] VectorParams { get; set; } = Array.Empty<VectorParameter>();
+    public StructParameter[] StructParams { get; set; } = Array.Empty<StructParameter>();
+    public int Size { get; set; }
+    public bool IsPartialCB { get; set; }
+
+    public IEnumerable<NumericShaderParameter> AllNumericParams
+    {
+        get
+        {
+            foreach (MatrixParameter matrix in MatrixParams)
+            {
+                yield return matrix;
+            }
+
+            foreach (VectorParameter vector in VectorParams)
+            {
+                yield return vector;
+            }
+        }
+    }
+}
+
+public sealed record class TextureParameter
+{
+    public string Name { get; set; } = string.Empty;
+    public int NameIndex { get; set; }
+    public int Index { get; set; }
+    public int SamplerIndex { get; set; }
+    public bool MultiSampled { get; set; }
+    public byte Dim { get; set; }
+}
+
+public sealed record class SamplerParameter
+{
+    public uint Sampler { get; set; }
+    public int Index { get; set; }
+}
+
+public sealed record class UAVParameter
+{
+    public string Name { get; set; } = string.Empty;
+    public int NameIndex { get; set; }
+    public int Index { get; set; }
+    public int OriginalIndex { get; set; }
+}
+
+public sealed record class BufferBinding
+{
+    public string Name { get; set; } = string.Empty;
+    public int NameIndex { get; set; }
+    public int Index { get; set; }
+    public int ArraySize { get; set; }
+}
+
 public class ShaderSymbolData
 {
     public List<ConstantBuffer> ConstantBuffers { get; set; } = new();
-
-    /// <summary>
-    /// List of resource bindings (textures, CBs, UAVs, etc.).
-    /// </summary>
-    public List<ResourceBinding> Resources { get; set; } = new();
-
-    /// <summary>
-    /// Entry point name (e.g., "main", "PSMain").
-    /// </summary>
+    public List<BufferBinding> ConstantBufferBindings { get; set; } = new();
+    public List<TextureParameter> TextureParameters { get; set; } = new();
+    public List<SamplerParameter> Samplers { get; set; } = new();
+    public List<BufferBinding> Buffers { get; set; } = new();
+    public List<UAVParameter> UAVs { get; set; } = new();
     public string EntryPoint { get; set; } = "main";
-
-    /// <summary>
-    /// Shader stage (e.g., Vertex, Pixel, Compute).
-    /// </summary>
     public ShaderStage Stage { get; set; } = ShaderStage.Unknown;
-    
-    /// <summary>
-    /// Original shader name/path if available.
-    /// </summary>
     public string? DebugName { get; set; }
+
+    public IEnumerable<(string Name, int Index, char RegisterType)> EnumerateBindings()
+    {
+        foreach (BufferBinding binding in ConstantBufferBindings)
+        {
+            yield return (binding.Name, binding.Index, 'b');
+        }
+
+        foreach (TextureParameter texture in TextureParameters)
+        {
+            yield return (texture.Name, texture.Index, 't');
+        }
+
+        foreach (SamplerParameter sampler in Samplers)
+        {
+            yield return ($"sampler_{sampler.Index}", sampler.Index, 's');
+        }
+
+        foreach (BufferBinding buffer in Buffers)
+        {
+            yield return (buffer.Name, buffer.Index, 't');
+        }
+
+        foreach (UAVParameter uav in UAVs)
+        {
+            yield return (uav.Name, uav.Index, 'u');
+        }
+    }
+
+    public bool HasAnyBindings()
+    {
+        return ConstantBufferBindings.Count > 0
+            || TextureParameters.Count > 0
+            || Samplers.Count > 0
+            || Buffers.Count > 0
+            || UAVs.Count > 0;
+    }
 }
 
-/// <summary>
-/// Shader pipeline stage.
-/// </summary>
 public enum ShaderStage
 {
     Unknown = 0,
     Vertex,
-    Pixel,      // Fragment
+    Pixel,
     Compute,
     Geometry,
-    TessellationControl,    // Hull
-    TessellationEvaluation, // Domain
+    TessellationControl,
+    TessellationEvaluation,
     RayGeneration,
     RayClosestHit,
     RayMiss,
     RayAnyHit,
     RayIntersection,
     Callable,
-    Task,       // Amplification
+    Task,
     Mesh,
 }
