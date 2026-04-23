@@ -26,7 +26,6 @@ internal sealed class StructuredCBufferRewriter
         summary.Add($"Metadata resources={metadata.Resources.Count}, constantBuffers={metadata.ConstantBuffers.Count}");
         summary.Add($"Analyzed decoratedIds={analysis.SetBindingById.Count}, variables={analysis.VariablePointerTypes.Count}, pointers={analysis.PointerTypes.Count}, structs={analysis.StructMembers.Count}, arrays={analysis.ArrayTypes.Count}");
         var flatBuffers = BuildFlatUniformBufferMap(metadata, analysis, summary);
-        var metadataBuffers = BuildMetadataBufferCandidates(metadata, summary);
         if (flatBuffers.Count == 0)
         {
             LastRewriteSummary = summary.Count == 0
@@ -39,20 +38,66 @@ internal sealed class StructuredCBufferRewriter
         var types = AnalyzeTypes(module, analysis);
         var rewrites = new List<BufferRewritePlan>();
 
-        var assignedMetadataNames = new HashSet<string>(StringComparer.Ordinal);
         foreach (FlatUniformBufferInfo flatBuffer in flatBuffers.Values)
         {
-            if (!TryPlanRewrite(module, types, constants, flatBuffer, metadataBuffers, assignedMetadataNames, summary, out BufferRewritePlan? plan) || plan == null)
+            FlatUniformBufferInfo candidateBuffer = flatBuffer;
+            StructuredBufferLayout? layout = BuildStructuredLayout(candidateBuffer);
+            if (layout == null)
             {
+                summary.Add($"[{candidateBuffer.Metadata.Name}] layout build failed");
                 continue;
             }
 
+            if (!IsStrictFlatUniformArray(candidateBuffer, layout))
+            {
+                summary.Add($"[{candidateBuffer.Metadata.Name}] strict flat array check failed: stride={candidateBuffer.ArrayStride}, arrayLength={candidateBuffer.ArrayLength}, requiredRegisters={layout.RequiredRegisterCount}");
+                continue;
+            }
+
+            var memberTypeIds = new List<uint>(layout.Members.Count);
+            bool failed = false;
+            foreach (StructuredMemberLayout member in layout.Members)
+            {
+                uint typeId = ResolveMemberTypeId(module, types, member);
+                if (typeId == 0)
+                {
+                    failed = true;
+                    break;
+                }
+
+                member.ResolvedTypeId = typeId;
+                memberTypeIds.Add(typeId);
+            }
+
+            if (failed)
+            {
+                summary.Add($"[{candidateBuffer.Metadata.Name}] member type resolution failed");
+                continue;
+            }
+
+            if (!CanRewriteAllAccessChains(module, candidateBuffer, layout, constants, out string? validationFailure))
+            {
+                summary.Add($"[{candidateBuffer.Metadata.Name}] rewrite validation failed: {validationFailure}");
+                continue;
+            }
+
+            uint newStructTypeId = module.AllocateId();
+            uint newPointerTypeId = module.AllocateId();
+
+            var plan = new BufferRewritePlan
+            {
+                Info = candidateBuffer,
+                Layout = layout,
+                NewStructTypeId = newStructTypeId,
+                NewPointerTypeId = newPointerTypeId,
+                MemberTypeIds = memberTypeIds
+            };
+
             rewrites.Add(plan);
-            assignedMetadataNames.Add(plan.Info.Metadata.Name);
-            _resolvedBufferNames[(plan.Info.ActualSet, plan.Info.ActualBinding)] = plan.Info.Metadata.Name;
+            _resolvedBufferNames[(candidateBuffer.Metadata.Set, candidateBuffer.Metadata.Binding)] = candidateBuffer.Metadata.Name;
             InsertStructuredType(module, plan);
             InsertStructuredNames(module, plan);
-            summary.Add($"[{plan.Info.Metadata.Name}] rewrite planned with {plan.Layout.Members.Count} members");
+            summary.Add($"[{candidateBuffer.Metadata.Name}] rewrite planned with {layout.Members.Count} members");
         }
 
         if (rewrites.Count == 0)
@@ -214,134 +259,6 @@ internal sealed class StructuredCBufferRewriter
         }
 
         return result;
-    }
-
-    private static List<MetadataBufferCandidate> BuildMetadataBufferCandidates(ShaderSymbolData metadata, List<string> summary)
-    {
-        var result = new List<MetadataBufferCandidate>();
-        foreach (ResourceBinding resource in metadata.Resources.Where(r => r.RegisterType == 'b'))
-        {
-            ConstantBuffer? constantBuffer = metadata.ConstantBuffers.FirstOrDefault(cb => string.Equals(cb.Name, resource.Name, StringComparison.Ordinal));
-            if (constantBuffer == null)
-            {
-                summary.Add($"[{resource.Name}] no USC constant buffer metadata found");
-                continue;
-            }
-
-            result.Add(new MetadataBufferCandidate
-            {
-                Resource = resource,
-                ConstantBuffer = constantBuffer
-            });
-        }
-
-        return result;
-    }
-
-    private static bool TryPlanRewrite(
-        SpirvModule module,
-        TypeInfo types,
-        ConstantMaps constants,
-        FlatUniformBufferInfo actualBuffer,
-        List<MetadataBufferCandidate> metadataBuffers,
-        HashSet<string> assignedMetadataNames,
-        List<string> summary,
-        out BufferRewritePlan? plan)
-    {
-        plan = null;
-        List<MetadataBufferCandidate> orderedCandidates = BuildOrderedMetadataCandidates(actualBuffer, metadataBuffers, assignedMetadataNames);
-        List<string> failures = new();
-
-        foreach (MetadataBufferCandidate metadataCandidate in orderedCandidates)
-        {
-            FlatUniformBufferInfo candidateBuffer = actualBuffer.WithMetadata(metadataCandidate.Resource, metadataCandidate.ConstantBuffer);
-            if (!TryCreateRewritePlan(module, types, constants, candidateBuffer, out plan, out string failure))
-            {
-                failures.Add($"[{metadataCandidate.Resource.Name}] {failure}");
-                continue;
-            }
-
-            if (!string.Equals(metadataCandidate.Resource.Name, actualBuffer.Metadata.Name, StringComparison.Ordinal))
-            {
-                summary.Add($"[{actualBuffer.Metadata.Name}] remapped binding {actualBuffer.Metadata.Set}:{actualBuffer.Metadata.Binding} -> {metadataCandidate.Resource.Name}");
-            }
-
-            return true;
-        }
-
-        foreach (string failure in failures)
-        {
-            summary.Add(failure);
-        }
-
-        return false;
-    }
-
-    private static List<MetadataBufferCandidate> BuildOrderedMetadataCandidates(
-        FlatUniformBufferInfo actualBuffer,
-        List<MetadataBufferCandidate> metadataBuffers,
-        HashSet<string> assignedMetadataNames)
-    {
-        return metadataBuffers
-            .Where(candidate => !assignedMetadataNames.Contains(candidate.Resource.Name) || string.Equals(candidate.Resource.Name, actualBuffer.Metadata.Name, StringComparison.Ordinal))
-            .OrderByDescending(candidate => candidate.Resource.Set == actualBuffer.Metadata.Set && candidate.Resource.Binding == actualBuffer.Metadata.Binding)
-            .ThenByDescending(candidate => string.Equals(candidate.Resource.Name, actualBuffer.Metadata.Name, StringComparison.Ordinal))
-            .ThenBy(candidate => candidate.Resource.Name, StringComparer.Ordinal)
-            .ToList();
-    }
-
-    private static bool TryCreateRewritePlan(
-        SpirvModule module,
-        TypeInfo types,
-        ConstantMaps constants,
-        FlatUniformBufferInfo candidateBuffer,
-        out BufferRewritePlan? plan,
-        out string failure)
-    {
-        plan = null;
-            StructuredBufferLayout? layout = BuildStructuredLayout(candidateBuffer, module, constants);
-        if (layout == null)
-        {
-            failure = "layout build failed";
-            return false;
-        }
-
-        if (!IsStrictFlatUniformArray(candidateBuffer, layout))
-        {
-            failure = $"strict flat array check failed: stride={candidateBuffer.ArrayStride}, arrayLength={candidateBuffer.ArrayLength}, requiredRegisters={layout.RequiredRegisterCount}";
-            return false;
-        }
-
-        var memberTypeIds = new List<uint>(layout.Members.Count);
-        foreach (StructuredMemberLayout member in layout.Members)
-        {
-            uint typeId = ResolveMemberTypeId(module, types, member);
-            if (typeId == 0)
-            {
-                failure = "member type resolution failed";
-                return false;
-            }
-
-            member.ResolvedTypeId = typeId;
-            memberTypeIds.Add(typeId);
-        }
-
-        if (!CanRewriteAllAccessChains(module, candidateBuffer, layout, constants, out string? validationFailure))
-        {
-            failure = $"rewrite validation failed: {validationFailure}";
-            return false;
-        }
-
-        plan = new BufferRewritePlan
-        {
-            Info = candidateBuffer,
-            Layout = layout,
-            NewStructTypeId = module.AllocateId(),
-            NewPointerTypeId = module.AllocateId(),
-            MemberTypeIds = memberTypeIds
-        };
-        failure = string.Empty;
-        return true;
     }
 
     private static ConstantMaps BuildConstantMaps(SpirvModule module)
