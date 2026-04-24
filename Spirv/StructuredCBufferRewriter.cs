@@ -1442,6 +1442,14 @@ internal sealed class StructuredCBufferRewriter
             return absoluteByteOffset >= memberStart && absoluteByteOffset < memberEnd;
         }
 
+        if (member.LogicalType.ArrayLength > 1)
+        {
+            // Flat DXBC constant buffers commonly address 16-byte aligned arrays by register slot
+            // without emitting an extra component index. Accept any byte inside the declared span and
+            // let TranslateMemberAccess map the register delta back to the structured array index.
+            return absoluteByteOffset >= memberStart && absoluteByteOffset < memberEnd;
+        }
+
         return extraIndices.Count == 0
             ? absoluteByteOffset == memberStart
             : absoluteByteOffset >= memberStart && absoluteByteOffset < memberEnd;
