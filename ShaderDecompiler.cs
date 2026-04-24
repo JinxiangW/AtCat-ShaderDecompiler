@@ -23,6 +23,9 @@ public class DecompileResult
 {
     public bool Success { get; set; }
     public string? HlslSource { get; set; }
+    public string? SourceCode { get; set; }
+    public string SourceLanguage { get; set; } = "hlsl";
+    public string SourceFileExtension { get; set; } = ".hlsl";
     public string? ErrorMessage { get; set; }
     public byte[]? IntermediateSpirv { get; set; }
     public string? ShaderName { get; set; }
@@ -51,6 +54,17 @@ public sealed class ShaderDecompiler : IDisposable
     private bool _disposed;
 
     public string TempDir { get; set; }
+
+    private enum SpirvStage
+    {
+        Unknown = 0,
+        Vertex,
+        TessControl,
+        TessEvaluation,
+        Geometry,
+        Fragment,
+        Compute,
+    }
 
     public ShaderDecompiler(string? tempDir = null, string? toolsDir = null)
     {
@@ -133,12 +147,15 @@ public sealed class ShaderDecompiler : IDisposable
             // USC-driven metadata already describes the intended cbuffer structure. Forcing
             // spirv-cross to flatten UBOs destroys struct member recovery even when rewrite did
             // not trigger, so keep structured UBO emission enabled for all metadata-guided paths.
-            string hlsl = CompileSpirVToHlsl(patchedSpirv, shaderModel, tempSpv, tempHlsl);
+            DecompiledSource source = CompileSpirVToSource(patchedSpirv, finalMetadata, shaderModel, tempSpv, tempHlsl);
 
             return new DecompileResult
             {
                 Success = true,
-                HlslSource = hlsl,
+                HlslSource = source.Language == "hlsl" ? source.Source : null,
+                SourceCode = source.Source,
+                SourceLanguage = source.Language,
+                SourceFileExtension = source.FileExtension,
                 IntermediateSpirv = patchedSpirv,
                 ShaderName = recoveredShaderName ?? finalMetadata.DebugName,
                 StructuredRewriteSummary = _structuredCBufferRewriter.LastRewriteSummary,
@@ -425,7 +442,31 @@ public sealed class ShaderDecompiler : IDisposable
         return File.ReadAllBytes(tempSpv);
     }
 
-    private string CompileSpirVToHlsl(byte[] spirv, uint shaderModel, string tempSpv, string tempHlsl)
+    private DecompiledSource CompileSpirVToSource(byte[] spirv, ShaderSymbolData metadata, uint shaderModel, string tempSpv, string tempHlsl)
+    {
+        (SpirvStage stage, string? entryPoint) = ReadSpirvEntryPoint(spirv, metadata.EntryPoint);
+
+        try
+        {
+            string hlsl = CompileSpirVToHlsl(spirv, entryPoint, shaderModel, tempSpv, tempHlsl, stage);
+            return new DecompiledSource(hlsl, "hlsl", ".hlsl");
+        }
+        catch (Exception ex) when (ShouldFallbackToGlsl(ex, stage))
+        {
+            string glslPath = Path.ChangeExtension(tempHlsl, ".glsl");
+            try
+            {
+                string glsl = CompileSpirVToGlsl(spirv, entryPoint, tempSpv, glslPath, stage);
+                return new DecompiledSource(glsl, "glsl", ".glsl");
+            }
+            finally
+            {
+                DeleteIfExists(glslPath);
+            }
+        }
+    }
+
+    private string CompileSpirVToHlsl(byte[] spirv, string? entryPoint, uint shaderModel, string tempSpv, string tempHlsl, SpirvStage stage)
     {
         File.WriteAllBytes(tempSpv, spirv);
 
@@ -437,6 +478,8 @@ public sealed class ShaderDecompiler : IDisposable
             tempHlsl,
             "--hlsl"
         };
+
+        AddEntryPointArguments(args, entryPoint, stage);
 
         args.Add("--shader-model");
         args.Add(shaderModel.ToString());
@@ -451,6 +494,129 @@ public sealed class ShaderDecompiler : IDisposable
 
         return File.ReadAllText(tempHlsl, Encoding.UTF8);
     }
+
+    private string CompileSpirVToGlsl(byte[] spirv, string? entryPoint, string tempSpv, string tempGlsl, SpirvStage stage)
+    {
+        File.WriteAllBytes(tempSpv, spirv);
+
+        var args = new List<string>
+        {
+            Path.Combine(_toolsDir!, "spirv-cross.exe"),
+            tempSpv,
+            "--output",
+            tempGlsl,
+            "-V"
+        };
+
+        AddEntryPointArguments(args, entryPoint, stage);
+        if (!TryRunTool(args.ToArray(), DefaultPerStepTimeoutMs, "spirv-cross", out string? failure))
+        {
+            throw new InvalidOperationException(failure ?? "spirv-cross failed.");
+        }
+
+        if (!File.Exists(tempGlsl))
+        {
+            throw new InvalidOperationException("spirv-cross did not produce a GLSL file.");
+        }
+
+        return File.ReadAllText(tempGlsl, Encoding.UTF8);
+    }
+
+    private static void AddEntryPointArguments(List<string> args, string? entryPoint, SpirvStage stage)
+    {
+        if (!string.IsNullOrWhiteSpace(entryPoint))
+        {
+            args.Add("--entry");
+            args.Add(entryPoint);
+        }
+
+        string? stageArg = stage switch
+        {
+            SpirvStage.Vertex => "vert",
+            SpirvStage.TessControl => "tesc",
+            SpirvStage.TessEvaluation => "tese",
+            SpirvStage.Geometry => "geom",
+            SpirvStage.Fragment => "frag",
+            SpirvStage.Compute => "comp",
+            _ => null
+        };
+
+        if (stageArg != null)
+        {
+            args.Add("--stage");
+            args.Add(stageArg);
+        }
+    }
+
+    private static bool ShouldFallbackToGlsl(Exception ex, SpirvStage stage)
+    {
+        if (stage is SpirvStage.Unknown or SpirvStage.Vertex or SpirvStage.Fragment or SpirvStage.Compute)
+        {
+            return false;
+        }
+
+        string message = ex.ToString();
+        return message.Contains("Unsupported builtin in HLSL", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static (SpirvStage Stage, string? EntryPoint) ReadSpirvEntryPoint(byte[] spirv, string? expectedEntryPoint)
+    {
+        var module = SpirvModule.Parse(spirv);
+        (SpirvStage Stage, string? EntryPoint)? first = null;
+        foreach (SpirvInstruction instruction in module.Instructions)
+        {
+            if (instruction.OpCode != SpvOpCode.OpEntryPoint || instruction.Words.Length < 3)
+            {
+                continue;
+            }
+
+            string entryPoint = DecodeSpirvString(instruction.Words, 3);
+            SpirvStage stage = instruction[1] switch
+            {
+                0 => SpirvStage.Vertex,
+                1 => SpirvStage.TessControl,
+                2 => SpirvStage.TessEvaluation,
+                3 => SpirvStage.Geometry,
+                4 => SpirvStage.Fragment,
+                5 => SpirvStage.Compute,
+                _ => SpirvStage.Unknown,
+            };
+
+            first ??= (stage, entryPoint);
+            if (!string.IsNullOrWhiteSpace(expectedEntryPoint) &&
+                !string.Equals(entryPoint, expectedEntryPoint, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            return (stage, entryPoint);
+        }
+
+        return first ?? (SpirvStage.Unknown, expectedEntryPoint);
+    }
+
+    private static string DecodeSpirvString(IReadOnlyList<uint> words, int startIndex)
+    {
+        var bytes = new List<byte>(Math.Max(0, (words.Count - startIndex) * 4));
+        for (int i = startIndex; i < words.Count; i++)
+        {
+            uint word = words[i];
+            for (int shift = 0; shift < 32; shift += 8)
+            {
+                byte value = (byte)((word >> shift) & 0xFF);
+                if (value == 0)
+                {
+                    return Encoding.UTF8.GetString(bytes.ToArray());
+                }
+
+                bytes.Add(value);
+            }
+        }
+
+        return Encoding.UTF8.GetString(bytes.ToArray());
+    }
+
+    private readonly record struct DecompiledSource(string Source, string Language, string FileExtension);
 
     private byte[] PatchSpirvSymbols(byte[] spirv, ShaderSymbolData metadata)
     {
@@ -683,6 +849,16 @@ public sealed class ShaderDecompiler : IDisposable
 
     private void RunTool(string[] args, int timeoutMs, string toolDisplayName)
     {
+        if (!TryRunTool(args, timeoutMs, toolDisplayName, out string? failure))
+        {
+            throw new InvalidOperationException(failure ?? $"{toolDisplayName} failed.");
+        }
+    }
+
+    private bool TryRunTool(string[] args, int timeoutMs, string toolDisplayName, out string? failure)
+    {
+        failure = null;
+
         var psi = new ProcessStartInfo
         {
             FileName = args[0],
@@ -703,7 +879,8 @@ public sealed class ShaderDecompiler : IDisposable
         using var process = Process.Start(psi);
         if (process == null)
         {
-            throw new InvalidOperationException($"Failed to start {toolDisplayName}.");
+            failure = $"Failed to start {toolDisplayName}.";
+            return false;
         }
 
         var stderr = new StringBuilder();
@@ -729,7 +906,8 @@ public sealed class ShaderDecompiler : IDisposable
             {
             }
 
-            throw new TimeoutException($"{toolDisplayName} timed out after {timeoutMs}ms.");
+            failure = $"{toolDisplayName} timed out after {timeoutMs}ms.";
+            return false;
         }
 
         if (process.ExitCode != 0)
@@ -739,8 +917,11 @@ public sealed class ShaderDecompiler : IDisposable
                 Truncate(stderr.ToString(), 1000),
                 Truncate(stdout, 1000)
             }.Where(s => !string.IsNullOrWhiteSpace(s)));
-            throw new InvalidOperationException($"{toolDisplayName} failed: {details}");
+            failure = $"{toolDisplayName} failed: {details}";
+            return false;
         }
+
+        return true;
     }
 
     private static ShaderArchitecture SniffShaderFormat(byte[] data)
