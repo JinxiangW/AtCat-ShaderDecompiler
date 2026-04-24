@@ -52,6 +52,12 @@ namespace Ruri.ShaderTools
             }
 
             string inputPath = Path.GetFullPath(args[0]);
+
+            if (TryRunUnityBinaryAuto(inputPath, args, out int unityBinaryExitCode))
+            {
+                return unityBinaryExitCode;
+            }
+
             string mode = args.Length > 1 && !args[1].StartsWith("--", StringComparison.Ordinal) ? args[1] : "";
             string? outputPath = args.Length > 2 && !args[2].StartsWith("--", StringComparison.Ordinal) ? args[2] : null;
             bool keepTemps = false;
@@ -135,6 +141,86 @@ namespace Ruri.ShaderTools
                 Console.Error.WriteLine($"Fatal Error: {ex.Message}");
                 return 1;
             }
+        }
+
+        static bool TryRunUnityBinaryAuto(string inputPath, string[] args, out int exitCode)
+        {
+            exitCode = 0;
+
+            if (Directory.Exists(inputPath))
+            {
+                exitCode = RunUnityBinaryDirectoryAuto(inputPath);
+                return true;
+            }
+
+            if (!File.Exists(inputPath) || !IsUnityBinaryDxbcAssetPath(inputPath))
+            {
+                return false;
+            }
+
+            string metadataPath = GetUnityBinaryMetadataPath(inputPath);
+            if (!File.Exists(metadataPath))
+            {
+                return false;
+            }
+
+            string outputDir = args.Length > 1 && !args[1].StartsWith("--", StringComparison.Ordinal)
+                ? Path.GetFullPath(args[1])
+                : GetUnityBinaryDefaultOutputDirectory(inputPath);
+
+            exitCode = RunUnityBinarySession(new[] { "--unitybinary-session", inputPath, metadataPath, outputDir });
+            return true;
+        }
+
+        static int RunUnityBinaryDirectoryAuto(string directoryPath)
+        {
+            string[] dxbcFiles = Directory.GetFiles(directoryPath, "*.dxbc.bin", SearchOption.AllDirectories)
+                .OrderBy(static path => path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (dxbcFiles.Length == 0)
+            {
+                Console.Error.WriteLine($"Error: no UnityBinary DXBC assets found under {directoryPath}");
+                return 1;
+            }
+
+            int failures = 0;
+            foreach (string dxbcPath in dxbcFiles)
+            {
+                string metadataPath = GetUnityBinaryMetadataPath(dxbcPath);
+                if (!File.Exists(metadataPath))
+                {
+                    continue;
+                }
+
+                string outputDir = GetUnityBinaryDefaultOutputDirectory(dxbcPath);
+                int result = RunUnityBinarySession(new[] { "--unitybinary-session", dxbcPath, metadataPath, outputDir });
+                if (result != 0)
+                {
+                    failures++;
+                }
+            }
+
+            return failures == 0 ? 0 : 1;
+        }
+
+        static bool IsUnityBinaryDxbcAssetPath(string path)
+        {
+            return path.EndsWith(".dxbc.bin", StringComparison.OrdinalIgnoreCase)
+                && path.IndexOf(".shader.sub", StringComparison.OrdinalIgnoreCase) >= 0
+                && path.IndexOf(".pass", StringComparison.OrdinalIgnoreCase) >= 0
+                && path.IndexOf(".blob", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        static string GetUnityBinaryMetadataPath(string dxbcPath)
+        {
+            return dxbcPath[..^".dxbc.bin".Length] + ".metadata.json";
+        }
+
+        static string GetUnityBinaryDefaultOutputDirectory(string dxbcPath)
+        {
+            string parent = Path.GetDirectoryName(dxbcPath) ?? AppDomain.CurrentDomain.BaseDirectory;
+            string baseName = Path.GetFileName(dxbcPath[..^".dxbc.bin".Length]);
+            return Path.Combine(parent, baseName);
         }
 
         static int ProcessUnrealLibrary(string inputPath, string? outputPath, bool keepTemps, string? mappingPath, Dictionary<int, string>? nameMapInput = null, string? materialFilter = null)
