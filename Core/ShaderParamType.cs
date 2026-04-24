@@ -1,12 +1,5 @@
 namespace Ruri.ShaderTools;
 
-public enum ShaderArchitecture
-{
-    Unknown,
-    Dxbc,
-    Dxil,
-    SpirV
-}
 
 public enum ShaderParamType
 {

@@ -8,7 +8,7 @@ namespace Ruri.ShaderTools;
 /// <summary>
 /// The input shader binary format.
 /// </summary>
-public enum ShaderFormat
+public enum ShaderArchitecture
 {
     Unknown = 0,
     Dxbc,   // Shader Model 5.x and below
@@ -61,7 +61,7 @@ public sealed class ShaderDecompiler : IDisposable
 
     public DecompileResult Decompile(
         byte[] binary,
-        ShaderFormat format = ShaderFormat.Unknown,
+        ShaderArchitecture format = ShaderArchitecture.Unknown,
         ShaderSymbolData? metadata = null,
         uint shaderModel = 51)
     {
@@ -96,14 +96,14 @@ public sealed class ShaderDecompiler : IDisposable
             var unrealMetadata = bundle.EngineMetadata as Unreal.UnrealShaderParser.UnrealMetadata;
             string? recoveredShaderName = unrealMetadata?.ShaderName;
 
-            if (format == ShaderFormat.Unknown)
+            if (format == ShaderArchitecture.Unknown)
             {
                 format = bundle.Architecture switch
                 {
-                    ShaderArchitecture.Dxbc when LooksLikeDxilContainer(processingBinary) => ShaderFormat.Dxil,
-                    ShaderArchitecture.Dxbc => ShaderFormat.Dxbc,
-                    ShaderArchitecture.Dxil => ShaderFormat.Dxil,
-                    ShaderArchitecture.SpirV => ShaderFormat.SpirV,
+                    ShaderArchitecture.Dxbc when LooksLikeDxilContainer(processingBinary) => ShaderArchitecture.Dxil,
+                    ShaderArchitecture.Dxbc => ShaderArchitecture.Dxbc,
+                    ShaderArchitecture.Dxil => ShaderArchitecture.Dxil,
+                    ShaderArchitecture.SpirV => ShaderArchitecture.SpirV,
                     _ => SniffShaderFormat(processingBinary)
                 };
             }
@@ -115,9 +115,9 @@ public sealed class ShaderDecompiler : IDisposable
 
             byte[] spirv = format switch
             {
-                ShaderFormat.Dxbc => ConvertDxbcToSpirv(processingBinary, tempDxbc, tempDxil, tempSpv),
-                ShaderFormat.Dxil => ConvertDxilToSpirv(processingBinary, tempDxil, tempSpv),
-                ShaderFormat.SpirV => processingBinary,
+                ShaderArchitecture.Dxbc => ConvertDxbcToSpirv(processingBinary, tempDxbc, tempDxil, tempSpv),
+                ShaderArchitecture.Dxil => ConvertDxilToSpirv(processingBinary, tempDxil, tempSpv),
+                ShaderArchitecture.SpirV => processingBinary,
                 _ => throw new ArgumentException($"Unsupported shader format: {format}")
             };
 
@@ -182,7 +182,7 @@ public sealed class ShaderDecompiler : IDisposable
 
     public DecompileResult Decompile(
         byte[] binary,
-        ShaderFormat format,
+        ShaderArchitecture format,
         ShaderSymbolMetadata? symbols,
         uint shaderModel = 50)
     {
@@ -974,30 +974,30 @@ public sealed class ShaderDecompiler : IDisposable
         }
     }
 
-    private static ShaderFormat SniffShaderFormat(byte[] data)
+    private static ShaderArchitecture SniffShaderFormat(byte[] data)
     {
         if (data.Length < 4)
         {
-            return ShaderFormat.Unknown;
+            return ShaderArchitecture.Unknown;
         }
 
         if (LooksLikeDxilContainer(data))
         {
-            return ShaderFormat.Dxil;
+            return ShaderArchitecture.Dxil;
         }
 
         if (LooksLikeDxbc(data))
         {
-            return ShaderFormat.Dxbc;
+            return ShaderArchitecture.Dxbc;
         }
 
         if (data.Length >= 4 && data[0] == (byte)'D' && data[1] == (byte)'X' && data[2] == (byte)'I' && data[3] == (byte)'L')
         {
-            return ShaderFormat.Dxil;
+            return ShaderArchitecture.Dxil;
         }
 
         uint magic = BitConverter.ToUInt32(data, 0);
-        return magic == 0x07230203 ? ShaderFormat.SpirV : ShaderFormat.Unknown;
+        return magic == 0x07230203 ? ShaderArchitecture.SpirV : ShaderArchitecture.Unknown;
     }
 
     private static bool LooksLikeDxbc(byte[] data)

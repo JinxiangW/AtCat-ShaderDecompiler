@@ -309,7 +309,7 @@ namespace Ruri.ShaderTools
 
                     try 
                     {
-                        var res = decompiler.Decompile(code, ShaderFormat.Unknown, (ShaderSymbolData?)null, 50);
+                        var res = decompiler.Decompile(code, ShaderArchitecture.Unknown, (ShaderSymbolData?)null, 50);
                         if (res.Success)
                         {
                             string finalName = "";
@@ -396,7 +396,7 @@ namespace Ruri.ShaderTools
                                   {
                                       try
                                       {
-                                          DecompileResult resWithSymbols = decompiler.Decompile(code, ShaderFormat.Unknown, injectionSymbols, 50);
+                                          DecompileResult resWithSymbols = decompiler.Decompile(code, ShaderArchitecture.Unknown, injectionSymbols, 50);
                                           if (resWithSymbols.Success)
                                           {
                                               res = resWithSymbols;
@@ -575,7 +575,7 @@ namespace Ruri.ShaderTools
             string ShaderModelFolder,
             string ShaderFileName);
 
-        private sealed record SelfTestInputCase(string Name, byte[] Binary, ShaderFormat Format);
+        private sealed record SelfTestInputCase(string Name, byte[] Binary, ShaderArchitecture Format);
 
         static int RunSelfTest(string outputRoot)
         {
@@ -799,9 +799,9 @@ namespace Ruri.ShaderTools
 
                 var cases = new[]
                 {
-                    new SelfTestInputCase("Dxbc", dxbc, ShaderFormat.Dxbc),
-                    new SelfTestInputCase("Dxil", File.ReadAllBytes(dxilPath), ShaderFormat.Dxil),
-                    new SelfTestInputCase("Spirv", File.ReadAllBytes(spvPath), ShaderFormat.SpirV),
+                    new SelfTestInputCase("Dxbc", dxbc, ShaderArchitecture.Dxbc),
+                    new SelfTestInputCase("Dxil", File.ReadAllBytes(dxilPath), ShaderArchitecture.Dxil),
+                    new SelfTestInputCase("Spirv", File.ReadAllBytes(spvPath), ShaderArchitecture.SpirV),
                 };
 
                 foreach (SelfTestInputCase inputCase in cases)
@@ -1055,7 +1055,7 @@ namespace Ruri.ShaderTools
             {
                 byte[] dxbc = File.ReadAllBytes(dxbcPath);
                 using var decompiler = new ShaderDecompiler(outputDir);
-                DecompileResult result = decompiler.Decompile(dxbc, ShaderFormat.Dxbc, metadata, 50);
+                DecompileResult result = decompiler.Decompile(dxbc, ShaderArchitecture.Dxbc, metadata, 50);
                 if (!result.Success || string.IsNullOrWhiteSpace(result.HlslSource) || result.IntermediateSpirv == null)
                 {
                     string error = result.ErrorMessage ?? "Unknown decompilation failure.";
@@ -1368,20 +1368,20 @@ namespace Ruri.ShaderTools
             return null;
         }
 
-        static ShaderFormat ParseFormat(string mode)
+        static ShaderArchitecture ParseFormat(string mode)
         {
              return mode.ToLower() switch {
-                 "dxbc" => ShaderFormat.Dxbc,
-                 "dxil" => ShaderFormat.Dxil,
-                 "spv" => ShaderFormat.SpirV,
-                 "spirv" => ShaderFormat.SpirV,
-                 "hlsl" => ShaderFormat.Unknown,
-                 "-dxbc" => ShaderFormat.Dxbc,
-                 "-dxil" => ShaderFormat.Dxil,
-                 "-spv" => ShaderFormat.SpirV,
-                 "-spirv" => ShaderFormat.SpirV,
-                 "-unknown" => ShaderFormat.Unknown,
-                 _ => ShaderFormat.Unknown
+                 "dxbc" => ShaderArchitecture.Dxbc,
+                 "dxil" => ShaderArchitecture.Dxil,
+                 "spv" => ShaderArchitecture.SpirV,
+                 "spirv" => ShaderArchitecture.SpirV,
+                 "hlsl" => ShaderArchitecture.Unknown,
+                 "-dxbc" => ShaderArchitecture.Dxbc,
+                 "-dxil" => ShaderArchitecture.Dxil,
+                 "-spv" => ShaderArchitecture.SpirV,
+                 "-spirv" => ShaderArchitecture.SpirV,
+                 "-unknown" => ShaderArchitecture.Unknown,
+                 _ => ShaderArchitecture.Unknown
              };
         }
 
@@ -1430,9 +1430,9 @@ namespace Ruri.ShaderTools
             return symbols;
         }
 
-        static (ShaderFormat format, int offset) SniffFormat(byte[] data)
+        static (ShaderArchitecture format, int offset) SniffFormat(byte[] data)
         {
-            if (data == null || data.Length < 25) return (ShaderFormat.Unknown, 0);
+            if (data == null || data.Length < 25) return (ShaderArchitecture.Unknown, 0);
             
             // UE shader entries have a 21-byte header before the actual DXBC/SPIRV
             // Try offset 21 first, then fallback to other common offsets
@@ -1441,10 +1441,10 @@ namespace Ruri.ShaderTools
             {
                 if (off + 4 > data.Length) continue;
                 uint magic = BitConverter.ToUInt32(data, off);
-                if (magic == 0x43425844) return (ShaderFormat.Dxbc, off); // DXBC
-                if (magic == 0x07230203) return (ShaderFormat.SpirV, off); // SPIR-V
+                if (magic == 0x43425844) return (ShaderArchitecture.Dxbc, off); // DXBC
+                if (magic == 0x07230203) return (ShaderArchitecture.SpirV, off); // SPIR-V
             }
-            return (ShaderFormat.Unknown, 0);
+            return (ShaderArchitecture.Unknown, 0);
         }
     }
 }
