@@ -9,7 +9,9 @@
 ## ✅ 待办事项（Roadmap）
 
 * [ ] **完善 Unity 支持**
-  当前已实现 UE 元数据解析，需补充 Unity ShaderLab / AssetBundle 的元数据提取。
+  当前已实现 UE 元数据解析
+  
+  Unity 也已经初步支持 但还没有实现直接生成为 ShaderLab。
 
 * [ ] **统一反编译输出为 ShaderLab**
 
@@ -54,3 +56,7 @@ GPU 侧的 Shader Binary（DXBC DXIL/ SPIR-V）通常会移除符号信息，仅
 ### 1. 统一中间层（SPIR-V）
 
 无论输入为 **DXBC / SPIR-V / DXIL**，都会统一转换为 **SPIR-V** 进行处理，从而保证反编译逻辑的统一性与可扩展性。 DXIL 路线已可进入结构化恢复流程，但由于其设计会导致 CB 表达趋于平坦化，当前主要问题集中在结构还原精度与 naming 收敛，而非不可实现。
+
+Unity 是由AssetRipper解析并填充metadata符号到此工具即可完美还原符号反编译 已在私有仓库完成
+
+UE 是由CUE4Parse解析并填充metadata符号到此工具即可完美还原符号反编译 UE剔除过于严重并且屎山代码过于恶心已被气炸优先级已降低
