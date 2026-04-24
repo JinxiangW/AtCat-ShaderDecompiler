@@ -86,7 +86,7 @@ internal sealed class SpirvModule
         uint maxId = 0;
         foreach (var instruction in Instructions)
         {
-            int? resultIdIndex = GetResultIdIndex(instruction.OpCode, instruction.Words.Length);
+            int? resultIdIndex = SpvInstructionTraits.GetResultIdIndex(instruction);
             if (resultIdIndex.HasValue)
             {
                 uint resultId = instruction.Words[resultIdIndex.Value];
@@ -99,36 +99,6 @@ internal sealed class SpirvModule
 
         return maxId;
     }
-
-    private static int? GetResultIdIndex(ushort opCode, int wordCount)
-    {
-        return opCode switch
-        {
-            SpvOpCode.OpTypeVoid => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeBool => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeInt => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeFloat => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeVector => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeMatrix => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeImage => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeSampler => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeSampledImage => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeArray => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeRuntimeArray => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeStruct => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeOpaque => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypePointer => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpConstant => wordCount >= 3 ? 2 : null,
-            SpvOpCode.OpConstantComposite => wordCount >= 3 ? 2 : null,
-            SpvOpCode.OpVariable => wordCount >= 3 ? 2 : null,
-            SpvOpCode.OpLoad => wordCount >= 3 ? 2 : null,
-            SpvOpCode.OpAccessChain => wordCount >= 3 ? 2 : null,
-            SpvOpCode.OpInBoundsAccessChain => wordCount >= 3 ? 2 : null,
-            SpvOpCode.OpCompositeExtract => wordCount >= 3 ? 2 : null,
-            _ => null
-        };
-    }
-
     public int FindFirstTypeInstructionIndex()
     {
         for (int i = 0; i < Instructions.Count; i++)

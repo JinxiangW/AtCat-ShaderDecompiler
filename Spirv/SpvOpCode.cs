@@ -47,6 +47,7 @@ public static class SpvOpCode
     public const uint DecorationBinding = 33;
     public const uint DecorationDescriptorSet = 34;
     public const uint DecorationLocation = 30;
+    public const uint DecorationBuiltIn = 11;
     public const uint DecorationOffset = 35;
     public const uint DecorationBlock = 2;
     public const uint DecorationArrayStride = 6;

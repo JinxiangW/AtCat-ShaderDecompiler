@@ -250,7 +250,7 @@ internal sealed class StructuredCBufferRewriter
         var result = new ConstantMaps();
         foreach (SpirvInstruction instruction in module.Instructions)
         {
-            int? resultIdIndex = GetResultIdIndex(instruction.OpCode, instruction.Words.Length);
+            int? resultIdIndex = SpvInstructionTraits.GetResultIdIndex(instruction);
             if (resultIdIndex.HasValue)
             {
                 result.Definitions[instruction[resultIdIndex.Value]] = instruction;
@@ -1279,8 +1279,8 @@ internal sealed class StructuredCBufferRewriter
         var uses = new Dictionary<uint, int>();
         foreach (SpirvInstruction instruction in module.Instructions)
         {
-            int? resultIdIndex = GetResultIdIndex(instruction.OpCode, instruction.Words.Length);
-            int? resultTypeIndex = GetResultTypeIdIndex(instruction.OpCode, instruction.Words.Length);
+            int? resultIdIndex = SpvInstructionTraits.GetResultIdIndex(instruction);
+            int? resultTypeIndex = SpvInstructionTraits.GetResultTypeIdIndex(instruction);
             for (int operandIndex = 1; operandIndex < instruction.Words.Length; operandIndex++)
             {
                 if ((resultIdIndex.HasValue && operandIndex == resultIdIndex.Value) || (resultTypeIndex.HasValue && operandIndex == resultTypeIndex.Value))
@@ -1295,58 +1295,6 @@ internal sealed class StructuredCBufferRewriter
 
         return uses;
     }
-
-    private static int? GetResultTypeIdIndex(ushort opCode, int wordCount)
-    {
-        return opCode switch
-        {
-            SpvOpCode.OpConstant => wordCount >= 3 ? 1 : null,
-            SpvOpCode.OpConstantComposite => wordCount >= 3 ? 1 : null,
-            SpvOpCode.OpLoad => wordCount >= 3 ? 1 : null,
-            SpvOpCode.OpAccessChain => wordCount >= 3 ? 1 : null,
-            SpvOpCode.OpInBoundsAccessChain => wordCount >= 3 ? 1 : null,
-            SpvOpCode.OpCompositeExtract => wordCount >= 3 ? 1 : null,
-            OpIAdd => wordCount >= 3 ? 1 : null,
-            OpISub => wordCount >= 3 ? 1 : null,
-            OpIMul => wordCount >= 3 ? 1 : null,
-            OpShiftLeftLogical => wordCount >= 3 ? 1 : null,
-            _ => null
-        };
-    }
-
-    private static int? GetResultIdIndex(ushort opCode, int wordCount)
-    {
-        return opCode switch
-        {
-            SpvOpCode.OpTypeVoid => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeBool => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeInt => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeFloat => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeVector => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeMatrix => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeImage => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeSampler => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeSampledImage => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeArray => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeRuntimeArray => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeStruct => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypeOpaque => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpTypePointer => wordCount >= 2 ? 1 : null,
-            SpvOpCode.OpConstant => wordCount >= 3 ? 2 : null,
-            SpvOpCode.OpConstantComposite => wordCount >= 3 ? 2 : null,
-            SpvOpCode.OpVariable => wordCount >= 3 ? 2 : null,
-            SpvOpCode.OpLoad => wordCount >= 3 ? 2 : null,
-            SpvOpCode.OpAccessChain => wordCount >= 3 ? 2 : null,
-            SpvOpCode.OpInBoundsAccessChain => wordCount >= 3 ? 2 : null,
-            SpvOpCode.OpCompositeExtract => wordCount >= 3 ? 2 : null,
-            OpIAdd => wordCount >= 3 ? 2 : null,
-            OpISub => wordCount >= 3 ? 2 : null,
-            OpIMul => wordCount >= 3 ? 2 : null,
-            OpShiftLeftLogical => wordCount >= 3 ? 2 : null,
-            _ => null
-        };
-    }
-
     private static bool TryParseFlatAccessChain(SpirvInstruction instruction, ConstantMaps constants, out FlatAccessPath accessPath)
     {
         accessPath = null!;

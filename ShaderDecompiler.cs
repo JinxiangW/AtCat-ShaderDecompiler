@@ -67,13 +67,41 @@ public sealed class ShaderDecompiler : IDisposable
         {
             Pipeline p = Pipe(binary, format, metadata);
             byte[] spv = Spv(p.Format, p.Code, temp);
-            byte[] patched = Patch(_rewriter.Rewrite(spv, p.Metadata), p.Metadata);
-            Source src = Emit(patched, p.Metadata.EntryPoint, shaderModel, temp);
+            byte[] rewritten;
+            try
+            {
+                rewritten = _rewriter.Rewrite(spv, p.Metadata);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Structured CBuffer rewrite failed.{Environment.NewLine}{DescribeBuiltInDecorations(spv)}", ex);
+            }
+
+            byte[] patched;
+            try
+            {
+                patched = Patch(rewritten, p.Metadata);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"SPIR-V patch failed.{Environment.NewLine}{DescribePatchPlan(rewritten, p.Metadata)}{Environment.NewLine}{DescribeBuiltInDecorations(rewritten)}", ex);
+            }
+
+            Source src;
+            try
+            {
+                src = Emit(patched, p.Metadata.EntryPoint, shaderModel, temp);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"SPIR-V emission failed after patch.{Environment.NewLine}{DescribePatchPlan(patched, p.Metadata)}{Environment.NewLine}{DescribeBuiltInDecorations(patched)}", ex);
+            }
+
             return Result(src, patched, p.Metadata, p.Unreal);
         }
         catch (Exception ex)
         {
-            return Fail(ex.Message);
+            return Fail(ex.ToString());
         }
         finally
         {
@@ -317,6 +345,84 @@ public sealed class ShaderDecompiler : IDisposable
         if (!string.IsNullOrWhiteSpace(entryPoint)) { args.Add("--entry"); args.Add(entryPoint); }
         string? stageArg = stage switch { SpirvStage.Vertex => "vert", SpirvStage.TessControl => "tesc", SpirvStage.TessEvaluation => "tese", SpirvStage.Geometry => "geom", SpirvStage.Fragment => "frag", SpirvStage.Compute => "comp", _ => null };
         if (stageArg != null) { args.Add("--stage"); args.Add(stageArg); }
+    }
+
+    private string DescribePatchPlan(byte[] spirv, ShaderSymbolData metadata)
+    {
+        if (metadata.GetResourceBindingCount() == 0)
+        {
+            return "Patch plan: metadata contained no resource bindings.";
+        }
+
+        IReadOnlyList<SpirvBindingInfo> bindings = _patcher.AnalyzeBindingsDetailed(spirv);
+        List<(uint Id, string Name)> names = Names(bindings, metadata);
+        List<(uint TypeId, uint MemberIndex, string Name)> members = Members(bindings, metadata);
+
+        var lines = new List<string>
+        {
+            $"Patch plan: resourceBindings={metadata.GetResourceBindingCount()} matchedBindings={bindings.Count} opNames={names.Count} opMemberNames={members.Count}"
+        };
+
+        foreach ((uint id, string name) in names.Take(16))
+        {
+            lines.Add($"  OpName Id={id} Name={name}");
+        }
+
+        if (names.Count > 16)
+        {
+            lines.Add($"  ... {names.Count - 16} more OpName patches");
+        }
+
+        foreach ((uint typeId, uint memberIndex, string name) in members.Take(16))
+        {
+            lines.Add($"  OpMemberName TypeId={typeId} MemberIndex={memberIndex} Name={name}");
+        }
+
+        if (members.Count > 16)
+        {
+            lines.Add($"  ... {members.Count - 16} more OpMemberName patches");
+        }
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static string DescribeBuiltInDecorations(byte[] spirv)
+    {
+        SpirvModule module = SpirvModule.Parse(spirv);
+        var names = new Dictionary<uint, string>();
+        var lines = new List<string>();
+
+        foreach (SpirvInstruction instruction in module.Instructions)
+        {
+            if (instruction.OpCode == SpvOpCode.OpName && instruction.Words.Length >= 3)
+            {
+                string? name = Str(instruction.Words, 2);
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    names[instruction[1]] = name;
+                }
+            }
+        }
+
+        foreach (SpirvInstruction instruction in module.Instructions)
+        {
+            if (instruction.OpCode == SpvOpCode.OpDecorate && instruction.Words.Length >= 4 && instruction[2] == SpvOpCode.DecorationBuiltIn)
+            {
+                uint targetId = instruction[1];
+                string targetName = names.TryGetValue(targetId, out string? name) ? name : $"id_{targetId}";
+                lines.Add($"  OpDecorate targetId={targetId} name={targetName} BuiltIn={instruction[3]} offset={instruction.Offset}");
+            }
+            else if (instruction.OpCode == SpvOpCode.OpMemberDecorate && instruction.Words.Length >= 5 && instruction[3] == SpvOpCode.DecorationBuiltIn)
+            {
+                uint typeId = instruction[1];
+                string typeName = names.TryGetValue(typeId, out string? name) ? name : $"id_{typeId}";
+                lines.Add($"  OpMemberDecorate typeId={typeId} name={typeName} memberIndex={instruction[2]} BuiltIn={instruction[4]} offset={instruction.Offset}");
+            }
+        }
+
+        return lines.Count == 0
+            ? "BuiltIn decorations: none"
+            : "BuiltIn decorations:" + Environment.NewLine + string.Join(Environment.NewLine, lines);
     }
 
     private bool Run(string[] args, string name)
