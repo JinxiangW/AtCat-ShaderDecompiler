@@ -114,7 +114,6 @@ public sealed class ShaderDecompiler : IDisposable
             }
 
             ShaderSymbolData finalMetadata = MergeMetadata(bundle.Symbols, metadata);
-            NormalizeMetadataBindingSets(finalMetadata, format);
             finalMetadata.RefreshCompatibilityViews();
             NormalizeConstantBuffersForAlignment(finalMetadata);
             finalMetadata.RefreshCompatibilityViews();
@@ -365,39 +364,6 @@ public sealed class ShaderDecompiler : IDisposable
 
             constantBuffer.CBParams = preservedTopLevel.OrderBy(static parameter => parameter.Index).ToList();
             constantBuffer.StructParams = constantBuffer.StructParams.Concat(syntheticStructs).ToArray();
-        }
-    }
-
-    private static void NormalizeMetadataBindingSets(ShaderSymbolData metadata, ShaderFormat format)
-    {
-        if (format is not (ShaderFormat.Dxbc or ShaderFormat.Dxil))
-        {
-            return;
-        }
-
-        foreach (BufferBinding binding in metadata.ConstantBufferBindings)
-        {
-            binding.Set = 0;
-        }
-
-        foreach (TextureParameter texture in metadata.TextureParameters)
-        {
-            texture.Set = 0;
-        }
-
-        foreach (SamplerParameter sampler in metadata.Samplers)
-        {
-            sampler.Set = 0;
-        }
-
-        foreach (BufferBinding buffer in metadata.Buffers)
-        {
-            buffer.Set = 0;
-        }
-
-        foreach (UAVParameter uav in metadata.UAVs)
-        {
-            uav.Set = 0;
         }
     }
 
