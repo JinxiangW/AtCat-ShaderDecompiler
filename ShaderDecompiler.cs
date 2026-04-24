@@ -114,7 +114,10 @@ public sealed class ShaderDecompiler : IDisposable
             }
 
             ShaderSymbolData finalMetadata = MergeMetadata(bundle.Symbols, metadata);
+            NormalizeMetadataBindingSets(finalMetadata, format);
+            finalMetadata.RefreshCompatibilityViews();
             NormalizeConstantBuffersForAlignment(finalMetadata);
+            finalMetadata.RefreshCompatibilityViews();
             Console.WriteLine($"[Decompile] merged resources={finalMetadata.Resources.Count} constantBuffers={finalMetadata.ConstantBuffers.Count}");
             foreach (ConstantBuffer constantBuffer in finalMetadata.ConstantBuffers)
             {
@@ -204,6 +207,7 @@ public sealed class ShaderDecompiler : IDisposable
         if (bundleSymbols != null)
         {
             merged = ConvertMetadata(bundleSymbols);
+            merged.RefreshCompatibilityViews();
         }
 
         if (explicitMetadata == null)
@@ -226,6 +230,48 @@ public sealed class ShaderDecompiler : IDisposable
             merged.DebugName = explicitMetadata.DebugName;
         }
 
+        foreach (BufferBinding binding in explicitMetadata.ConstantBufferBindings)
+        {
+            merged.ConstantBufferBindings.RemoveAll(existing =>
+                existing.Set == binding.Set &&
+                existing.Index == binding.Index &&
+                string.Equals(existing.Name, binding.Name, StringComparison.Ordinal));
+            merged.ConstantBufferBindings.Add(CloneBufferBinding(binding));
+        }
+
+        foreach (TextureParameter texture in explicitMetadata.TextureParameters)
+        {
+            merged.TextureParameters.RemoveAll(existing =>
+                existing.Set == texture.Set &&
+                existing.Index == texture.Index &&
+                string.Equals(existing.Name, texture.Name, StringComparison.Ordinal));
+            merged.TextureParameters.Add(CloneTextureParameter(texture));
+        }
+
+        foreach (SamplerParameter sampler in explicitMetadata.Samplers)
+        {
+            merged.Samplers.RemoveAll(existing => existing.Set == sampler.Set && existing.Index == sampler.Index);
+            merged.Samplers.Add(CloneSamplerParameter(sampler));
+        }
+
+        foreach (BufferBinding buffer in explicitMetadata.Buffers)
+        {
+            merged.Buffers.RemoveAll(existing =>
+                existing.Set == buffer.Set &&
+                existing.Index == buffer.Index &&
+                string.Equals(existing.Name, buffer.Name, StringComparison.Ordinal));
+            merged.Buffers.Add(CloneBufferBinding(buffer));
+        }
+
+        foreach (UAVParameter uav in explicitMetadata.UAVs)
+        {
+            merged.UAVs.RemoveAll(existing =>
+                existing.Set == uav.Set &&
+                existing.Index == uav.Index &&
+                string.Equals(existing.Name, uav.Name, StringComparison.Ordinal));
+            merged.UAVs.Add(CloneUavParameter(uav));
+        }
+
         foreach (var resource in explicitMetadata.Resources)
         {
             merged.Resources.RemoveAll(r =>
@@ -240,6 +286,8 @@ public sealed class ShaderDecompiler : IDisposable
             merged.ConstantBuffers.RemoveAll(cb => string.Equals(cb.Name, constantBuffer.Name, StringComparison.Ordinal));
             merged.ConstantBuffers.Add(CloneConstantBuffer(constantBuffer));
         }
+
+        merged.RefreshCompatibilityViews();
 
         return merged;
     }
@@ -260,6 +308,28 @@ public sealed class ShaderDecompiler : IDisposable
             int firstSyntheticIndex = ordered.FindIndex(static parameter => !IsNaturalTopLevelParameter(parameter));
             if (firstSyntheticIndex < 0)
             {
+                continue;
+            }
+
+            if (firstSyntheticIndex == 0)
+            {
+                int syntheticStructureIndex = constantBuffer.StructParams.Length;
+                var wrappedStructs = new List<StructParameter>();
+                FlushAlignmentGroup(
+                    ordered.Select(CloneParameter).ToList(),
+                    0,
+                    Math.Max(constantBuffer.UsedSize, ordered[0].Index),
+                    wrappedStructs,
+                    [],
+                    ref syntheticStructureIndex);
+
+                if (wrappedStructs.Count == 0)
+                {
+                    continue;
+                }
+
+                constantBuffer.CBParams = [];
+                constantBuffer.StructParams = constantBuffer.StructParams.Concat(wrappedStructs).ToArray();
                 continue;
             }
 
@@ -295,6 +365,39 @@ public sealed class ShaderDecompiler : IDisposable
 
             constantBuffer.CBParams = preservedTopLevel.OrderBy(static parameter => parameter.Index).ToList();
             constantBuffer.StructParams = constantBuffer.StructParams.Concat(syntheticStructs).ToArray();
+        }
+    }
+
+    private static void NormalizeMetadataBindingSets(ShaderSymbolData metadata, ShaderFormat format)
+    {
+        if (format is not (ShaderFormat.Dxbc or ShaderFormat.Dxil))
+        {
+            return;
+        }
+
+        foreach (BufferBinding binding in metadata.ConstantBufferBindings)
+        {
+            binding.Set = 0;
+        }
+
+        foreach (TextureParameter texture in metadata.TextureParameters)
+        {
+            texture.Set = 0;
+        }
+
+        foreach (SamplerParameter sampler in metadata.Samplers)
+        {
+            sampler.Set = 0;
+        }
+
+        foreach (BufferBinding buffer in metadata.Buffers)
+        {
+            buffer.Set = 0;
+        }
+
+        foreach (UAVParameter uav in metadata.UAVs)
+        {
+            uav.Set = 0;
         }
     }
 
@@ -1071,11 +1174,82 @@ public sealed class ShaderDecompiler : IDisposable
         };
     }
 
+    private static BufferBinding CloneBufferBinding(BufferBinding binding)
+    {
+        return new BufferBinding
+        {
+            Name = binding.Name,
+            NameIndex = binding.NameIndex,
+            Index = binding.Index,
+            Set = binding.Set,
+            ArraySize = binding.ArraySize,
+        };
+    }
+
+    private static TextureParameter CloneTextureParameter(TextureParameter texture)
+    {
+        return new TextureParameter
+        {
+            Name = texture.Name,
+            NameIndex = texture.NameIndex,
+            Index = texture.Index,
+            Set = texture.Set,
+            SamplerIndex = texture.SamplerIndex,
+            MultiSampled = texture.MultiSampled,
+            Dim = texture.Dim,
+        };
+    }
+
+    private static SamplerParameter CloneSamplerParameter(SamplerParameter sampler)
+    {
+        return new SamplerParameter
+        {
+            Sampler = sampler.Sampler,
+            Index = sampler.Index,
+            Set = sampler.Set,
+        };
+    }
+
+    private static UAVParameter CloneUavParameter(UAVParameter uav)
+    {
+        return new UAVParameter
+        {
+            Name = uav.Name,
+            NameIndex = uav.NameIndex,
+            Index = uav.Index,
+            Set = uav.Set,
+            OriginalIndex = uav.OriginalIndex,
+        };
+    }
+
     private static ConstantBuffer CloneConstantBuffer(ConstantBuffer constantBuffer)
     {
         return new ConstantBuffer
         {
             Name = constantBuffer.Name,
+            NameIndex = constantBuffer.NameIndex,
+            MatrixParams = constantBuffer.MatrixParams.Select(parameter => new MatrixParameter
+            {
+                Name = parameter.Name,
+                NameIndex = parameter.NameIndex,
+                Index = parameter.Index,
+                ArraySize = parameter.ArraySize,
+                Type = parameter.Type,
+                RowCount = parameter.RowCount,
+                ColumnCount = parameter.ColumnCount,
+                IsMatrix = parameter.IsMatrix,
+            }).ToArray(),
+            VectorParams = constantBuffer.VectorParams.Select(parameter => new VectorParameter
+            {
+                Name = parameter.Name,
+                NameIndex = parameter.NameIndex,
+                Index = parameter.Index,
+                ArraySize = parameter.ArraySize,
+                Type = parameter.Type,
+                RowCount = parameter.RowCount,
+                ColumnCount = parameter.ColumnCount,
+                IsMatrix = parameter.IsMatrix,
+            }).ToArray(),
             UsedSize = constantBuffer.UsedSize,
             Partial = constantBuffer.Partial,
             CBParams = constantBuffer.CBParams.Select(parameter => new ConstantBufferParameter
@@ -1091,9 +1265,32 @@ public sealed class ShaderDecompiler : IDisposable
             StructParams = constantBuffer.StructParams.Select(structParameter => new StructParameter
             {
                 Name = structParameter.Name,
+                NameIndex = structParameter.NameIndex,
                 Index = structParameter.Index,
                 ArraySize = structParameter.ArraySize,
                 Size = structParameter.Size,
+                MatrixMembers = structParameter.MatrixMembers.Select(parameter => new MatrixParameter
+                {
+                    Name = parameter.Name,
+                    NameIndex = parameter.NameIndex,
+                    Index = parameter.Index,
+                    ArraySize = parameter.ArraySize,
+                    Type = parameter.Type,
+                    RowCount = parameter.RowCount,
+                    ColumnCount = parameter.ColumnCount,
+                    IsMatrix = parameter.IsMatrix,
+                }).ToArray(),
+                VectorMembers = structParameter.VectorMembers.Select(parameter => new VectorParameter
+                {
+                    Name = parameter.Name,
+                    NameIndex = parameter.NameIndex,
+                    Index = parameter.Index,
+                    ArraySize = parameter.ArraySize,
+                    Type = parameter.Type,
+                    RowCount = parameter.RowCount,
+                    ColumnCount = parameter.ColumnCount,
+                    IsMatrix = parameter.IsMatrix,
+                }).ToArray(),
                 CBParams = structParameter.CBParams.Select(parameter => new ConstantBufferParameter
                 {
                     ParamName = parameter.ParamName,
