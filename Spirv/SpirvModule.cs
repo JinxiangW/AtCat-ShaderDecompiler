@@ -200,19 +200,6 @@ internal sealed class SpirvModule
         return lastTypeIndex >= 0 ? lastTypeIndex + 1 : Instructions.Count;
     }
 
-    public int FindFirstFunctionInstructionIndex()
-    {
-        for (int i = 0; i < Instructions.Count; i++)
-        {
-            if (Instructions[i].OpCode == 54)
-            {
-                return i;
-            }
-        }
-
-        return Instructions.Count;
-    }
-
     private static uint[] BytesToWords(byte[] bytes)
     {
         uint[] words = new uint[bytes.Length / 4];
