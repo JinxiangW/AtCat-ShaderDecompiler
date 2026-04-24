@@ -269,75 +269,15 @@ public sealed class ShaderDecompiler : IDisposable
     {
         foreach (ConstantBuffer constantBuffer in metadata.ConstantBuffers)
         {
-            if (constantBuffer.CBParams.Count <= 1)
-            {
-                continue;
-            }
-
-            List<ConstantBufferParameter> ordered = constantBuffer.CBParams
+            constantBuffer.CBParams = constantBuffer.CBParams
                 .OrderBy(static parameter => parameter.ByteOffset)
                 .ToList();
-
-            int firstSyntheticIndex = ordered.FindIndex(static parameter => !IsNaturalTopLevelParameter(parameter));
-            if (firstSyntheticIndex < 0)
+            foreach (StructParameter structParameter in constantBuffer.StructParams)
             {
-                continue;
+                structParameter.CBParams = structParameter.CBParams
+                    .OrderBy(static parameter => parameter.ByteOffset)
+                    .ToList();
             }
-
-            if (firstSyntheticIndex == 0)
-            {
-                int syntheticStructureIndex = constantBuffer.StructParams.Length;
-                var wrappedStructs = new List<StructParameter>();
-                FlushAlignmentGroup(
-                    ordered.Select(CloneParameter).ToList(),
-                    0,
-                    Math.Max(constantBuffer.Size, ordered[0].ByteOffset),
-                    wrappedStructs,
-                    [],
-                    ref syntheticStructureIndex);
-
-                if (wrappedStructs.Count == 0)
-                {
-                    continue;
-                }
-
-                constantBuffer.CBParams = [];
-                constantBuffer.StructParams = constantBuffer.StructParams.Concat(wrappedStructs).ToArray();
-                continue;
-            }
-
-            List<ConstantBufferParameter> preservedTopLevel = ordered
-                .Take(firstSyntheticIndex)
-                .Select(CloneParameter)
-                .ToList();
-
-            List<ConstantBufferParameter> syntheticGroup = ordered
-                .Skip(firstSyntheticIndex)
-                .Select(CloneParameter)
-                .ToList();
-
-            if (syntheticGroup.Count == 0)
-            {
-                continue;
-            }
-
-            int structureIndex = constantBuffer.StructParams.Length;
-            var syntheticStructs = new List<StructParameter>();
-            FlushAlignmentGroup(
-                syntheticGroup,
-                syntheticGroup[0].ByteOffset,
-                Math.Max(constantBuffer.Size, syntheticGroup[0].ByteOffset),
-                syntheticStructs,
-                preservedTopLevel,
-                ref structureIndex);
-
-            if (syntheticStructs.Count == 0)
-            {
-                continue;
-            }
-
-            constantBuffer.CBParams = preservedTopLevel.OrderBy(static parameter => parameter.ByteOffset).ToList();
-            constantBuffer.StructParams = constantBuffer.StructParams.Concat(syntheticStructs).ToArray();
         }
     }
 
@@ -374,130 +314,6 @@ public sealed class ShaderDecompiler : IDisposable
         int structCount = constantBuffer.StructParams.Sum(static structParameter => structParameter.CBParams.Count);
         int numericCount = constantBuffer.AllNumericParams.Count();
         return (topLevelCount * 100) + (structCount * 100) + (numericCount * 10) + (constantBuffer.IsPartialCB ? 1 : 0);
-    }
-
-    private static bool IsNaturalTopLevelParameter(ConstantBufferParameter parameter)
-    {
-        if (parameter.ByteOffset % 16 != 0)
-        {
-            return false;
-        }
-
-        if (parameter.IsMatrix)
-        {
-            return true;
-        }
-
-        return parameter.Rows == 4 && parameter.Columns == 1 && Math.Max(parameter.ArraySize, 1) == 1;
-    }
-
-    private static void FlushAlignmentGroup(
-        List<ConstantBufferParameter> group,
-        int groupStart,
-        int groupEnd,
-        List<StructParameter> syntheticStructs,
-        List<ConstantBufferParameter> remainingTopLevel,
-        ref int structureIndex)
-    {
-        if (group.Count == 1)
-        {
-            remainingTopLevel.Add(group[0]);
-            return;
-        }
-
-        syntheticStructs.Add(new StructParameter
-        {
-            Name = $"_DummyStruct{structureIndex++}",
-            Index = groupStart,
-            ArraySize = 1,
-            StructSize = Math.Max(0, groupEnd - groupStart),
-            CBParams = BuildAlignedSyntheticStructMembers(group, groupStart, groupEnd)
-        });
-    }
-
-    private static List<ConstantBufferParameter> BuildAlignedSyntheticStructMembers(List<ConstantBufferParameter> group, int groupStart, int groupEnd)
-    {
-        var members = new List<ConstantBufferParameter>();
-        int padIndex = 0;
-        int cursor = groupStart;
-
-        foreach (ConstantBufferParameter parameter in group.OrderBy(static parameter => parameter.ByteOffset))
-        {
-            if (parameter.ByteOffset > cursor)
-            {
-                AppendPaddingMembers(members, cursor, parameter.ByteOffset - cursor, ref padIndex);
-            }
-
-            members.Add(CloneParameter(parameter));
-            cursor = parameter.ByteOffset + GetMetadataParameterByteSize(parameter);
-        }
-
-        if (cursor < groupEnd)
-        {
-            AppendPaddingMembers(members, cursor, groupEnd - cursor, ref padIndex);
-        }
-
-        return members;
-    }
-
-    private static void AppendPaddingMembers(List<ConstantBufferParameter> members, int startOffset, int byteCount, ref int padIndex)
-    {
-        int remaining = byteCount;
-        int cursor = startOffset;
-        while (remaining > 0)
-        {
-            int bytesUntilRegisterBoundary = 16 - (cursor % 16);
-            if (bytesUntilRegisterBoundary == 16)
-            {
-                bytesUntilRegisterBoundary = 16;
-            }
-
-            int chunkBytes = Math.Min(remaining, bytesUntilRegisterBoundary);
-            int componentCount = Math.Min(4, chunkBytes / 4);
-            if (componentCount <= 0)
-            {
-                break;
-            }
-
-            members.Add(new ConstantBufferParameter
-            {
-                ParamName = $"_pad{padIndex++}",
-                ParamType = ShaderParamType.Float,
-                Rows = componentCount,
-                Columns = 1,
-                IsMatrix = false,
-                ArraySize = 1,
-                ByteOffset = cursor
-            });
-
-            int size = componentCount * 4;
-            cursor += size;
-            remaining -= size;
-        }
-    }
-
-    private static int GetMetadataParameterByteSize(ConstantBufferParameter parameter)
-    {
-        if (parameter.IsMatrix)
-        {
-            return parameter.Columns * 16 * Math.Max(parameter.ArraySize, 1);
-        }
-
-        return parameter.Rows * parameter.Columns * Math.Max(parameter.ArraySize, 1) * 4;
-    }
-
-    private static ConstantBufferParameter CloneParameter(ConstantBufferParameter parameter)
-    {
-        return new ConstantBufferParameter
-        {
-            ParamName = parameter.ParamName,
-            ParamType = parameter.ParamType,
-            Rows = parameter.Rows,
-            Columns = parameter.Columns,
-            IsMatrix = parameter.IsMatrix,
-            ArraySize = parameter.ArraySize,
-            ByteOffset = parameter.ByteOffset
-        };
     }
 
     private static int? FindMemberIndexByMetadata(SpirvBindingInfo match, int byteOffset)
