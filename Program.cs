@@ -16,6 +16,11 @@ namespace Ruri.ShaderTools
     {
         static int Main(string[] args)
         {
+            if (args.Length < 1)
+            {
+                return RunUnityBinaryDirectoryAuto(ResolveUnityBinaryAutoAssetRoot());
+            }
+
             if (args.Length >= 1 && string.Equals(args[0], "--unitybinary-litpoly-selftest", StringComparison.OrdinalIgnoreCase))
             {
                 string? outputDir = args.Length > 1 ? args[1] : null;
@@ -43,12 +48,6 @@ namespace Ruri.ShaderTools
             if (args.Length >= 1 && string.Equals(args[0], "--analyze-spirv-images", StringComparison.OrdinalIgnoreCase))
             {
                 return RunAnalyzeSpirvImages(args);
-            }
-
-            if (args.Length < 1)
-            {
-                Console.WriteLine("Usage: ShaderDecompiler.exe <input> [mode] [output] [--keep-temps] [--mapping <path>]");
-                return 1;
             }
 
             string inputPath = Path.GetFullPath(args[0]);
@@ -1280,6 +1279,29 @@ namespace Ruri.ShaderTools
             }
 
             throw new DirectoryNotFoundException($"UnityBinary litpoly asset root not found: {relativePath}");
+        }
+
+        static string ResolveUnityBinaryAutoAssetRoot()
+        {
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string relativePath = Path.Combine("Testing", "Assets", "Shaders", "UnityBinary");
+            string[] roots =
+            {
+                Path.GetFullPath(Path.Combine(baseDir, "..", "..")),
+                baseDir,
+                Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..")),
+            };
+
+            foreach (string root in roots.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                string candidate = Path.Combine(root, relativePath);
+                if (Directory.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            throw new DirectoryNotFoundException($"UnityBinary asset root not found: {relativePath}");
         }
 
         static string? ResolveSelfTestDxcExecutable(string toolsDir)
