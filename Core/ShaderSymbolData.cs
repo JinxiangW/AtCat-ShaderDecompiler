@@ -50,14 +50,14 @@ public class ShaderSymbolData
         {
             constantBuffer.CBParams = constantBuffer.AllNumericParams
                 .Select(ToCompatibilityParameter)
-                .OrderBy(static parameter => parameter.Index)
+                .OrderBy(static parameter => parameter.ByteOffset)
                 .ToList();
 
             foreach (StructParameter structParameter in constantBuffer.StructParams)
             {
                 structParameter.CBParams = structParameter.AllNumericMembers
                     .Select(ToCompatibilityParameter)
-                    .OrderBy(static parameter => parameter.Index)
+                    .OrderBy(static parameter => parameter.ByteOffset)
                     .ToList();
             }
         }
@@ -73,7 +73,7 @@ public class ShaderSymbolData
             Columns = parameter.ColumnCount,
             IsMatrix = parameter.IsMatrix,
             ArraySize = parameter.ArraySize,
-            Index = parameter.Index,
+            ByteOffset = parameter.ByteOffset,
         };
     }
 }

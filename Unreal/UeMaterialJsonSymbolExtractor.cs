@@ -743,7 +743,7 @@ internal sealed class UeMaterialJsonSymbolExtractor
                 Columns = columns,
                 IsMatrix = false,
                 ArraySize = 1,
-                Index = byteOffset
+                ByteOffset = byteOffset
             });
         }
 
@@ -752,7 +752,7 @@ internal sealed class UeMaterialJsonSymbolExtractor
             return;
         }
 
-        materialBuffer.CBParams.Sort((left, right) => left.Index.CompareTo(right.Index));
+        materialBuffer.CBParams.Sort((left, right) => left.ByteOffset.CompareTo(right.ByteOffset));
         metadata.ConstantBuffers.RemoveAll(cb => string.Equals(cb.Name, materialBuffer.Name, StringComparison.Ordinal));
         metadata.ConstantBuffers.Add(materialBuffer);
     }

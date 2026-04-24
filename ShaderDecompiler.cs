@@ -267,7 +267,7 @@ public sealed class ShaderDecompiler : IDisposable
             }
 
             List<ConstantBufferParameter> ordered = constantBuffer.CBParams
-                .OrderBy(static parameter => parameter.Index)
+                .OrderBy(static parameter => parameter.ByteOffset)
                 .ToList();
 
             int firstSyntheticIndex = ordered.FindIndex(static parameter => !IsNaturalTopLevelParameter(parameter));
@@ -283,7 +283,7 @@ public sealed class ShaderDecompiler : IDisposable
                 FlushAlignmentGroup(
                     ordered.Select(CloneParameter).ToList(),
                     0,
-                    Math.Max(constantBuffer.Size, ordered[0].Index),
+                    Math.Max(constantBuffer.Size, ordered[0].ByteOffset),
                     wrappedStructs,
                     [],
                     ref syntheticStructureIndex);
@@ -317,8 +317,8 @@ public sealed class ShaderDecompiler : IDisposable
             var syntheticStructs = new List<StructParameter>();
             FlushAlignmentGroup(
                 syntheticGroup,
-                syntheticGroup[0].Index,
-                Math.Max(constantBuffer.Size, syntheticGroup[0].Index),
+                syntheticGroup[0].ByteOffset,
+                Math.Max(constantBuffer.Size, syntheticGroup[0].ByteOffset),
                 syntheticStructs,
                 preservedTopLevel,
                 ref structureIndex);
@@ -328,14 +328,14 @@ public sealed class ShaderDecompiler : IDisposable
                 continue;
             }
 
-            constantBuffer.CBParams = preservedTopLevel.OrderBy(static parameter => parameter.Index).ToList();
+            constantBuffer.CBParams = preservedTopLevel.OrderBy(static parameter => parameter.ByteOffset).ToList();
             constantBuffer.StructParams = constantBuffer.StructParams.Concat(syntheticStructs).ToArray();
         }
     }
 
     private static bool IsNaturalTopLevelParameter(ConstantBufferParameter parameter)
     {
-        if (parameter.Index % 16 != 0)
+        if (parameter.ByteOffset % 16 != 0)
         {
             return false;
         }
@@ -378,15 +378,15 @@ public sealed class ShaderDecompiler : IDisposable
         int padIndex = 0;
         int cursor = groupStart;
 
-        foreach (ConstantBufferParameter parameter in group.OrderBy(static parameter => parameter.Index))
+        foreach (ConstantBufferParameter parameter in group.OrderBy(static parameter => parameter.ByteOffset))
         {
-            if (parameter.Index > cursor)
+            if (parameter.ByteOffset > cursor)
             {
-                AppendPaddingMembers(members, cursor, parameter.Index - cursor, ref padIndex);
+                AppendPaddingMembers(members, cursor, parameter.ByteOffset - cursor, ref padIndex);
             }
 
             members.Add(CloneParameter(parameter));
-            cursor = parameter.Index + GetMetadataParameterByteSize(parameter);
+            cursor = parameter.ByteOffset + GetMetadataParameterByteSize(parameter);
         }
 
         if (cursor < groupEnd)
@@ -424,7 +424,7 @@ public sealed class ShaderDecompiler : IDisposable
                 Columns = 1,
                 IsMatrix = false,
                 ArraySize = 1,
-                Index = cursor
+                ByteOffset = cursor
             });
 
             int size = componentCount * 4;
@@ -453,7 +453,7 @@ public sealed class ShaderDecompiler : IDisposable
             Columns = parameter.Columns,
             IsMatrix = parameter.IsMatrix,
             ArraySize = parameter.ArraySize,
-            Index = parameter.Index
+            ByteOffset = parameter.ByteOffset
         };
     }
 
@@ -661,7 +661,7 @@ public sealed class ShaderDecompiler : IDisposable
 
                         foreach (var parameter in constantBuffer.CBParams.Where(p => !string.IsNullOrWhiteSpace(p.ParamName)))
                         {
-                            int? targetIndex = FindMemberIndexByMetadata(match, parameter.Index);
+                            int? targetIndex = FindMemberIndexByMetadata(match, parameter.ByteOffset);
 
                             if (targetIndex.HasValue)
                             {
@@ -1073,7 +1073,7 @@ public sealed class ShaderDecompiler : IDisposable
             {
                 Name = parameter.Name,
                 NameIndex = parameter.NameIndex,
-                Index = parameter.Index,
+                ByteOffset = parameter.ByteOffset,
                 ArraySize = parameter.ArraySize,
                 Type = parameter.Type,
                 RowCount = parameter.RowCount,
@@ -1084,7 +1084,7 @@ public sealed class ShaderDecompiler : IDisposable
             {
                 Name = parameter.Name,
                 NameIndex = parameter.NameIndex,
-                Index = parameter.Index,
+                ByteOffset = parameter.ByteOffset,
                 ArraySize = parameter.ArraySize,
                 Type = parameter.Type,
                 RowCount = parameter.RowCount,
@@ -1096,7 +1096,7 @@ public sealed class ShaderDecompiler : IDisposable
             CBParams = constantBuffer.CBParams.Select(parameter => new ConstantBufferParameter
             {
                 ParamName = parameter.ParamName,
-                Index = parameter.Index,
+                ByteOffset = parameter.ByteOffset,
                 ParamType = parameter.ParamType,
                 Rows = parameter.Rows,
                 Columns = parameter.Columns,
@@ -1114,7 +1114,7 @@ public sealed class ShaderDecompiler : IDisposable
                 {
                     Name = parameter.Name,
                     NameIndex = parameter.NameIndex,
-                    Index = parameter.Index,
+                    ByteOffset = parameter.ByteOffset,
                     ArraySize = parameter.ArraySize,
                     Type = parameter.Type,
                     RowCount = parameter.RowCount,
@@ -1125,7 +1125,7 @@ public sealed class ShaderDecompiler : IDisposable
                 {
                     Name = parameter.Name,
                     NameIndex = parameter.NameIndex,
-                    Index = parameter.Index,
+                    ByteOffset = parameter.ByteOffset,
                     ArraySize = parameter.ArraySize,
                     Type = parameter.Type,
                     RowCount = parameter.RowCount,
@@ -1135,7 +1135,7 @@ public sealed class ShaderDecompiler : IDisposable
                 CBParams = structParameter.CBParams.Select(parameter => new ConstantBufferParameter
                 {
                     ParamName = parameter.ParamName,
-                    Index = parameter.Index,
+                    ByteOffset = parameter.ByteOffset,
                     ParamType = parameter.ParamType,
                     Rows = parameter.Rows,
                     Columns = parameter.Columns,

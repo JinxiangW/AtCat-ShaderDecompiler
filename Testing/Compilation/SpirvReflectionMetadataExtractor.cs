@@ -132,7 +132,7 @@ internal static class SpirvReflectionMetadataExtractor
                     cbuffer.CBParams.Add(new ConstantBufferParameter
                     {
                         ParamName = member.TryGetProperty("name", out JsonElement memberName) ? memberName.GetString() ?? $"Member{index}" : $"Member{index}",
-                        Index = offset,
+                        ByteOffset = offset,
                         ParamType = paramType,
                         Rows = rows,
                         Columns = columns,

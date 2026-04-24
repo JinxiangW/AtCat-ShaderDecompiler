@@ -386,7 +386,7 @@ internal sealed class StructuredCBufferRewriter
         var members = new List<StructuredMemberLayout>();
         int maxAvailableByteOffset = flatBuffer.ArrayLength * 16;
 
-        foreach (ConstantBufferParameter parameter in flatBuffer.ConstantBuffer.CBParams.OrderBy(static parameter => parameter.Index))
+        foreach (ConstantBufferParameter parameter in flatBuffer.ConstantBuffer.CBParams.OrderBy(static parameter => parameter.ByteOffset))
         {
             StructuredMemberLayout? member = TryCreateScalarOrVectorMember(parameter, maxAvailableByteOffset);
             if (member == null)
@@ -456,7 +456,7 @@ internal sealed class StructuredCBufferRewriter
 
     private static StructuredMemberLayout? TryCreateScalarOrVectorMember(ConstantBufferParameter parameter, int maxAvailableByteOffset)
     {
-        if (parameter.Index < 0 || parameter.Index >= maxAvailableByteOffset)
+        if (parameter.ByteOffset < 0 || parameter.ByteOffset >= maxAvailableByteOffset)
         {
             return null;
         }
@@ -470,11 +470,11 @@ internal sealed class StructuredCBufferRewriter
         return new StructuredMemberLayout
         {
             Name = parameter.ParamName,
-            ByteOffset = parameter.Index,
+            ByteOffset = parameter.ByteOffset,
             Metadata = parameter,
             LogicalType = logicalType,
-            RegisterOffset = parameter.Index / 16,
-            RegisterCount = GetRequiredRegisterCount(parameter.Index, logicalType)
+            RegisterOffset = parameter.ByteOffset / 16,
+            RegisterCount = GetRequiredRegisterCount(parameter.ByteOffset, logicalType)
         };
     }
 
@@ -487,9 +487,9 @@ internal sealed class StructuredCBufferRewriter
 
         var childMembers = new List<StructuredMemberLayout>();
         int structEnd = Math.Min(maxAvailableByteOffset, structParameter.Index + Math.Max(structParameter.StructSize, 0));
-        foreach (ConstantBufferParameter child in structParameter.CBParams.OrderBy(static parameter => parameter.Index))
+        foreach (ConstantBufferParameter child in structParameter.CBParams.OrderBy(static parameter => parameter.ByteOffset))
         {
-            if (child.Index < structParameter.Index || child.Index >= structEnd)
+            if (child.ByteOffset < structParameter.Index || child.ByteOffset >= structEnd)
             {
                 continue;
             }
@@ -503,11 +503,11 @@ internal sealed class StructuredCBufferRewriter
             childMembers.Add(new StructuredMemberLayout
             {
                 Name = child.ParamName,
-                ByteOffset = child.Index - structParameter.Index,
+                ByteOffset = child.ByteOffset - structParameter.Index,
                 Metadata = child,
                 LogicalType = childType,
-                RegisterOffset = (child.Index - structParameter.Index) / 16,
-                RegisterCount = GetRequiredRegisterCount(child.Index - structParameter.Index, childType)
+                RegisterOffset = (child.ByteOffset - structParameter.Index) / 16,
+                RegisterCount = GetRequiredRegisterCount(child.ByteOffset - structParameter.Index, childType)
             });
         }
 
@@ -570,7 +570,7 @@ internal sealed class StructuredCBufferRewriter
             Columns = parameter.Columns,
             ArrayLength = Math.Max(parameter.ArraySize, 1),
             DeclaredByteSize = GetDeclaredByteSize(parameter),
-            UscIndex = parameter.Index,
+            UscIndex = parameter.ByteOffset,
             IsMatrix = parameter.IsMatrix
         };
     }

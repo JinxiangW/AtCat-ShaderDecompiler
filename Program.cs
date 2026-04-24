@@ -1334,7 +1334,7 @@ namespace Ruri.ShaderTools
                 throw new InvalidOperationException($"Missing USC metadata dimensions for parameter '{parameter.ParamName}'.");
             }
 
-            if (parameter.Index < 0)
+            if (parameter.ByteOffset < 0)
             {
                 throw new InvalidOperationException($"Missing USC metadata byte index for parameter '{parameter.ParamName}'.");
             }

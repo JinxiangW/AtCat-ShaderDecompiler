@@ -337,11 +337,11 @@ public class SpirvPatcher
             {
                 int? targetIndex = null;
 
-                if (parameter.Index >= 0 && match.MemberOffsets.Count > 0)
+                if (parameter.ByteOffset >= 0 && match.MemberOffsets.Count > 0)
                 {
                     foreach (var offsetKvp in match.MemberOffsets)
                     {
-                        if (offsetKvp.Value == (uint)parameter.Index)
+                        if (offsetKvp.Value == (uint)parameter.ByteOffset)
                         {
                             targetIndex = offsetKvp.Key;
                             break;

@@ -8,7 +8,7 @@ public sealed class MatrixParameter : NumericShaderParameter
     {
         Name = name;
         NameIndex = -1;
-        Index = index;
+        ByteOffset = index;
         ArraySize = 0;
         Type = type;
         RowCount = unchecked((byte)rowCount);

@@ -8,5 +8,5 @@ public class ConstantBufferParameter
     public int Columns;
     public bool IsMatrix;
     public int ArraySize;
-    public int Index;
+    public int ByteOffset;
 }
