@@ -126,13 +126,12 @@ internal static class SpirvReflectionMetadataExtractor
             };
 
             int binding = ReadIntProperty(ubo, "binding");
-            metadata.Resources.Add(new ResourceBinding
+            metadata.ConstantBufferBindings.Add(new BufferBinding
             {
                 Name = resourceName,
                 Set = 0,
-                Binding = binding,
-                Type = ShaderResourceType.ConstantBuffer,
-                RegisterType = 'b',
+                Index = binding,
+                ArraySize = 0,
             });
 
             if (types.TryGetValue(typeId, out JsonElement typeInfo) && typeInfo.TryGetProperty("members", out JsonElement members) && members.ValueKind == JsonValueKind.Array)
@@ -176,14 +175,44 @@ internal static class SpirvReflectionMetadataExtractor
                 continue;
             }
 
-            metadata.Resources.Add(new ResourceBinding
+            int binding = ReadIntProperty(resource, "binding");
+            string normalizedName = NormalizeTypePrefixedName(name);
+            switch (registerType)
             {
-                Name = NormalizeTypePrefixedName(name),
-                Set = 0,
-                Binding = ReadIntProperty(resource, "binding"),
-                Type = InferConcreteResourceType(resourceType, resource),
-                RegisterType = registerType,
-            });
+                case 's':
+                    metadata.Samplers.Add(new SamplerParameter
+                    {
+                        Sampler = 0,
+                        Set = 0,
+                        Index = binding,
+                    });
+                    break;
+                case 'u':
+                    metadata.UAVs.Add(new UAVParameter
+                    {
+                        Name = normalizedName,
+                        Set = 0,
+                        Index = binding,
+                        OriginalIndex = 0,
+                    });
+                    break;
+                default:
+                    metadata.TextureParameters.Add(new TextureParameter
+                    {
+                        Name = normalizedName,
+                        Set = 0,
+                        Index = binding,
+                        SamplerIndex = -1,
+                        MultiSampled = false,
+                        Dim = InferConcreteResourceType(resourceType, resource) switch
+                        {
+                            ShaderResourceType.Texture3D => 3,
+                            ShaderResourceType.TextureCube => 4,
+                            _ => 2,
+                        },
+                    });
+                    break;
+            }
         }
     }
 
@@ -200,14 +229,28 @@ internal static class SpirvReflectionMetadataExtractor
             string name = buffer.TryGetProperty("name", out JsonElement nameElement) ? nameElement.GetString() ?? string.Empty : string.Empty;
             string typeName = buffer.TryGetProperty("type", out JsonElement typeElement) ? typeElement.GetString() ?? string.Empty : string.Empty;
 
-            metadata.Resources.Add(new ResourceBinding
+            int binding = ReadIntProperty(buffer, "binding");
+            string normalizedName = NormalizeTypePrefixedName(name);
+            if (isReadonly)
             {
-                Name = NormalizeTypePrefixedName(name),
-                Set = 0,
-                Binding = ReadIntProperty(buffer, "binding"),
-                Type = InferStorageBufferType(isReadonly, typeName),
-                RegisterType = isReadonly ? 't' : 'u',
-            });
+                metadata.Buffers.Add(new BufferBinding
+                {
+                    Name = normalizedName,
+                    Set = 0,
+                    Index = binding,
+                    ArraySize = 0,
+                });
+            }
+            else
+            {
+                metadata.UAVs.Add(new UAVParameter
+                {
+                    Name = normalizedName,
+                    Set = 0,
+                    Index = binding,
+                    OriginalIndex = 0,
+                });
+            }
         }
     }
 

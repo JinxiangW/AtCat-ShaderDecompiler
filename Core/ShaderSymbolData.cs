@@ -1,5 +1,3 @@
-using Newtonsoft.Json;
-
 namespace Ruri.ShaderDecompiler;
 
 public class ShaderSymbolData
@@ -13,9 +11,6 @@ public class ShaderSymbolData
     public string EntryPoint { get; set; } = "main";
     public ShaderStage Stage { get; set; } = ShaderStage.Unknown;
     public string? DebugName { get; set; }
-
-    [JsonIgnore]
-    public List<ResourceBinding> Resources { get; set; } = new();
 
     public IEnumerable<(string Name, int Index, char RegisterType)> EnumerateBindings()
     {
@@ -45,6 +40,39 @@ public class ShaderSymbolData
         }
     }
 
+    public IEnumerable<(string Name, int Binding, int Set, ShaderResourceType Type, char RegisterType)> EnumerateResourceBindings()
+    {
+        foreach (BufferBinding binding in ConstantBufferBindings)
+        {
+            yield return (binding.Name, binding.Index, binding.Set, ShaderResourceType.ConstantBuffer, 'b');
+        }
+
+        foreach (TextureParameter texture in TextureParameters)
+        {
+            yield return (texture.Name, texture.Index, texture.Set, ShaderResourceType.Texture, 't');
+        }
+
+        foreach (SamplerParameter sampler in Samplers)
+        {
+            yield return ($"sampler_{sampler.Index}", sampler.Index, sampler.Set, ShaderResourceType.Sampler, 's');
+        }
+
+        foreach (BufferBinding buffer in Buffers)
+        {
+            yield return (buffer.Name, buffer.Index, buffer.Set, ShaderResourceType.StructuredBuffer, 't');
+        }
+
+        foreach (UAVParameter uav in UAVs)
+        {
+            yield return (uav.Name, uav.Index, uav.Set, ShaderResourceType.UAV, 'u');
+        }
+    }
+
+    public int GetResourceBindingCount()
+    {
+        return ConstantBufferBindings.Count + TextureParameters.Count + Samplers.Count + Buffers.Count + UAVs.Count;
+    }
+
     public bool HasAnyBindings()
     {
         return ConstantBufferBindings.Count > 0
@@ -71,48 +99,6 @@ public class ShaderSymbolData
                     .ToList();
             }
         }
-
-        Resources.Clear();
-        Resources.AddRange(ConstantBufferBindings.Select(static binding => new ResourceBinding
-        {
-            Name = binding.Name,
-            Binding = binding.Index,
-            Set = binding.Set,
-            Type = ShaderResourceType.ConstantBuffer,
-            RegisterType = 'b',
-        }));
-        Resources.AddRange(TextureParameters.Select(static texture => new ResourceBinding
-        {
-            Name = texture.Name,
-            Binding = texture.Index,
-            Set = texture.Set,
-            Type = ShaderResourceType.Texture,
-            RegisterType = 't',
-        }));
-        Resources.AddRange(Samplers.Select(static sampler => new ResourceBinding
-        {
-            Name = $"sampler_{sampler.Index}",
-            Binding = sampler.Index,
-            Set = sampler.Set,
-            Type = ShaderResourceType.Sampler,
-            RegisterType = 's',
-        }));
-        Resources.AddRange(Buffers.Select(static buffer => new ResourceBinding
-        {
-            Name = buffer.Name,
-            Binding = buffer.Index,
-            Set = buffer.Set,
-            Type = ShaderResourceType.StructuredBuffer,
-            RegisterType = 't',
-        }));
-        Resources.AddRange(UAVs.Select(static uav => new ResourceBinding
-        {
-            Name = uav.Name,
-            Binding = uav.Index,
-            Set = uav.Set,
-            Type = ShaderResourceType.UAV,
-            RegisterType = 'u',
-        }));
     }
 
     private static ConstantBufferParameter ToCompatibilityParameter(NumericShaderParameter parameter)

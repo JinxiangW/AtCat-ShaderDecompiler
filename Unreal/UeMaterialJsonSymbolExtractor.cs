@@ -143,7 +143,7 @@ internal sealed class UeMaterialJsonSymbolExtractor
 
         DeduplicateResources(metadata);
         string header = BuildHeader(materialPath, shaderPlatform, usedLoadedResources, fMaterialParameterInfoLines, fMaterialTextureParameterInfoLines, fRHIUniformBufferLayoutInitializerResourceLines, shaderSideBindingLines);
-        int score = usedLoadedResources ? 2 : metadata.Resources.Count > 0 || fMaterialParameterInfoLines.Count > 0 ? 1 : 0;
+        int score = usedLoadedResources ? 2 : metadata.GetResourceBindingCount() > 0 || fMaterialParameterInfoLines.Count > 0 ? 1 : 0;
 
         return new UeMaterialSymbolInfo(materialPath, metadata, header, score, usedLoadedResources);
     }
@@ -997,12 +997,29 @@ internal sealed class UeMaterialJsonSymbolExtractor
 
     private static void DeduplicateResources(ShaderSymbolData metadata)
     {
-        HashSet<string> seen = new(StringComparer.Ordinal);
-        metadata.Resources.RemoveAll(resource =>
-        {
-            string key = $"{resource.Set}:{resource.Binding}:{resource.RegisterType}:{resource.Name}";
-            return !seen.Add(key);
-        });
+        metadata.ConstantBufferBindings = DeduplicateBindings(metadata.ConstantBufferBindings)
+            .ToList();
+        metadata.TextureParameters = metadata.TextureParameters
+            .GroupBy(resource => $"{resource.Set}:{resource.Index}:t:{resource.Name}", StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToList();
+        metadata.Samplers = metadata.Samplers
+            .GroupBy(resource => $"{resource.Set}:{resource.Index}:s", StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToList();
+        metadata.Buffers = DeduplicateBindings(metadata.Buffers)
+            .ToList();
+        metadata.UAVs = metadata.UAVs
+            .GroupBy(resource => $"{resource.Set}:{resource.Index}:u:{resource.Name}", StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToList();
+    }
+
+    private static IEnumerable<BufferBinding> DeduplicateBindings(IEnumerable<BufferBinding> bindings)
+    {
+        return bindings
+            .GroupBy(binding => $"{binding.Set}:{binding.Index}:{binding.Name}", StringComparer.Ordinal)
+            .Select(group => group.First());
     }
 
     private static string BuildHeader(

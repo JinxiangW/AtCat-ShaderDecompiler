@@ -117,7 +117,7 @@ public sealed class ShaderDecompiler : IDisposable
             finalMetadata.RefreshCompatibilityViews();
             NormalizeConstantBuffersForAlignment(finalMetadata);
             finalMetadata.RefreshCompatibilityViews();
-            Console.WriteLine($"[Decompile] merged resources={finalMetadata.Resources.Count} constantBuffers={finalMetadata.ConstantBuffers.Count}");
+            Console.WriteLine($"[Decompile] merged resources={finalMetadata.GetResourceBindingCount()} constantBuffers={finalMetadata.ConstantBuffers.Count}");
             foreach (ConstantBuffer constantBuffer in finalMetadata.ConstantBuffers)
             {
                 Console.WriteLine($"[Decompile]   CB {constantBuffer.Name} members={constantBuffer.CBParams.Count} structs={constantBuffer.StructParams.Length}");
@@ -206,7 +206,6 @@ public sealed class ShaderDecompiler : IDisposable
         if (bundleSymbols != null)
         {
             merged = ConvertMetadata(bundleSymbols);
-            merged.RefreshCompatibilityViews();
         }
 
         if (explicitMetadata == null)
@@ -269,15 +268,6 @@ public sealed class ShaderDecompiler : IDisposable
                 existing.Index == uav.Index &&
                 string.Equals(existing.Name, uav.Name, StringComparison.Ordinal));
             merged.UAVs.Add(CloneUavParameter(uav));
-        }
-
-        foreach (var resource in explicitMetadata.Resources)
-        {
-            merged.Resources.RemoveAll(r =>
-                r.Set == resource.Set &&
-                r.Binding == resource.Binding &&
-                r.RegisterType == resource.RegisterType);
-            merged.Resources.Add(CloneResource(resource));
         }
 
         foreach (var constantBuffer in explicitMetadata.ConstantBuffers)
@@ -511,15 +501,62 @@ public sealed class ShaderDecompiler : IDisposable
 
         foreach (var resource in symbols.Resources)
         {
-            data.Resources.Add(new ResourceBinding
+            switch (ConvertResourceType(resource.Type))
             {
-                Name = resource.Name ?? string.Empty,
-                Set = resource.Set,
-                Binding = resource.Binding,
-                Type = ConvertResourceType(resource.Type),
-                RegisterType = GuessRegisterType(ConvertResourceType(resource.Type)),
-                Tag = resource.Slot ?? 0
-            });
+                case ShaderResourceType.ConstantBuffer:
+                    data.ConstantBufferBindings.Add(new BufferBinding
+                    {
+                        Name = resource.Name ?? string.Empty,
+                        Set = resource.Set,
+                        Index = resource.Binding,
+                        ArraySize = 0,
+                    });
+                    break;
+                case ShaderResourceType.Sampler:
+                    data.Samplers.Add(new SamplerParameter
+                    {
+                        Sampler = 0,
+                        Set = resource.Set,
+                        Index = resource.Binding,
+                    });
+                    break;
+                case ShaderResourceType.UAV:
+                case ShaderResourceType.RWBuffer:
+                case ShaderResourceType.RWStructuredBuffer:
+                case ShaderResourceType.RWByteAddressBuffer:
+                case ShaderResourceType.StorageBuffer:
+                case ShaderResourceType.StorageImage:
+                    data.UAVs.Add(new UAVParameter
+                    {
+                        Name = resource.Name ?? string.Empty,
+                        Set = resource.Set,
+                        Index = resource.Binding,
+                        OriginalIndex = resource.Slot ?? 0,
+                    });
+                    break;
+                case ShaderResourceType.StructuredBuffer:
+                case ShaderResourceType.Buffer:
+                case ShaderResourceType.ByteAddressBuffer:
+                    data.Buffers.Add(new BufferBinding
+                    {
+                        Name = resource.Name ?? string.Empty,
+                        Set = resource.Set,
+                        Index = resource.Binding,
+                        ArraySize = 0,
+                    });
+                    break;
+                default:
+                    data.TextureParameters.Add(new TextureParameter
+                    {
+                        Name = resource.Name ?? string.Empty,
+                        Set = resource.Set,
+                        Index = resource.Binding,
+                        SamplerIndex = -1,
+                        MultiSampled = false,
+                        Dim = 2,
+                    });
+                    break;
+            }
         }
 
         return data;
@@ -668,7 +705,7 @@ public sealed class ShaderDecompiler : IDisposable
         // Do not add HLSL-side renaming back here. If a DXIL case still comes out with
         // names like _8 / _29 / ViewData_1_ViewProjection, the bug must be fixed in the
         // SPIR-V analysis or patch logic below, not by resurrecting PostProcessHlsl().
-        if (metadata.Resources.Count == 0)
+        if (metadata.GetResourceBindingCount() == 0)
         {
             return spirv;
         }
@@ -677,7 +714,7 @@ public sealed class ShaderDecompiler : IDisposable
         var patches = new List<(uint Id, string Name)>();
         var memberPatches = new List<(uint TypeId, uint MemberIndex, string Name)>();
 
-        foreach (var resource in metadata.Resources)
+        foreach (var resource in metadata.EnumerateResourceBindings())
         {
             if (string.IsNullOrWhiteSpace(resource.Name))
             {
@@ -753,17 +790,17 @@ public sealed class ShaderDecompiler : IDisposable
 
     private bool HasStructuredConstantBuffers(byte[] spirv, ShaderSymbolData metadata)
     {
-        if (metadata.Resources.Count == 0)
+        if (metadata.ConstantBufferBindings.Count == 0)
         {
             return false;
         }
 
         var detailedBindings = _patcher.AnalyzeBindingsDetailed(spirv);
-        foreach (var resource in metadata.Resources.Where(IsMetadataConstantBuffer))
+        foreach (BufferBinding resource in metadata.ConstantBufferBindings)
         {
             bool matchedStructuredBuffer = detailedBindings.Any(binding =>
                 binding.Set == resource.Set
-                && binding.Binding == resource.Binding
+                && binding.Binding == resource.Index
                 && string.Equals(binding.DescriptorType, "UniformBuffer", StringComparison.Ordinal)
                 && binding.StructMemberCount > 1);
 
@@ -774,11 +811,6 @@ public sealed class ShaderDecompiler : IDisposable
         }
 
         return false;
-    }
-
-    private static bool IsMetadataConstantBuffer(ResourceBinding resource)
-    {
-        return resource.RegisterType == 'b';
     }
 
     private static bool IsRegisterTypeMatch(char registerType, string? descriptorType)
@@ -794,7 +826,7 @@ public sealed class ShaderDecompiler : IDisposable
         };
     }
 
-    private static bool IsMetadataResourceMatch(ResourceBinding resource, string? descriptorType)
+    private static bool IsMetadataResourceMatch((string Name, int Binding, int Set, ShaderResourceType Type, char RegisterType) resource, string? descriptorType)
     {
         if (!IsRegisterTypeMatch(resource.RegisterType, descriptorType))
         {
@@ -1124,19 +1156,6 @@ public sealed class ShaderDecompiler : IDisposable
             "SampledImage" => normalized == ShaderResourceType.Texture || normalized == ShaderResourceType.UAV || normalized == ShaderResourceType.RWBuffer || normalized == ShaderResourceType.StructuredBuffer || normalized == ShaderResourceType.StorageBuffer,
             "StorageImage" => normalized == ShaderResourceType.UAV || normalized == ShaderResourceType.StorageImage,
             _ => true
-        };
-    }
-
-    private static ResourceBinding CloneResource(ResourceBinding resource)
-    {
-        return new ResourceBinding
-        {
-            Name = resource.Name,
-            Binding = resource.Binding,
-            Set = resource.Set,
-            Type = resource.Type,
-            Tag = resource.Tag,
-            RegisterType = resource.RegisterType,
         };
     }
 

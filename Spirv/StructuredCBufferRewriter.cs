@@ -27,7 +27,7 @@ internal sealed class StructuredCBufferRewriter
         ConstantMaps constants = BuildConstantMaps(module);
         TypeInfo types = AnalyzeTypes(module, analysis);
 
-        summary.Add($"Metadata resources={metadata.Resources.Count}, constantBuffers={metadata.ConstantBuffers.Count}");
+        summary.Add($"Metadata resources={metadata.GetResourceBindingCount()}, constantBuffers={metadata.ConstantBuffers.Count}");
         summary.Add($"Analyzed decoratedIds={analysis.SetBindingById.Count}, variables={analysis.VariablePointerTypes.Count}, pointers={analysis.PointerTypes.Count}, structs={analysis.StructMembers.Count}, arrays={analysis.ArrayTypes.Count}");
 
         List<FlatUniformBufferInfo> flatBuffers = BuildFlatUniformBuffers(metadata, analysis, summary);
@@ -169,7 +169,7 @@ internal sealed class StructuredCBufferRewriter
     private static List<FlatUniformBufferInfo> BuildFlatUniformBuffers(ShaderSymbolData metadata, ModuleAnalysis analysis, List<string> summary)
     {
         var result = new List<FlatUniformBufferInfo>();
-        foreach (ResourceBinding resource in metadata.Resources.Where(static resource => resource.RegisterType == 'b'))
+        foreach (BufferBinding resource in metadata.ConstantBufferBindings)
         {
             ConstantBuffer? constantBuffer = metadata.ConstantBuffers.FirstOrDefault(cb => string.Equals(cb.Name, resource.Name, StringComparison.Ordinal));
             if (constantBuffer == null)
@@ -180,7 +180,7 @@ internal sealed class StructuredCBufferRewriter
 
             uint? variableId = analysis.SetBindingById
                 .Where(static entry => entry.Value.Set.HasValue && entry.Value.Binding.HasValue)
-                .Where(entry => entry.Value.Set == resource.Set && entry.Value.Binding == resource.Binding)
+                    .Where(entry => entry.Value.Set == resource.Set && entry.Value.Binding == resource.Index)
                 .Select(entry => entry.Key)
                 .FirstOrDefault(id =>
                     analysis.VariablePointerTypes.TryGetValue(id, out uint candidatePointerTypeId) &&
@@ -189,7 +189,7 @@ internal sealed class StructuredCBufferRewriter
 
             if (variableId == 0)
             {
-                summary.Add($"[{resource.Name}] no decorated id for set={resource.Set} binding={resource.Binding}");
+                summary.Add($"[{resource.Name}] no decorated id for set={resource.Set} binding={resource.Index}");
                 continue;
             }
 
@@ -232,7 +232,12 @@ internal sealed class StructuredCBufferRewriter
                 ElementTypeId = arrayInfo.ElementTypeId,
                 ArrayLength = checked((int)arrayLength),
                 ArrayStride = arrayStride,
-                Metadata = resource,
+                Metadata = new FlatResourceBinding
+                {
+                    Name = resource.Name,
+                    Binding = resource.Index,
+                    Set = resource.Set,
+                },
                 ConstantBuffer = constantBuffer
             });
         }
@@ -1945,7 +1950,14 @@ internal sealed class StructuredCBufferRewriter
         public uint ElementTypeId { get; set; }
         public int ArrayLength { get; set; }
         public int ArrayStride { get; set; }
-        public ResourceBinding Metadata { get; set; } = null!;
+        public FlatResourceBinding Metadata { get; set; } = null!;
         public ConstantBuffer ConstantBuffer { get; set; } = null!;
+    }
+
+    private sealed class FlatResourceBinding
+    {
+        public string Name { get; set; } = string.Empty;
+        public int Binding { get; set; }
+        public int Set { get; set; }
     }
 }

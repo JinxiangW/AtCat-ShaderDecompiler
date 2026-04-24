@@ -193,7 +193,7 @@ public class SpirvPatcher
     }
 
     /// <summary>
-    /// Patches SPIR-V by injecting OpName instructions directly using SPIR-V IDs from ResourceBinding.Tag.
+    /// Patches SPIR-V names using binding analysis plus typed metadata.
     /// </summary>
     public byte[] PatchByIds(byte[] spirvBytes, List<(uint Id, string Name)> names, List<(uint TypeId, uint MemberIndex, string Name)>? memberNames = null)
     {
@@ -290,31 +290,22 @@ public class SpirvPatcher
     }
 
     /// <summary>
-    /// Legacy method for compatibility.
+    /// Legacy compatibility entry point. The current pipeline uses AnalyzeBindingsDetailed()
+    /// plus PatchByIds(); typed metadata no longer carries direct SPIR-V ids.
     /// </summary>
     public byte[] Patch(byte[] spirvBytes, ShaderSymbolData symbols)
     {
-        var names = symbols.Resources
-            .Where(r => r.Tag > 0)
-            .Select(r => ((uint)r.Tag, r.Name))
-            .ToList();
-
         var memberNames = new List<(uint TypeId, uint MemberIndex, string Name)>();
         var detailed = AnalyzeBindingsDetailed(spirvBytes);
-        foreach (var resource in symbols.Resources)
+        foreach (BufferBinding resource in symbols.ConstantBufferBindings)
         {
-            if (resource.RegisterType != 'b')
-            {
-                continue;
-            }
-
             ConstantBuffer? constantBuffer = symbols.ConstantBuffers.FirstOrDefault(cb => string.Equals(cb.Name, resource.Name, StringComparison.Ordinal));
             if (constantBuffer == null)
             {
                 continue;
             }
 
-            var match = detailed.FirstOrDefault(b => b.Set == resource.Set && b.Binding == resource.Binding && b.StructTypeId.HasValue);
+            var match = detailed.FirstOrDefault(b => b.Set == resource.Set && b.Binding == resource.Index && b.StructTypeId.HasValue);
             if (match?.StructTypeId == null)
             {
                 continue;
@@ -365,10 +356,9 @@ public class SpirvPatcher
             }
         }
         
-        if (names.Count > 0 || memberNames.Count > 0)
-            return PatchByIds(spirvBytes, names, memberNames);
+        if (memberNames.Count > 0)
+            return PatchByIds(spirvBytes, [], memberNames);
 
-        // Fallback to old behavior if Tags not set
         return spirvBytes;
     }
 
