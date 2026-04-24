@@ -346,7 +346,6 @@ namespace Ruri.ShaderTools.Unreal
 
                             metadata.ShaderName = System.Text.Encoding.ASCII.GetString(nameBytes, 0, stringLength);
                             metadata.ShaderCodeName = new FShaderCodeName { Value = metadata.ShaderName };
-                            Console.WriteLine($"[Debug] Found Shader Name: {metadata.ShaderName}");
                         }
                     }
                     else if (key == FShaderCodeVendorExtension.Key)
