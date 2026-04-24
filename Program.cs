@@ -1140,7 +1140,9 @@ namespace Ruri.ShaderTools
             try
             {
                 byte[] dxbc = File.ReadAllBytes(dxbcPath);
-                using var decompiler = new ShaderDecompiler(outputDir);
+                string tempRoot = Path.Combine(Path.GetTempPath(), "RuriShaderDecompiler", "UnityBinarySession");
+                Directory.CreateDirectory(tempRoot);
+                using var decompiler = new ShaderDecompiler(tempRoot);
                 DecompileResult result = decompiler.Decompile(dxbc, ShaderArchitecture.Dxbc, metadata, 50);
                 if (!result.Success || string.IsNullOrWhiteSpace(result.HlslSource) || result.IntermediateSpirv == null)
                 {
