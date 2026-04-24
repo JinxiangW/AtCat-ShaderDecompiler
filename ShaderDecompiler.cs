@@ -317,7 +317,7 @@ public sealed class ShaderDecompiler : IDisposable
                 FlushAlignmentGroup(
                     ordered.Select(CloneParameter).ToList(),
                     0,
-                    Math.Max(constantBuffer.UsedSize, ordered[0].Index),
+                    Math.Max(constantBuffer.Size, ordered[0].Index),
                     wrappedStructs,
                     [],
                     ref syntheticStructureIndex);
@@ -352,7 +352,7 @@ public sealed class ShaderDecompiler : IDisposable
             FlushAlignmentGroup(
                 syntheticGroup,
                 syntheticGroup[0].Index,
-                Math.Max(constantBuffer.UsedSize, syntheticGroup[0].Index),
+                Math.Max(constantBuffer.Size, syntheticGroup[0].Index),
                 syntheticStructs,
                 preservedTopLevel,
                 ref structureIndex);
@@ -401,7 +401,7 @@ public sealed class ShaderDecompiler : IDisposable
             Name = $"_DummyStruct{structureIndex++}",
             Index = groupStart,
             ArraySize = 1,
-            Size = Math.Max(0, groupEnd - groupStart),
+            StructSize = Math.Max(0, groupEnd - groupStart),
             CBParams = BuildAlignedSyntheticStructMembers(group, groupStart, groupEnd)
         });
     }
@@ -1216,8 +1216,8 @@ public sealed class ShaderDecompiler : IDisposable
                 ColumnCount = parameter.ColumnCount,
                 IsMatrix = parameter.IsMatrix,
             }).ToArray(),
-            UsedSize = constantBuffer.UsedSize,
-            Partial = constantBuffer.Partial,
+            Size = constantBuffer.Size,
+            IsPartialCB = constantBuffer.IsPartialCB,
             CBParams = constantBuffer.CBParams.Select(parameter => new ConstantBufferParameter
             {
                 ParamName = parameter.ParamName,
@@ -1234,7 +1234,7 @@ public sealed class ShaderDecompiler : IDisposable
                 NameIndex = structParameter.NameIndex,
                 Index = structParameter.Index,
                 ArraySize = structParameter.ArraySize,
-                Size = structParameter.Size,
+                StructSize = structParameter.StructSize,
                 MatrixMembers = structParameter.MatrixMembers.Select(parameter => new MatrixParameter
                 {
                     Name = parameter.Name,

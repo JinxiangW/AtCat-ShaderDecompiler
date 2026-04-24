@@ -1,8 +1,7 @@
+using Ruri.ShaderDecompiler.Intermediate;
 using System;
 using System.Collections.Generic;
 using System.IO;
-using Ruri.ShaderDecompiler.Intermediate;
-
 namespace Ruri.ShaderDecompiler.Unreal
 {
     public class UnrealShaderParser

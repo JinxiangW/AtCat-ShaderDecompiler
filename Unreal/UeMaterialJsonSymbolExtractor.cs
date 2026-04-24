@@ -692,7 +692,7 @@ internal sealed class UeMaterialJsonSymbolExtractor
         ConstantBuffer materialBuffer = new()
         {
             Name = "Material",
-            UsedSize = checked((int)constantBufferSize)
+            Size = checked((int)constantBufferSize)
         };
 
         var seenOffsets = new HashSet<int>();

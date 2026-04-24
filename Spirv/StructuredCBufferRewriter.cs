@@ -481,7 +481,7 @@ internal sealed class StructuredCBufferRewriter
         }
 
         var childMembers = new List<StructuredMemberLayout>();
-        int structEnd = Math.Min(maxAvailableByteOffset, structParameter.Index + Math.Max(structParameter.Size, 0));
+        int structEnd = Math.Min(maxAvailableByteOffset, structParameter.Index + Math.Max(structParameter.StructSize, 0));
         foreach (ConstantBufferParameter child in structParameter.CBParams.OrderBy(static parameter => parameter.Index))
         {
             if (child.Index < structParameter.Index || child.Index >= structEnd)

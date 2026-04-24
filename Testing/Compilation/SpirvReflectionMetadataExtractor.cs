@@ -120,8 +120,8 @@ internal static class SpirvReflectionMetadataExtractor
             var cbuffer = new ConstantBuffer
             {
                 Name = resourceName,
-                UsedSize = ReadIntProperty(ubo, "block_size"),
-                Partial = false,
+                Size = ReadIntProperty(ubo, "block_size"),
+                IsPartialCB = false,
                 CBParams = new List<ConstantBufferParameter>(),
             };
 
