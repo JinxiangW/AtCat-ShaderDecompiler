@@ -6,6 +6,7 @@ using Ruri.ShaderTools;
 using Ruri.ShaderTools.Engine;
 using System.Linq;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Ruri.ShaderTools.Spirv;
 using Ruri.ShaderTools.Testing.Compilation;
 using Ruri.ShaderTools.Unreal;
@@ -121,12 +122,13 @@ namespace Ruri.ShaderTools
                 
                 if (result.Success)
                 {
+                    string sourceText = result.SourceCode ?? result.HlslSource ?? string.Empty;
                     if (outputPath != null) 
                     {
                         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
-                        File.WriteAllText(outputPath, result.HlslSource);
+                        File.WriteAllText(outputPath, sourceText);
                     }
-                    else Console.WriteLine(result.HlslSource);
+                    else Console.WriteLine(sourceText);
                     return 0;
                 }
                 else
@@ -406,7 +408,8 @@ namespace Ruri.ShaderTools
                             else finalName = "UnknownShader";
                             
                             finalName = string.Join("_", finalName.Split(Path.GetInvalidFileNameChars()));
-                            string outName = $"{finalName}_{typeSuffix}_{i}.hlsl";
+                            string sourceExtension = string.IsNullOrWhiteSpace(res.SourceFileExtension) ? ".hlsl" : res.SourceFileExtension;
+                            string outName = $"{finalName}_{typeSuffix}_{i}{sourceExtension}";
                              ShaderSymbolData? injectionSymbols = null;
                              
                             // Inject Header
@@ -493,12 +496,18 @@ namespace Ruri.ShaderTools
                                       }
                                   }
 
-                                 res.HlslSource = sb.ToString() + res.HlslSource;
+                                  string sourceText = res.SourceCode ?? res.HlslSource ?? string.Empty;
+                                  sourceText = sb.ToString() + sourceText;
+                                  res.SourceCode = sourceText;
+                                  if (string.Equals(res.SourceLanguage, "hlsl", StringComparison.OrdinalIgnoreCase))
+                                  {
+                                      res.HlslSource = sourceText;
+                                  }
                             }
 
                             string outputFilePath = Path.Combine(outputPath, outName);
                             string basePath = Path.Combine(outputPath, Path.GetFileNameWithoutExtension(outName));
-                            File.WriteAllText(outputFilePath, res.HlslSource);
+                            File.WriteAllText(outputFilePath, res.SourceCode ?? res.HlslSource ?? string.Empty);
 
                             if (res.FinalMetadata != null)
                             {
@@ -894,7 +903,8 @@ namespace Ruri.ShaderTools
                     try
                     {
                         var result = decompiler.Decompile(inputCase.Binary, inputCase.Format, metadata, 60);
-                        if (!result.Success || string.IsNullOrWhiteSpace(result.HlslSource))
+                        string sourceText = result.SourceCode ?? result.HlslSource ?? string.Empty;
+                        if (!result.Success || string.IsNullOrWhiteSpace(sourceText))
                         {
                             if (stage.AllowKnownBackendLimitations && IsKnownSelfTestBackendLimitation(result.ErrorMessage))
                             {
@@ -906,14 +916,20 @@ namespace Ruri.ShaderTools
                         }
 
                         string basePath = Path.Combine(decompiledRoot, $"Decompiled.{stage.Name}.{inputCase.Name}");
-                        File.WriteAllText(basePath + ".hlsl", result.HlslSource);
+                        string sourceExtension = string.IsNullOrWhiteSpace(result.SourceFileExtension) ? ".hlsl" : result.SourceFileExtension;
+                        File.WriteAllText(basePath + sourceExtension, sourceText);
+                        if (!string.Equals(sourceExtension, ".hlsl", StringComparison.OrdinalIgnoreCase))
+                        {
+                            File.WriteAllText(basePath + ".hlsl", sourceText);
+                        }
+                        File.WriteAllText(basePath + ".language.txt", result.SourceLanguage ?? "hlsl");
                         if (result.IntermediateSpirv != null)
                         {
                             File.WriteAllBytes(basePath + ".spv", result.IntermediateSpirv);
                             WriteSelfTestBindingDiagnostics(basePath + ".bindings.txt", result.IntermediateSpirv);
                         }
 
-                        foreach (string validationFailure in ValidateSelfTestResult(stage, metadata, inputCase.Name, result.HlslSource, result.IntermediateSpirv))
+                        foreach (string validationFailure in ValidateSelfTestResult(stage, metadata, inputCase.Name, sourceText, result.IntermediateSpirv))
                         {
                             failures.Add(validationFailure);
                         }
@@ -930,7 +946,7 @@ namespace Ruri.ShaderTools
             }
         }
 
-        static IEnumerable<string> ValidateSelfTestResult(SelfTestStageSpec stage, ShaderSymbolData metadata, string caseName, string hlsl, byte[]? spirv)
+        static IEnumerable<string> ValidateSelfTestResult(SelfTestStageSpec stage, ShaderSymbolData metadata, string caseName, string source, byte[]? spirv)
         {
             List<string> failures = new();
 
@@ -940,7 +956,7 @@ namespace Ruri.ShaderTools
                 return failures;
             }
 
-            if (!hlsl.Contains("main(", StringComparison.Ordinal) && !hlsl.Contains("main ", StringComparison.Ordinal))
+            if (!source.Contains("main(", StringComparison.Ordinal) && !source.Contains("main ", StringComparison.Ordinal) && !source.Contains("patch_main(", StringComparison.Ordinal))
             {
                 failures.Add($"[{stage.Name}/{caseName}] Missing main entry point.");
             }
@@ -953,10 +969,10 @@ namespace Ruri.ShaderTools
 
              foreach (ConstantBuffer constantBuffer in metadata.ConstantBuffers)
              {
-                 if (!ContainsSelfTestToken(hlsl, spirv, constantBuffer.Name))
-                 {
-                     failures.Add($"[{stage.Name}/{caseName}] Missing reflected resource symbol: {constantBuffer.Name}");
-                 }
+                  if (!ContainsSelfTestToken(source, spirv, constantBuffer.Name))
+                  {
+                      failures.Add($"[{stage.Name}/{caseName}] Missing reflected resource symbol: {constantBuffer.Name}");
+                  }
 
                  List<ConstantBufferParameter> allParameters = GetAllConstantBufferParameters(constantBuffer);
                  if (allParameters.Count == 0)
@@ -966,7 +982,7 @@ namespace Ruri.ShaderTools
 
                  if (ShouldAllowCompressedMatrixMembers(constantBuffer))
                  {
-                     bool hasAnyMember = allParameters.Any(parameter => ContainsSelfTestToken(hlsl, spirv, parameter.ParamName));
+                      bool hasAnyMember = allParameters.Any(parameter => ContainsSelfTestToken(source, spirv, parameter.ParamName));
                      if (!hasAnyMember)
                      {
                          failures.Add($"[{stage.Name}/{caseName}] Missing reflected member symbols for compressed matrix buffer: {constantBuffer.Name}");
@@ -977,19 +993,19 @@ namespace Ruri.ShaderTools
 
                  foreach (ConstantBufferParameter parameter in allParameters)
                  {
-                     if (!ContainsSelfTestToken(hlsl, spirv, parameter.ParamName))
-                     {
-                         failures.Add($"[{stage.Name}/{caseName}] Missing reflected member symbol: {constantBuffer.Name}.{parameter.ParamName}");
-                     }
+                      if (!ContainsSelfTestToken(source, spirv, parameter.ParamName))
+                      {
+                          failures.Add($"[{stage.Name}/{caseName}] Missing reflected member symbol: {constantBuffer.Name}.{parameter.ParamName}");
+                      }
                  }
              }
 
              foreach (var resource in metadata.EnumerateResourceBindings().Where(r => r.RegisterType != 'b'))
              {
-                 if (!ContainsSelfTestToken(hlsl, spirv, resource.Name))
-                 {
-                     failures.Add($"[{stage.Name}/{caseName}] Missing reflected resource symbol: {resource.Name}");
-                 }
+                  if (!ContainsSelfTestToken(source, spirv, resource.Name))
+                  {
+                      failures.Add($"[{stage.Name}/{caseName}] Missing reflected resource symbol: {resource.Name}");
+                  }
              }
 
             return failures;
@@ -1006,14 +1022,14 @@ namespace Ruri.ShaderTools
             return allParameters.All(parameter => parameter.IsMatrix && parameter.Rows == 4 && parameter.Columns == 4);
         }
 
-        static bool ContainsSelfTestToken(string hlsl, byte[]? spirv, string token)
+        static bool ContainsSelfTestToken(string source, byte[]? spirv, string token)
         {
             if (string.IsNullOrWhiteSpace(token))
             {
                 return true;
             }
 
-            if (!string.IsNullOrEmpty(hlsl) && hlsl.Contains(token, StringComparison.Ordinal))
+            if (!string.IsNullOrEmpty(source) && source.Contains(token, StringComparison.Ordinal))
             {
                 return true;
             }
@@ -1143,7 +1159,8 @@ namespace Ruri.ShaderTools
                 Directory.CreateDirectory(tempRoot);
                 using var decompiler = new ShaderDecompiler(tempRoot);
                 DecompileResult result = decompiler.Decompile(dxbc, ShaderArchitecture.Dxbc, metadata, 50);
-                if (!result.Success || string.IsNullOrWhiteSpace(result.HlslSource) || result.IntermediateSpirv == null)
+                string sourceText = result.SourceCode ?? result.HlslSource ?? string.Empty;
+                if (!result.Success || string.IsNullOrWhiteSpace(sourceText) || result.IntermediateSpirv == null)
                 {
                     string error = result.ErrorMessage ?? "Unknown decompilation failure.";
                     File.WriteAllText(Path.Combine(outputDir, "unitybinary.error.txt"), error);
@@ -1159,10 +1176,18 @@ namespace Ruri.ShaderTools
                     File.Delete(errorPath);
                 }
 
-                File.WriteAllText(Path.Combine(outputDir, "unitybinary.hlsl"), result.HlslSource);
+                string sourceExtension = string.IsNullOrWhiteSpace(result.SourceFileExtension) ? ".hlsl" : result.SourceFileExtension;
+                string legacyHlslPath = Path.Combine(outputDir, "unitybinary.hlsl");
+                string sourcePath = Path.Combine(outputDir, "unitybinary" + sourceExtension);
+                File.WriteAllText(sourcePath, sourceText);
+                if (!string.Equals(sourcePath, legacyHlslPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    File.WriteAllText(legacyHlslPath, sourceText);
+                }
                 File.WriteAllBytes(Path.Combine(outputDir, "unitybinary.spv"), result.IntermediateSpirv);
                 File.WriteAllText(Path.Combine(outputDir, "unitybinary.metadata.json"), JsonConvert.SerializeObject(result.FinalMetadata ?? metadata, Formatting.Indented));
                 File.WriteAllText(Path.Combine(outputDir, "unitybinary.rewrite.txt"), result.StructuredRewriteSummary ?? string.Empty);
+                File.WriteAllText(Path.Combine(outputDir, "unitybinary.language.txt"), result.SourceLanguage ?? "hlsl");
                 WriteSelfTestBindingDiagnostics(Path.Combine(outputDir, "unitybinary.bindings.txt"), result.IntermediateSpirv);
                 Console.WriteLine($"UnityBinary session output: {outputDir}");
                 return 0;
@@ -1406,6 +1431,7 @@ namespace Ruri.ShaderTools
                 ShaderSymbolData? parsed = JsonConvert.DeserializeObject<ShaderSymbolData>(json);
                 if (parsed != null)
                 {
+                    UpgradeLegacySelfTestMetadata(json, parsed);
                     NormalizeMetadataToUscLayout(parsed);
                     return parsed;
                 }
@@ -1424,6 +1450,92 @@ namespace Ruri.ShaderTools
                 {
                     ValidateUscLayout(parameter);
                 }
+            }
+        }
+
+        static void UpgradeLegacySelfTestMetadata(string json, ShaderSymbolData metadata)
+        {
+            if (metadata.GetResourceBindingCount() > 0)
+            {
+                return;
+            }
+
+            try
+            {
+                JObject root = JObject.Parse(json);
+                if (root["Resources"] is not JArray resources)
+                {
+                    return;
+                }
+
+                foreach (JToken resource in resources)
+                {
+                    string name = resource.Value<string>("Name") ?? string.Empty;
+                    if (string.IsNullOrWhiteSpace(name))
+                    {
+                        continue;
+                    }
+
+                    int binding = resource.Value<int?>("Binding") ?? 0;
+                    int set = resource.Value<int?>("Set") ?? 0;
+                    char registerType = (resource.Value<string>("RegisterType") ?? string.Empty).FirstOrDefault();
+
+                    switch (registerType)
+                    {
+                        case 'b':
+                            if (!metadata.ConstantBufferBindings.Any(existing => existing.Set == set && existing.Index == binding && string.Equals(existing.Name, name, StringComparison.Ordinal)))
+                            {
+                                metadata.ConstantBufferBindings.Add(new BufferBinding
+                                {
+                                    Name = name,
+                                    Set = set,
+                                    Index = binding,
+                                    ArraySize = 0,
+                                });
+                            }
+                            break;
+                        case 't':
+                            if (!metadata.TextureParameters.Any(existing => existing.Set == set && existing.Index == binding && string.Equals(existing.Name, name, StringComparison.Ordinal)))
+                            {
+                                metadata.TextureParameters.Add(new TextureParameter
+                                {
+                                    Name = name,
+                                    Set = set,
+                                    Index = binding,
+                                    SamplerIndex = -1,
+                                    MultiSampled = false,
+                                    Dim = 2,
+                                });
+                            }
+                            break;
+                        case 's':
+                            if (!metadata.Samplers.Any(existing => existing.Set == set && existing.Index == binding))
+                            {
+                                metadata.Samplers.Add(new SamplerParameter
+                                {
+                                    Set = set,
+                                    Index = binding,
+                                    Sampler = (uint)binding,
+                                });
+                            }
+                            break;
+                        case 'u':
+                            if (!metadata.UAVs.Any(existing => existing.Set == set && existing.Index == binding && string.Equals(existing.Name, name, StringComparison.Ordinal)))
+                            {
+                                metadata.UAVs.Add(new UAVParameter
+                                {
+                                    Name = name,
+                                    Set = set,
+                                    Index = binding,
+                                    OriginalIndex = binding,
+                                });
+                            }
+                            break;
+                    }
+                }
+            }
+            catch
+            {
             }
         }
 
