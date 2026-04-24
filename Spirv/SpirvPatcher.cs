@@ -299,7 +299,7 @@ public class SpirvPatcher
         var detailed = AnalyzeBindingsDetailed(spirvBytes);
         foreach (BufferBinding resource in symbols.ConstantBufferBindings)
         {
-            ConstantBuffer? constantBuffer = symbols.ConstantBuffers.FirstOrDefault(cb => string.Equals(cb.Name, resource.Name, StringComparison.Ordinal));
+            ConstantBuffer? constantBuffer = symbols.GetConstantBufferByName(resource.Name);
             if (constantBuffer == null)
             {
                 continue;

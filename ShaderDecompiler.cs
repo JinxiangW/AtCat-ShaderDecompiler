@@ -221,7 +221,7 @@ public sealed class ShaderDecompiler : IDisposable
         foreach (var resource in metadata.EnumerateResourceBindings().Where(static r => r.RegisterType == 'b' && !string.IsNullOrWhiteSpace(r.Name)))
             foreach (SpirvBindingInfo binding in Match(bindings, resource).Where(static b => b.DescriptorType == "UniformBuffer" && b.StructTypeId is > 0))
             {
-                ConstantBuffer? cb = metadata.ConstantBuffers.FirstOrDefault(c => string.Equals(c.Name, Name(resource, binding), StringComparison.Ordinal));
+                ConstantBuffer? cb = metadata.GetConstantBufferByName(Name(resource, binding));
                 if (cb == null) continue;
                 result.AddRange(MemberPatches(binding, cb));
             }
