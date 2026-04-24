@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -24,6 +24,12 @@
     <EmbeddedResource Remove="Tools\Compat\**\*.resx" />
     <EmbeddedResource Remove="Tools\src\**\*.resx" />
     <EmbeddedResource Remove="Tools\build\**\*.resx" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Tools\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>
