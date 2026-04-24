@@ -48,17 +48,39 @@ public class ShaderSymbolData
     {
         foreach (ConstantBuffer constantBuffer in ConstantBuffers)
         {
-            constantBuffer.CBParams = constantBuffer.AllNumericParams
+            List<ConstantBufferParameter> regeneratedParameters = constantBuffer.AllNumericParams
                 .Select(ToCompatibilityParameter)
                 .OrderBy(static parameter => parameter.ByteOffset)
                 .ToList();
 
+            if (regeneratedParameters.Count > 0)
+            {
+                constantBuffer.CBParams = regeneratedParameters;
+            }
+            else if (constantBuffer.CBParams.Count > 1)
+            {
+                constantBuffer.CBParams = constantBuffer.CBParams
+                    .OrderBy(static parameter => parameter.ByteOffset)
+                    .ToList();
+            }
+
             foreach (StructParameter structParameter in constantBuffer.StructParams)
             {
-                structParameter.CBParams = structParameter.AllNumericMembers
+                List<ConstantBufferParameter> regeneratedStructParameters = structParameter.AllNumericMembers
                     .Select(ToCompatibilityParameter)
                     .OrderBy(static parameter => parameter.ByteOffset)
                     .ToList();
+
+                if (regeneratedStructParameters.Count > 0)
+                {
+                    structParameter.CBParams = regeneratedStructParameters;
+                }
+                else if (structParameter.CBParams.Count > 1)
+                {
+                    structParameter.CBParams = structParameter.CBParams
+                        .OrderBy(static parameter => parameter.ByteOffset)
+                        .ToList();
+                }
             }
         }
     }

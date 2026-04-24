@@ -372,7 +372,7 @@ internal sealed class StructuredCBufferRewriter
             return false;
         }
 
-        return layout.MaxUsedRegisterCount > 0 && layout.MaxUsedRegisterCount <= flatBuffer.ArrayLength;
+        return layout.Members.Count > 0 && layout.Members.Any(member => member.RegisterOffset < flatBuffer.ArrayLength);
     }
 
     private static StructuredBufferLayout? BuildStructuredLayout(FlatUniformBufferInfo flatBuffer)

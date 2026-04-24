@@ -248,8 +248,16 @@ public sealed class ShaderDecompiler : IDisposable
 
         foreach (var constantBuffer in explicitMetadata.ConstantBuffers)
         {
-            merged.ConstantBuffers.RemoveAll(cb => string.Equals(cb.Name, constantBuffer.Name, StringComparison.Ordinal));
-            merged.ConstantBuffers.Add(CloneConstantBuffer(constantBuffer));
+            ConstantBuffer cloned = CloneConstantBuffer(constantBuffer);
+            int existingIndex = merged.ConstantBuffers.FindIndex(cb => string.Equals(cb.Name, constantBuffer.Name, StringComparison.Ordinal));
+            if (existingIndex < 0)
+            {
+                merged.ConstantBuffers.Add(cloned);
+                continue;
+            }
+
+            ConstantBuffer existing = merged.ConstantBuffers[existingIndex];
+            merged.ConstantBuffers[existingIndex] = SelectPreferredConstantBuffer(existing, cloned);
         }
 
         merged.RefreshCompatibilityViews();
@@ -331,6 +339,41 @@ public sealed class ShaderDecompiler : IDisposable
             constantBuffer.CBParams = preservedTopLevel.OrderBy(static parameter => parameter.ByteOffset).ToList();
             constantBuffer.StructParams = constantBuffer.StructParams.Concat(syntheticStructs).ToArray();
         }
+    }
+
+    private static ConstantBuffer SelectPreferredConstantBuffer(ConstantBuffer left, ConstantBuffer right)
+    {
+        int leftScore = ScoreConstantBuffer(left);
+        int rightScore = ScoreConstantBuffer(right);
+        if (rightScore > leftScore)
+        {
+            return right;
+        }
+
+        if (leftScore > rightScore)
+        {
+            return left;
+        }
+
+        if (right.IsPartialCB && !left.IsPartialCB)
+        {
+            return right;
+        }
+
+        if (left.IsPartialCB && !right.IsPartialCB)
+        {
+            return left;
+        }
+
+        return right;
+    }
+
+    private static int ScoreConstantBuffer(ConstantBuffer constantBuffer)
+    {
+        int topLevelCount = constantBuffer.CBParams.Count;
+        int structCount = constantBuffer.StructParams.Sum(static structParameter => structParameter.CBParams.Count);
+        int numericCount = constantBuffer.AllNumericParams.Count();
+        return (topLevelCount * 100) + (structCount * 100) + (numericCount * 10) + (constantBuffer.IsPartialCB ? 1 : 0);
     }
 
     private static bool IsNaturalTopLevelParameter(ConstantBufferParameter parameter)
