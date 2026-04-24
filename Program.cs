@@ -2,22 +2,31 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
-using Ruri.ShaderDecompiler;
-using Ruri.ShaderDecompiler.Engine;
-using Ruri.ShaderDecompiler.Utils;
+using Ruri.ShaderTools;
+using Ruri.ShaderTools.Engine;
 using System.Linq;
 using Newtonsoft.Json;
-using Ruri.ShaderDecompiler.Intermediate;
-using Ruri.ShaderDecompiler.Spirv;
-using Ruri.ShaderDecompiler.Testing.Compilation;
-using Ruri.ShaderDecompiler.Unreal;
+using Ruri.ShaderTools.Spirv;
+using Ruri.ShaderTools.Testing.Compilation;
+using Ruri.ShaderTools.Unreal;
 
-namespace Ruri.ShaderDecompiler
+namespace Ruri.ShaderTools
 {
     class Program
     {
         static int Main(string[] args)
         {
+            if (args.Length >= 1 && string.Equals(args[0], "--unitybinary-litpoly-selftest", StringComparison.OrdinalIgnoreCase))
+            {
+                string? outputDir = args.Length > 1 ? args[1] : null;
+                return RunUnityBinaryLitPolySelfTest(outputDir);
+            }
+
+            if (args.Length >= 1 && string.Equals(args[0], "--unitybinary-session", StringComparison.OrdinalIgnoreCase))
+            {
+                return RunUnityBinarySession(args);
+            }
+
             if (args.Length >= 1 && string.Equals(args[0], "--selftest", StringComparison.OrdinalIgnoreCase))
             {
                 string outputRoot = args.Length > 1
@@ -313,7 +322,7 @@ namespace Ruri.ShaderDecompiler
                             
                             finalName = string.Join("_", finalName.Split(Path.GetInvalidFileNameChars()));
                             string outName = $"{finalName}_{typeSuffix}_{i}.hlsl";
-                            ShaderSymbolData? injectionSymbols = null;
+                             ShaderSymbolData? injectionSymbols = null;
                              
                             // Inject Header
                             if (usageMap.TryGetValue(i, out var usedBy))
@@ -325,58 +334,46 @@ namespace Ruri.ShaderDecompiler
                                  sb.AppendLine($" * Stage: {typeSuffix}");
                                  sb.AppendLine($" * Used by {usedBy.Count} Materials:");
                                  
-                                 // Try to find a material with runtime metadata
                                   UeMaterialSymbolInfo? bestMaterialInfo = null;
-                                   string bestMaterialName = "";
-                                   string shaderPlatformForShader = entry.Frequency switch
-                                   {
-                                       0 or 1 or 2 or 3 or 4 or 5 => "SP_PCD3D_SM5",
-                                       _ => string.Empty
-                                   };
+                                  string bestMaterialName = string.Empty;
+                                  string shaderPlatformForShader = entry.Frequency switch
+                                  {
+                                      0 or 1 or 2 or 3 or 4 or 5 => "SP_PCD3D_SM5",
+                                      _ => string.Empty
+                                  };
 
-                                   foreach(var m in usedBy) 
-                                   {
-                                       if (bestMaterialInfo == null && materialSymbolExtractor != null)
-                                       {
-                                           bestMaterialInfo = materialSymbolExtractor.GetMaterial(m, shaderPlatformForShader);
-                                           if (bestMaterialInfo != null) 
-                                           {
-                                               bestMaterialName = m;
-                                              Console.WriteLine($"[调试] 成功匹配: '{m}'");
+                                  foreach (string material in usedBy)
+                                  {
+                                      if (bestMaterialInfo == null && materialSymbolExtractor != null)
+                                      {
+                                          bestMaterialInfo = materialSymbolExtractor.GetMaterial(material, shaderPlatformForShader);
+                                          if (bestMaterialInfo != null)
+                                          {
+                                              bestMaterialName = material;
                                           }
-                                         else
-                                         {
-                                            // Only log first few failures to avoid spam
-                                            if (usedBy.Count < 5) Console.WriteLine($"[调试] 匹配失败: '{m}'");
-                                         }
-                                     }
-                                     
-                                     // Limit list in header
-                                     if (usedBy.Count <= 20 || m == bestMaterialName)
-                                         sb.AppendLine($" *  - {m}");
-                                 }
+                                      }
+
+                                      if (usedBy.Count <= 20 || string.Equals(material, bestMaterialName, StringComparison.Ordinal))
+                                      {
+                                          sb.AppendLine($" *  - {material}");
+                                      }
+                                  }
                                  
                                  if(usedBy.Count > 20) sb.AppendLine($" *  ... and {usedBy.Count-20} more");
                                   sb.AppendLine(" */");
                                   sb.AppendLine("");
 
-                                   // Inject runtime material metadata & prepare symbols.
                                   if (bestMaterialInfo != null)
                                   {
-                                      Console.WriteLine($"[信息] Shader {i} 匹配到材质: {bestMaterialName} ({(bestMaterialInfo.UsedLoadedResources ? "LoadedMaterialResources" : "PropertiesFallback")})");
                                       sb.Append(bestMaterialInfo.Header);
                                       injectionSymbols = bestMaterialInfo.Metadata;
                                   }
-                                  else
-                                  {
-                                      // Console.WriteLine($"[警告] Shader {i} 未找到运行时材质元数据");
-                                  }
 
-                                   if (res.UnrealOptionalDataKeys is { Count: > 0 })
-                                   {
-                                       sb.AppendLine("/*");
-                                       sb.AppendLine(" * UE Shader Tail Optional Data");
-                                       sb.AppendLine($" * FShaderCodeName: {res.UnrealShaderCodeName ?? res.ShaderName ?? "unknown"}");
+                                  if (res.UnrealOptionalDataKeys is { Count: > 0 })
+                                  {
+                                        sb.AppendLine("/*");
+                                        sb.AppendLine(" * UE Shader Tail Optional Data");
+                                        sb.AppendLine($" * FShaderCodeName: {res.UnrealShaderCodeName ?? res.ShaderName ?? "unknown"}");
                                        sb.AppendLine($" * OptionalDataKeys: {string.Join(", ", res.UnrealOptionalDataKeys)}");
                                        sb.AppendLine($" * FShaderCodePackedResourceCounts: {res.UnrealShaderCodePackedResourceCounts ?? "<absent>"}");
                                        sb.AppendLine($" * FShaderCodeResourceMasks: {res.UnrealShaderCodeResourceMasks ?? "<absent>"}");
@@ -391,41 +388,25 @@ namespace Ruri.ShaderDecompiler
                                        {
                                            sb.AppendLine(" * FShaderCodeUniformBuffers: <absent>");
                                        }
-                                       sb.AppendLine(" */");
-                                       sb.AppendLine("");
-                                   }
+                                        sb.AppendLine(" */");
+                                        sb.AppendLine("");
+                                  }
 
-                                 // Re-decompile with symbols if available to get native variable names
-                                   if (injectionSymbols != null)
+                                  if (injectionSymbols != null)
                                   {
-                                      Console.WriteLine($"[符号元数据] Shader {i} resources={injectionSymbols.Resources.Count} constantBuffers={injectionSymbols.ConstantBuffers.Count}");
-                                      foreach (ConstantBuffer constantBuffer in injectionSymbols.ConstantBuffers)
+                                      try
                                       {
-                                          Console.WriteLine($"[符号元数据]   CB {constantBuffer.Name} members={constantBuffer.CBParams.Count} structs={constantBuffer.StructParams.Count}");
-                                      }
-
-                                      try 
-                                      {
-                                          // Decompile again, this time with symbols which will be patched into SPIR-V
-                                          var resWithSymbols = decompiler.Decompile(code, ShaderFormat.Unknown, injectionSymbols, 50);
-                                         if (resWithSymbols.Success)
-                                         {
-                                              if (!string.IsNullOrWhiteSpace(resWithSymbols.StructuredRewriteSummary))
-                                              {
-                                                  Console.WriteLine($"[结构化CB] Shader {i}\n{resWithSymbols.StructuredRewriteSummary}");
-                                              }
+                                          DecompileResult resWithSymbols = decompiler.Decompile(code, ShaderFormat.Unknown, injectionSymbols, 50);
+                                          if (resWithSymbols.Success)
+                                          {
                                               res = resWithSymbols;
-                                         }
-                                         else
-                                         {
-                                              Console.WriteLine($"[警告] 符号注入重编译失败 (HLSL生成错误): {resWithSymbols.ErrorMessage}");
-                                         }
-                                     }
-                                     catch (Exception ex) 
-                                     {
-                                         Console.WriteLine($"[警告] 符号注入重编译异常: {ex.Message}");
-                                     }
-                                 }
+                                          }
+                                      }
+                                      catch (Exception ex)
+                                      {
+                                          Console.Error.WriteLine($"Symbol-injected redecompile failed: {ex.Message}");
+                                      }
+                                  }
 
                                  res.HlslSource = sb.ToString() + res.HlslSource;
                             }
@@ -879,7 +860,7 @@ namespace Ruri.ShaderDecompiler
                 failures.Add($"[{stage.Name}/{caseName}] Missing main entry point.");
             }
 
-             if (metadata.Resources.Count == 0 && metadata.ConstantBuffers.Count == 0)
+             if (metadata.GetResourceBindingCount() == 0 && metadata.ConstantBuffers.Count == 0)
              {
                  failures.Add($"[{stage.Name}/{caseName}] Reflected metadata contains no resources.");
                  return failures;
@@ -918,7 +899,7 @@ namespace Ruri.ShaderDecompiler
                  }
              }
 
-             foreach (ResourceBinding resource in metadata.Resources.Where(r => r.RegisterType != 'b'))
+             foreach (var resource in metadata.EnumerateResourceBindings().Where(r => r.RegisterType != 'b'))
              {
                  if (!ContainsSelfTestToken(hlsl, spirv, resource.Name))
                  {
@@ -1029,6 +1010,122 @@ namespace Ruri.ShaderDecompiler
             Directory.CreateDirectory(path);
         }
 
+        static int RunUnityBinarySession(string[] args)
+        {
+            if (args.Length < 3)
+            {
+                Console.Error.WriteLine("Usage: ShaderDecompiler.exe --unitybinary-session <dxbc.bin> <metadata.json> [outputDir]");
+                return 1;
+            }
+
+            string dxbcPath = Path.GetFullPath(args[1]);
+            string metadataPath = Path.GetFullPath(args[2]);
+            string outputDir = args.Length > 3
+                ? Path.GetFullPath(args[3])
+                : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Testing", "Session");
+
+            if (!File.Exists(dxbcPath))
+            {
+                Console.Error.WriteLine($"Error: DXBC file not found: {dxbcPath}");
+                return 1;
+            }
+
+            if (!File.Exists(metadataPath))
+            {
+                Console.Error.WriteLine($"Error: metadata file not found: {metadataPath}");
+                return 1;
+            }
+
+            ShaderSymbolData metadata;
+            try
+            {
+                string metadataJson = File.ReadAllText(metadataPath);
+                metadata = JsonConvert.DeserializeObject<ShaderSymbolData>(metadataJson)
+                    ?? throw new InvalidOperationException($"Failed to deserialize metadata: {metadataPath}");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Error: failed to load metadata: {ex.Message}");
+                return 1;
+            }
+
+            RecreateDirectory(outputDir);
+
+            try
+            {
+                byte[] dxbc = File.ReadAllBytes(dxbcPath);
+                using var decompiler = new ShaderDecompiler(outputDir);
+                DecompileResult result = decompiler.Decompile(dxbc, ShaderFormat.Dxbc, metadata, 50);
+                if (!result.Success || string.IsNullOrWhiteSpace(result.HlslSource) || result.IntermediateSpirv == null)
+                {
+                    string error = result.ErrorMessage ?? "Unknown decompilation failure.";
+                    File.WriteAllText(Path.Combine(outputDir, "unitybinary.error.txt"), error);
+                    Console.Error.WriteLine(error);
+                    return 1;
+                }
+
+                // Keep this session output deterministic so Unity partial-cbuffer fixes can be
+                // iterated offline against the exact same artifacts every run.
+                File.WriteAllText(Path.Combine(outputDir, "unitybinary.hlsl"), result.HlslSource);
+                File.WriteAllBytes(Path.Combine(outputDir, "unitybinary.spv"), result.IntermediateSpirv);
+                File.WriteAllText(Path.Combine(outputDir, "unitybinary.metadata.json"), JsonConvert.SerializeObject(result.FinalMetadata ?? metadata, Formatting.Indented));
+                File.WriteAllText(Path.Combine(outputDir, "unitybinary.rewrite.txt"), result.StructuredRewriteSummary ?? string.Empty);
+                WriteSelfTestBindingDiagnostics(Path.Combine(outputDir, "unitybinary.bindings.txt"), result.IntermediateSpirv);
+                Console.WriteLine($"UnityBinary session output: {outputDir}");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(Path.Combine(outputDir, "unitybinary.error.txt"), ex.ToString());
+                Console.Error.WriteLine($"UnityBinary session failed: {ex.Message}");
+                return 1;
+            }
+        }
+
+        static int RunUnityBinaryLitPolySelfTest(string? outputDir)
+        {
+            string assetRoot = ResolveUnityBinaryLitPolyAssetRoot();
+            string sessionRoot = string.IsNullOrWhiteSpace(outputDir)
+                ? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Testing", "Session", "UnityBinary", "litpoly")
+                : Path.GetFullPath(outputDir);
+
+            RecreateDirectory(sessionRoot);
+
+            string[] metadataFiles = Directory.GetFiles(assetRoot, "*.metadata.json", SearchOption.TopDirectoryOnly)
+                .OrderBy(static path => path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (metadataFiles.Length == 0)
+            {
+                Console.Error.WriteLine($"Error: no litpoly metadata files found under {assetRoot}");
+                return 1;
+            }
+
+            int failures = 0;
+            foreach (string metadataPath in metadataFiles)
+            {
+                string fileName = Path.GetFileName(metadataPath);
+                string dxbcPath = Path.Combine(assetRoot, fileName.Replace(".metadata.json", ".dxbc.bin", StringComparison.OrdinalIgnoreCase));
+                if (!File.Exists(dxbcPath))
+                {
+                    Console.Error.WriteLine($"Error: matching DXBC file not found for {fileName}");
+                    failures++;
+                    continue;
+                }
+
+                string caseName = fileName.Replace(".HGBuffer.metadata.json", string.Empty, StringComparison.OrdinalIgnoreCase)
+                    .Replace(".metadata.json", string.Empty, StringComparison.OrdinalIgnoreCase);
+                string caseOutputDir = Path.Combine(sessionRoot, caseName);
+                int exitCode = RunUnityBinarySession(new[] { "--unitybinary-session", dxbcPath, metadataPath, caseOutputDir });
+                if (exitCode != 0)
+                {
+                    failures++;
+                }
+            }
+
+            Console.WriteLine($"UnityBinary litpoly self-test output: {sessionRoot}");
+            return failures == 0 ? 0 : 1;
+        }
+
         static void RunSelfTestProcess(string exePath, string arguments, string? expectedOutputPath = null)
         {
             var psi = new ProcessStartInfo
@@ -1066,6 +1163,29 @@ namespace Ruri.ShaderDecompiler
             }
 
             return Directory.EnumerateFiles(rootDir, fileName, SearchOption.AllDirectories).FirstOrDefault();
+        }
+
+        static string ResolveUnityBinaryLitPolyAssetRoot()
+        {
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string relativePath = Path.Combine("Testing", "Assets", "Shaders", "UnityBinary", "litpoly");
+            string[] roots =
+            {
+                Path.GetFullPath(Path.Combine(baseDir, "..", "..")),
+                baseDir,
+                Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..")),
+            };
+
+            foreach (string root in roots.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                string candidate = Path.Combine(root, relativePath);
+                if (Directory.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            throw new DirectoryNotFoundException($"UnityBinary litpoly asset root not found: {relativePath}");
         }
 
         static string? ResolveSelfTestDxcExecutable(string toolsDir)
