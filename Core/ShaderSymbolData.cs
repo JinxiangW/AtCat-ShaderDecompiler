@@ -12,34 +12,6 @@ public class ShaderSymbolData
     public ShaderStage Stage { get; set; } = ShaderStage.Unknown;
     public string? DebugName { get; set; }
 
-    public IEnumerable<(string Name, int Index, char RegisterType)> EnumerateBindings()
-    {
-        foreach (BufferBinding binding in ConstantBufferBindings)
-        {
-            yield return (binding.Name, binding.Index, 'b');
-        }
-
-        foreach (TextureParameter texture in TextureParameters)
-        {
-            yield return (texture.Name, texture.Index, 't');
-        }
-
-        foreach (SamplerParameter sampler in Samplers)
-        {
-            yield return ($"sampler_{sampler.Index}", sampler.Index, 's');
-        }
-
-        foreach (BufferBinding buffer in Buffers)
-        {
-            yield return (buffer.Name, buffer.Index, 't');
-        }
-
-        foreach (UAVParameter uav in UAVs)
-        {
-            yield return (uav.Name, uav.Index, 'u');
-        }
-    }
-
     public IEnumerable<(string Name, int Binding, int Set, ShaderResourceType Type, char RegisterType)> EnumerateResourceBindings()
     {
         foreach (BufferBinding binding in ConstantBufferBindings)
@@ -71,15 +43,6 @@ public class ShaderSymbolData
     public int GetResourceBindingCount()
     {
         return ConstantBufferBindings.Count + TextureParameters.Count + Samplers.Count + Buffers.Count + UAVs.Count;
-    }
-
-    public bool HasAnyBindings()
-    {
-        return ConstantBufferBindings.Count > 0
-            || TextureParameters.Count > 0
-            || Samplers.Count > 0
-            || Buffers.Count > 0
-            || UAVs.Count > 0;
     }
 
     public void RefreshCompatibilityViews()

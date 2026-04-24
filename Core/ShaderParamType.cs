@@ -16,5 +16,4 @@ public enum ShaderParamType
     Half = 3,
     Short = 4,
     UInt = 5,
-    TypeCount = 6,
 }
