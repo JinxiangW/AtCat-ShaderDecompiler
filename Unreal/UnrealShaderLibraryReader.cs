@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 
-namespace Ruri.ShaderDecompiler.Engine
+namespace Ruri.ShaderTools.Engine
 {
     public class UnrealShaderLibraryReader
     {

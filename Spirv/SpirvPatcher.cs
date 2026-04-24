@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace Ruri.ShaderDecompiler.Spirv;
+namespace Ruri.ShaderTools.Spirv;
 
 /// <summary>
 /// Detailed binding information for a SPIR-V variable.

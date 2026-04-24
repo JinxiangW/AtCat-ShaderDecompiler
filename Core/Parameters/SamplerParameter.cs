@@ -1,6 +1,6 @@
 using Newtonsoft.Json;
 
-namespace Ruri.ShaderDecompiler;
+namespace Ruri.ShaderTools;
 
 public sealed record class SamplerParameter
 {

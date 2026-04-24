@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 
-namespace Ruri.ShaderDecompiler.Testing.Compilation;
+namespace Ruri.ShaderTools.Testing.Compilation;
 
 internal static class SpirvReflectionMetadataExtractor
 {

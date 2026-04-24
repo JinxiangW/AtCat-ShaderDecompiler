@@ -4,9 +4,9 @@ using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text.Json;
-using Ruri.ShaderDecompiler.Unreal;
+using Ruri.ShaderTools.Unreal;
 
-namespace Ruri.ShaderDecompiler
+namespace Ruri.ShaderTools
 {
     public class ShaderBindingExtractor
     {

@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 
-namespace Ruri.ShaderDecompiler.Unreal
+namespace Ruri.ShaderTools.Unreal
 {
     /// <summary>
     /// Parses material JSON exports to extract all parameter values.

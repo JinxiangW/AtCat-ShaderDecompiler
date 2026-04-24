@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace Ruri.ShaderDecompiler.Native;
+namespace Ruri.ShaderTools.Native;
 
 /// <summary>
 /// P/Invoke wrapper for dxil-spirv-c-shared library (DXIL to SPIR-V conversion).

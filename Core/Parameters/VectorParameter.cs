@@ -1,4 +1,4 @@
-namespace Ruri.ShaderDecompiler;
+namespace Ruri.ShaderTools;
 
 public sealed class VectorParameter : NumericShaderParameter
 {

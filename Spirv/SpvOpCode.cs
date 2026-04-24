@@ -1,4 +1,4 @@
-namespace Ruri.ShaderDecompiler.Spirv;
+namespace Ruri.ShaderTools.Spirv;
 
 /// <summary>
 /// SPIR-V OpCodes needed for parsing and patching.

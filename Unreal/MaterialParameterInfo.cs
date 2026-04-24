@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace Ruri.ShaderDecompiler.Unreal
+namespace Ruri.ShaderTools.Unreal
 {
     /// <summary>
     /// Material parameter types from EMaterialParameterType (MaterialTypes.h)

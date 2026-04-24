@@ -4,7 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 
-namespace Ruri.ShaderDecompiler.Unreal;
+namespace Ruri.ShaderTools.Unreal;
 
 internal sealed class ShaderLibraryTruthSidecarResolver
 {

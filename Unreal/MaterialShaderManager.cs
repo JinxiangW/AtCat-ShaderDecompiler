@@ -8,7 +8,7 @@ using CUE4Parse.UE4.Objects.Core.Misc;
 using CUE4Parse.UE4.Versions;
 using CUE4Parse.Utils;
 
-namespace Ruri.ShaderDecompiler.Engine
+namespace Ruri.ShaderTools.Engine
 {
     public class MaterialShaderManager
     {

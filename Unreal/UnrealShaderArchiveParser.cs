@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Ruri.ShaderDecompiler.Engine;
+namespace Ruri.ShaderTools.Engine;
 
 /// <summary>
 /// Parses UE ShaderArchive JSON exported by FModel.

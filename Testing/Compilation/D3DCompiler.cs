@@ -1,7 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 
-namespace Ruri.ShaderDecompiler.Testing.Compilation;
+namespace Ruri.ShaderTools.Testing.Compilation;
 
 internal static class D3DCompiler
 {

@@ -1,4 +1,4 @@
-namespace Ruri.ShaderDecompiler.Spirv;
+namespace Ruri.ShaderTools.Spirv;
 
 internal sealed class StructuredCBufferRewriter
 {

@@ -5,7 +5,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 
-namespace Ruri.ShaderDecompiler.Unreal
+namespace Ruri.ShaderTools.Unreal
 {
     // Replicating UE Enums and Structs
     public enum EMaterialShaderMapUsage

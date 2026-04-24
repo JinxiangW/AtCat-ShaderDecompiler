@@ -1,14 +1,9 @@
-using System;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
-using System.Linq;
 using System.Text;
-using System.Text.RegularExpressions;
-using Ruri.ShaderDecompiler.Intermediate;
-using Ruri.ShaderDecompiler.Spirv;
+using Ruri.ShaderTools.Spirv;
+using Ruri.ShaderTools.Unreal;
 
-namespace Ruri.ShaderDecompiler;
+namespace Ruri.ShaderTools;
 
 /// <summary>
 /// The input shader binary format.

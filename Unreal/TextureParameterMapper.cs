@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 
-namespace Ruri.ShaderDecompiler.Unreal
+namespace Ruri.ShaderTools.Unreal
 {
     /// <summary>
     /// Utility class for parsing UE shader binding names.
