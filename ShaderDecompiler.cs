@@ -112,11 +112,6 @@ public sealed class ShaderDecompiler : IDisposable
             finalMetadata.RefreshCompatibilityViews();
             NormalizeConstantBuffersForAlignment(finalMetadata);
             finalMetadata.RefreshCompatibilityViews();
-            Console.WriteLine($"[Decompile] merged resources={finalMetadata.GetResourceBindingCount()} constantBuffers={finalMetadata.ConstantBuffers.Count}");
-            foreach (ConstantBuffer constantBuffer in finalMetadata.ConstantBuffers)
-            {
-                Console.WriteLine($"[Decompile]   CB {constantBuffer.Name} members={constantBuffer.CBParams.Count} structs={constantBuffer.StructParams.Length}");
-            }
 
             byte[] spirv = format switch
             {
@@ -452,11 +447,6 @@ public sealed class ShaderDecompiler : IDisposable
         }
     }
 
-    private static int AlignToRegister(int byteOffset)
-    {
-        return ((byteOffset + 15) / 16) * 16;
-    }
-
     private static int GetMetadataParameterByteSize(ConstantBufferParameter parameter)
     {
         if (parameter.IsMatrix)
@@ -783,31 +773,6 @@ public sealed class ShaderDecompiler : IDisposable
         return _patcher.PatchByIds(spirv, patches, memberPatches);
     }
 
-    private bool HasStructuredConstantBuffers(byte[] spirv, ShaderSymbolData metadata)
-    {
-        if (metadata.ConstantBufferBindings.Count == 0)
-        {
-            return false;
-        }
-
-        var detailedBindings = _patcher.AnalyzeBindingsDetailed(spirv);
-        foreach (BufferBinding resource in metadata.ConstantBufferBindings)
-        {
-            bool matchedStructuredBuffer = detailedBindings.Any(binding =>
-                binding.Set == resource.Set
-                && binding.Binding == resource.Index
-                && string.Equals(binding.DescriptorType, "UniformBuffer", StringComparison.Ordinal)
-                && binding.StructMemberCount > 1);
-
-            if (matchedStructuredBuffer)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     private static bool IsRegisterTypeMatch(char registerType, string? descriptorType)
     {
         return descriptorType switch
@@ -1091,20 +1056,6 @@ public sealed class ShaderDecompiler : IDisposable
             ResourceType.RWTexture => ShaderResourceType.RWTexture2D,
             ResourceType.RWBuffer => ShaderResourceType.RWBuffer,
             _ => ShaderResourceType.Unknown
-        };
-    }
-
-    private static char GuessRegisterType(ShaderResourceType type)
-    {
-        return NormalizeResourceType(type) switch
-        {
-            ShaderResourceType.ConstantBuffer => 'b',
-            ShaderResourceType.Sampler => 's',
-            ShaderResourceType.UAV => 'u',
-            ShaderResourceType.RWBuffer => 'u',
-            ShaderResourceType.StorageBuffer => 'u',
-            ShaderResourceType.StorageImage => 'u',
-            _ => 't'
         };
     }
 
