@@ -113,13 +113,12 @@ namespace Ruri.ShaderTools.Unreal
                 {
                     for (int i = 0; i < metadata.UniformBufferNames.Count; i++)
                     {
-                        bundle.Symbols.Resources.Add(new ResourceSymbol
+                        bundle.Symbols.ConstantBufferBindings.Add(new BufferBinding
                         {
                             Name = metadata.UniformBufferNames[i],
                             Set = 0,
-                            Binding = i,
-                            Type = ResourceType.UniformBuffer,
-                            Slot = i
+                            Index = i,
+                            ArraySize = 0,
                         });
                     }
                 }

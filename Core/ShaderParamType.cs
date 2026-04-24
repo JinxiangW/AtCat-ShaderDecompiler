@@ -1,6 +1,9 @@
+using Newtonsoft.Json;
+using Newtonsoft.Json.Converters;
+
 namespace Ruri.ShaderTools;
 
-
+[JsonConverter(typeof(StringEnumConverter))]
 public enum ShaderParamType
 {
     Float = 0,

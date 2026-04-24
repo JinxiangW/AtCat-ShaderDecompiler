@@ -13,8 +13,7 @@ internal static class SpirvReflectionMetadataExtractor
 
         var metadata = new ShaderSymbolData
         {
-            EntryPoint = TryReadEntryPoint(root, out ShaderStage stage) ?? "main",
-            Stage = stage,
+            EntryPoint = TryReadEntryPoint(root) ?? "main",
             DebugName = Path.GetFileNameWithoutExtension(spirvPath),
         };
 
@@ -76,9 +75,8 @@ internal static class SpirvReflectionMetadataExtractor
         return types;
     }
 
-    private static string? TryReadEntryPoint(JsonElement root, out ShaderStage stage)
+    private static string? TryReadEntryPoint(JsonElement root)
     {
-        stage = ShaderStage.Unknown;
         if (!root.TryGetProperty("entryPoints", out JsonElement entryPoints) || entryPoints.ValueKind != JsonValueKind.Array)
         {
             return null;
@@ -91,17 +89,6 @@ internal static class SpirvReflectionMetadataExtractor
         }
 
         string? entryName = first.TryGetProperty("name", out JsonElement nameElement) ? nameElement.GetString() : null;
-        string? mode = first.TryGetProperty("mode", out JsonElement modeElement) ? modeElement.GetString() : null;
-        stage = mode switch
-        {
-            "vert" => ShaderStage.Vertex,
-            "frag" => ShaderStage.Pixel,
-            "comp" => ShaderStage.Compute,
-            "geom" => ShaderStage.Geometry,
-            "tesc" => ShaderStage.TessellationControl,
-            "tese" => ShaderStage.TessellationEvaluation,
-            _ => ShaderStage.Unknown,
-        };
         return entryName;
     }
 

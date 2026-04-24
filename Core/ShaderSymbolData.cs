@@ -9,7 +9,6 @@ public class ShaderSymbolData
     public List<BufferBinding> Buffers { get; set; } = new();
     public List<UAVParameter> UAVs { get; set; } = new();
     public string EntryPoint { get; set; } = "main";
-    public ShaderStage Stage { get; set; } = ShaderStage.Unknown;
     public string? DebugName { get; set; }
 
     public IEnumerable<(string Name, int Binding, int Set, ShaderResourceType Type, char RegisterType)> EnumerateResourceBindings()

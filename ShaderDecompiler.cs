@@ -180,22 +180,13 @@ public sealed class ShaderDecompiler : IDisposable
         }
     }
 
-    public DecompileResult Decompile(
-        byte[] binary,
-        ShaderArchitecture format,
-        ShaderSymbolMetadata? symbols,
-        uint shaderModel = 50)
-    {
-        return Decompile(binary, format, ConvertMetadata(symbols), shaderModel);
-    }
-
-    private ShaderSymbolData MergeMetadata(ShaderSymbolMetadata? bundleSymbols, ShaderSymbolData? explicitMetadata)
+    private ShaderSymbolData MergeMetadata(ShaderSymbolData? bundleSymbols, ShaderSymbolData? explicitMetadata)
     {
         var merged = new ShaderSymbolData();
 
         if (bundleSymbols != null)
         {
-            merged = ConvertMetadata(bundleSymbols);
+            merged = CloneMetadata(bundleSymbols);
         }
 
         if (explicitMetadata == null)
@@ -206,11 +197,6 @@ public sealed class ShaderDecompiler : IDisposable
         if (!string.IsNullOrWhiteSpace(explicitMetadata.EntryPoint))
         {
             merged.EntryPoint = explicitMetadata.EntryPoint;
-        }
-
-        if (explicitMetadata.Stage != ShaderStage.Unknown)
-        {
-            merged.Stage = explicitMetadata.Stage;
         }
 
         if (!string.IsNullOrWhiteSpace(explicitMetadata.DebugName))
@@ -469,82 +455,6 @@ public sealed class ShaderDecompiler : IDisposable
             ArraySize = parameter.ArraySize,
             Index = parameter.Index
         };
-    }
-
-    private static ShaderSymbolData ConvertMetadata(ShaderSymbolMetadata? symbols)
-    {
-        var data = new ShaderSymbolData();
-        if (symbols == null)
-        {
-            return data;
-        }
-
-        if (!string.IsNullOrWhiteSpace(symbols.EntryPoint))
-        {
-            data.EntryPoint = symbols.EntryPoint;
-        }
-
-        foreach (var resource in symbols.Resources)
-        {
-            switch (ConvertResourceType(resource.Type))
-            {
-                case ShaderResourceType.ConstantBuffer:
-                    data.ConstantBufferBindings.Add(new BufferBinding
-                    {
-                        Name = resource.Name ?? string.Empty,
-                        Set = resource.Set,
-                        Index = resource.Binding,
-                        ArraySize = 0,
-                    });
-                    break;
-                case ShaderResourceType.Sampler:
-                    data.Samplers.Add(new SamplerParameter
-                    {
-                        Sampler = 0,
-                        Set = resource.Set,
-                        Index = resource.Binding,
-                    });
-                    break;
-                case ShaderResourceType.UAV:
-                case ShaderResourceType.RWBuffer:
-                case ShaderResourceType.RWStructuredBuffer:
-                case ShaderResourceType.RWByteAddressBuffer:
-                case ShaderResourceType.StorageBuffer:
-                case ShaderResourceType.StorageImage:
-                    data.UAVs.Add(new UAVParameter
-                    {
-                        Name = resource.Name ?? string.Empty,
-                        Set = resource.Set,
-                        Index = resource.Binding,
-                        OriginalIndex = resource.Slot ?? 0,
-                    });
-                    break;
-                case ShaderResourceType.StructuredBuffer:
-                case ShaderResourceType.Buffer:
-                case ShaderResourceType.ByteAddressBuffer:
-                    data.Buffers.Add(new BufferBinding
-                    {
-                        Name = resource.Name ?? string.Empty,
-                        Set = resource.Set,
-                        Index = resource.Binding,
-                        ArraySize = 0,
-                    });
-                    break;
-                default:
-                    data.TextureParameters.Add(new TextureParameter
-                    {
-                        Name = resource.Name ?? string.Empty,
-                        Set = resource.Set,
-                        Index = resource.Binding,
-                        SamplerIndex = -1,
-                        MultiSampled = false,
-                        Dim = 2,
-                    });
-                    break;
-            }
-        }
-
-        return data;
     }
 
     private static int? FindMemberIndexByMetadata(SpirvBindingInfo match, int byteOffset)
@@ -1044,21 +954,6 @@ public sealed class ShaderDecompiler : IDisposable
         return false;
     }
 
-    private static ShaderResourceType ConvertResourceType(ResourceType type)
-    {
-        return type switch
-        {
-            ResourceType.UniformBuffer => ShaderResourceType.ConstantBuffer,
-            ResourceType.Texture => ShaderResourceType.Texture,
-            ResourceType.Sampler => ShaderResourceType.Sampler,
-            ResourceType.UAV => ShaderResourceType.UAV,
-            ResourceType.StructuredBuffer => ShaderResourceType.StructuredBuffer,
-            ResourceType.RWTexture => ShaderResourceType.RWTexture2D,
-            ResourceType.RWBuffer => ShaderResourceType.RWBuffer,
-            _ => ShaderResourceType.Unknown
-        };
-    }
-
     private static ShaderResourceType NormalizeResourceType(ShaderResourceType type)
     {
         return type switch
@@ -1102,6 +997,21 @@ public sealed class ShaderDecompiler : IDisposable
             "SampledImage" => normalized == ShaderResourceType.Texture || normalized == ShaderResourceType.UAV || normalized == ShaderResourceType.RWBuffer || normalized == ShaderResourceType.StructuredBuffer || normalized == ShaderResourceType.StorageBuffer,
             "StorageImage" => normalized == ShaderResourceType.UAV || normalized == ShaderResourceType.StorageImage,
             _ => true
+        };
+    }
+
+    private static ShaderSymbolData CloneMetadata(ShaderSymbolData metadata)
+    {
+        return new ShaderSymbolData
+        {
+            EntryPoint = metadata.EntryPoint,
+            DebugName = metadata.DebugName,
+            ConstantBuffers = metadata.ConstantBuffers.Select(CloneConstantBuffer).ToList(),
+            ConstantBufferBindings = metadata.ConstantBufferBindings.Select(CloneBufferBinding).ToList(),
+            TextureParameters = metadata.TextureParameters.Select(CloneTextureParameter).ToList(),
+            Samplers = metadata.Samplers.Select(CloneSamplerParameter).ToList(),
+            Buffers = metadata.Buffers.Select(CloneBufferBinding).ToList(),
+            UAVs = metadata.UAVs.Select(CloneUavParameter).ToList(),
         };
     }
 
