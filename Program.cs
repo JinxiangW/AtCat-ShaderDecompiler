@@ -1154,6 +1154,12 @@ namespace Ruri.ShaderTools
 
                 // Keep this session output deterministic so Unity partial-cbuffer fixes can be
                 // iterated offline against the exact same artifacts every run.
+                string errorPath = Path.Combine(outputDir, "unitybinary.error.txt");
+                if (File.Exists(errorPath))
+                {
+                    File.Delete(errorPath);
+                }
+
                 File.WriteAllText(Path.Combine(outputDir, "unitybinary.hlsl"), result.HlslSource);
                 File.WriteAllBytes(Path.Combine(outputDir, "unitybinary.spv"), result.IntermediateSpirv);
                 File.WriteAllText(Path.Combine(outputDir, "unitybinary.metadata.json"), JsonConvert.SerializeObject(result.FinalMetadata ?? metadata, Formatting.Indented));
