@@ -175,6 +175,7 @@ namespace Ruri.ShaderTools
 
         static int RunUnityBinaryDirectoryAuto(string directoryPath)
         {
+            string outputRoot = ResolveTestingShaderOutputRoot();
             string[] dxbcFiles = Directory.GetFiles(directoryPath, "*.dxbc.bin", SearchOption.AllDirectories)
                 .OrderBy(static path => path, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
@@ -193,7 +194,7 @@ namespace Ruri.ShaderTools
                     continue;
                 }
 
-                string outputDir = GetUnityBinaryDefaultOutputDirectory(dxbcPath);
+                string outputDir = GetUnityBinaryDefaultOutputDirectory(dxbcPath, directoryPath, outputRoot);
                 int result = RunUnityBinarySession(new[] { "--unitybinary-session", dxbcPath, metadataPath, outputDir });
                 if (result != 0)
                 {
@@ -222,6 +223,20 @@ namespace Ruri.ShaderTools
             string parent = Path.GetDirectoryName(dxbcPath) ?? AppDomain.CurrentDomain.BaseDirectory;
             string baseName = Path.GetFileName(dxbcPath[..^".dxbc.bin".Length]);
             return Path.Combine(parent, baseName);
+        }
+
+        static string GetUnityBinaryDefaultOutputDirectory(string dxbcPath, string assetRoot, string outputRoot)
+        {
+            string baseName = Path.GetFileName(dxbcPath[..^".dxbc.bin".Length]);
+            string parent = Path.GetDirectoryName(dxbcPath) ?? assetRoot;
+            string relativeParent = Path.GetRelativePath(assetRoot, parent);
+
+            if (string.IsNullOrEmpty(relativeParent) || string.Equals(relativeParent, ".", StringComparison.Ordinal))
+            {
+                return Path.Combine(outputRoot, baseName);
+            }
+
+            return Path.Combine(outputRoot, relativeParent, baseName);
         }
 
         static int ProcessUnrealLibrary(string inputPath, string? outputPath, bool keepTemps, string? mappingPath, Dictionary<int, string>? nameMapInput = null, string? materialFilter = null)
@@ -1327,6 +1342,30 @@ namespace Ruri.ShaderTools
             }
 
             throw new DirectoryNotFoundException($"UnityBinary asset root not found: {relativePath}");
+        }
+
+        static string ResolveTestingShaderOutputRoot()
+        {
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string relativePath = Path.Combine("Testing", "Assets", "Shaders", "Output");
+            string[] roots =
+            {
+                Path.GetFullPath(Path.Combine(baseDir, "..", "..")),
+                baseDir,
+                Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..")),
+            };
+
+            foreach (string root in roots.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                string candidate = Path.Combine(root, relativePath);
+                string parent = Path.GetDirectoryName(candidate);
+                if (!string.IsNullOrWhiteSpace(parent) && Directory.Exists(parent))
+                {
+                    return candidate;
+                }
+            }
+
+            return Path.Combine(baseDir, relativePath);
         }
 
         static string? ResolveSelfTestDxcExecutable(string toolsDir)

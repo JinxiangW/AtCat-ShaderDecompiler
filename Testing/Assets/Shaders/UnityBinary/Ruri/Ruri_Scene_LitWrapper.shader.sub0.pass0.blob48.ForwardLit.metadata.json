@@ -1,0 +1,1874 @@
+{
+  "ConstantBuffers": [
+    {
+      "Name": "$Globals",
+      "NameIndex": 0,
+      "MatrixParams": [
+        {
+          "Name": "unity_MatrixV",
+          "NameIndex": 25,
+          "ByteOffset": 1120,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        }
+      ],
+      "VectorParams": [
+        {
+          "Dim": 4,
+          "Name": "_GlossyEnvironmentCubeMap_HDR",
+          "NameIndex": 13,
+          "ByteOffset": 32,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_ScaledScreenParams",
+          "NameIndex": 14,
+          "ByteOffset": 48,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 2,
+          "Name": "_GlobalMipBias",
+          "NameIndex": 15,
+          "ByteOffset": 64,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 2,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_MainLightPosition",
+          "NameIndex": 16,
+          "ByteOffset": 80,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_MainLightColor",
+          "NameIndex": 17,
+          "ByteOffset": 96,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_MainLightLayerMask",
+          "NameIndex": 18,
+          "ByteOffset": 128,
+          "ArraySize": 0,
+          "Type": "Int",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_FPParams0",
+          "NameIndex": 19,
+          "ByteOffset": 240,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_FPParams1",
+          "NameIndex": 20,
+          "ByteOffset": 256,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_FPParams2",
+          "NameIndex": 21,
+          "ByteOffset": 272,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 3,
+          "Name": "_WorldSpaceCameraPos",
+          "NameIndex": 22,
+          "ByteOffset": 400,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 3,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "unity_OrthoParams",
+          "NameIndex": 23,
+          "ByteOffset": 464,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_ScaleBiasRt",
+          "NameIndex": 24,
+          "ByteOffset": 496,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ],
+      "StructParams": [],
+      "Size": 2192,
+      "IsPartialCB": true,
+      "CBParams": [
+        {
+          "ParamName": "_GlossyEnvironmentCubeMap_HDR",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 32
+        },
+        {
+          "ParamName": "_ScaledScreenParams",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 48
+        },
+        {
+          "ParamName": "_GlobalMipBias",
+          "ParamType": "Float",
+          "Rows": 2,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 64
+        },
+        {
+          "ParamName": "_MainLightPosition",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 80
+        },
+        {
+          "ParamName": "_MainLightColor",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 96
+        },
+        {
+          "ParamName": "_MainLightLayerMask",
+          "ParamType": "Int",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 128
+        },
+        {
+          "ParamName": "_FPParams0",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 240
+        },
+        {
+          "ParamName": "_FPParams1",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 256
+        },
+        {
+          "ParamName": "_FPParams2",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 272
+        },
+        {
+          "ParamName": "_WorldSpaceCameraPos",
+          "ParamType": "Float",
+          "Rows": 3,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 400
+        },
+        {
+          "ParamName": "unity_OrthoParams",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 464
+        },
+        {
+          "ParamName": "_ScaleBiasRt",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 496
+        },
+        {
+          "ParamName": "unity_MatrixV",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 4,
+          "IsMatrix": true,
+          "ArraySize": 0,
+          "ByteOffset": 1120
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Name": "unity_MatrixV",
+          "NameIndex": 25,
+          "ByteOffset": 1120,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        },
+        {
+          "Dim": 4,
+          "Name": "_GlossyEnvironmentCubeMap_HDR",
+          "NameIndex": 13,
+          "ByteOffset": 32,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_ScaledScreenParams",
+          "NameIndex": 14,
+          "ByteOffset": 48,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 2,
+          "Name": "_GlobalMipBias",
+          "NameIndex": 15,
+          "ByteOffset": 64,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 2,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_MainLightPosition",
+          "NameIndex": 16,
+          "ByteOffset": 80,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_MainLightColor",
+          "NameIndex": 17,
+          "ByteOffset": 96,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_MainLightLayerMask",
+          "NameIndex": 18,
+          "ByteOffset": 128,
+          "ArraySize": 0,
+          "Type": "Int",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_FPParams0",
+          "NameIndex": 19,
+          "ByteOffset": 240,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_FPParams1",
+          "NameIndex": 20,
+          "ByteOffset": 256,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_FPParams2",
+          "NameIndex": 21,
+          "ByteOffset": 272,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 3,
+          "Name": "_WorldSpaceCameraPos",
+          "NameIndex": 22,
+          "ByteOffset": 400,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 3,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "unity_OrthoParams",
+          "NameIndex": 23,
+          "ByteOffset": 464,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_ScaleBiasRt",
+          "NameIndex": 24,
+          "ByteOffset": 496,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ]
+    },
+    {
+      "Name": "AdditionalLights",
+      "NameIndex": 8,
+      "MatrixParams": [],
+      "VectorParams": [
+        {
+          "Dim": 4,
+          "Name": "_AdditionalLightsPosition",
+          "NameIndex": 26,
+          "ByteOffset": 0,
+          "ArraySize": 256,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_AdditionalLightsColor",
+          "NameIndex": 27,
+          "ByteOffset": 4096,
+          "ArraySize": 256,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_AdditionalLightsAttenuation",
+          "NameIndex": 28,
+          "ByteOffset": 8192,
+          "ArraySize": 256,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_AdditionalLightsSpotDir",
+          "NameIndex": 29,
+          "ByteOffset": 12288,
+          "ArraySize": 256,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_AdditionalLightsLayerMasks",
+          "NameIndex": 30,
+          "ByteOffset": 20480,
+          "ArraySize": 256,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ],
+      "StructParams": [],
+      "Size": 24576,
+      "IsPartialCB": true,
+      "CBParams": [
+        {
+          "ParamName": "_AdditionalLightsPosition",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 256,
+          "ByteOffset": 0
+        },
+        {
+          "ParamName": "_AdditionalLightsColor",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 256,
+          "ByteOffset": 4096
+        },
+        {
+          "ParamName": "_AdditionalLightsAttenuation",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 256,
+          "ByteOffset": 8192
+        },
+        {
+          "ParamName": "_AdditionalLightsSpotDir",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 256,
+          "ByteOffset": 12288
+        },
+        {
+          "ParamName": "_AdditionalLightsLayerMasks",
+          "ParamType": "Float",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 256,
+          "ByteOffset": 20480
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Dim": 4,
+          "Name": "_AdditionalLightsPosition",
+          "NameIndex": 26,
+          "ByteOffset": 0,
+          "ArraySize": 256,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_AdditionalLightsColor",
+          "NameIndex": 27,
+          "ByteOffset": 4096,
+          "ArraySize": 256,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_AdditionalLightsAttenuation",
+          "NameIndex": 28,
+          "ByteOffset": 8192,
+          "ArraySize": 256,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_AdditionalLightsSpotDir",
+          "NameIndex": 29,
+          "ByteOffset": 12288,
+          "ArraySize": 256,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_AdditionalLightsLayerMasks",
+          "NameIndex": 30,
+          "ByteOffset": 20480,
+          "ArraySize": 256,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ]
+    },
+    {
+      "Name": "urp_ZBinBuffer",
+      "NameIndex": 9,
+      "MatrixParams": [],
+      "VectorParams": [
+        {
+          "Dim": 4,
+          "Name": "urp_ZBins",
+          "NameIndex": 31,
+          "ByteOffset": 0,
+          "ArraySize": 1024,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ],
+      "StructParams": [],
+      "Size": 16384,
+      "IsPartialCB": true,
+      "CBParams": [
+        {
+          "ParamName": "urp_ZBins",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 1024,
+          "ByteOffset": 0
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Dim": 4,
+          "Name": "urp_ZBins",
+          "NameIndex": 31,
+          "ByteOffset": 0,
+          "ArraySize": 1024,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ]
+    },
+    {
+      "Name": "urp_TileBuffer",
+      "NameIndex": 10,
+      "MatrixParams": [],
+      "VectorParams": [
+        {
+          "Dim": 4,
+          "Name": "urp_Tiles",
+          "NameIndex": 32,
+          "ByteOffset": 0,
+          "ArraySize": 4096,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ],
+      "StructParams": [],
+      "Size": 65536,
+      "IsPartialCB": true,
+      "CBParams": [
+        {
+          "ParamName": "urp_Tiles",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 4096,
+          "ByteOffset": 0
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Dim": 4,
+          "Name": "urp_Tiles",
+          "NameIndex": 32,
+          "ByteOffset": 0,
+          "ArraySize": 4096,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ]
+    },
+    {
+      "Name": "urp_ReflectionProbeBuffer",
+      "NameIndex": 11,
+      "MatrixParams": [],
+      "VectorParams": [
+        {
+          "Dim": 4,
+          "Name": "urp_ReflProbes_BoxMax",
+          "NameIndex": 33,
+          "ByteOffset": 0,
+          "ArraySize": 64,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "urp_ReflProbes_BoxMin",
+          "NameIndex": 34,
+          "ByteOffset": 1024,
+          "ArraySize": 64,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "urp_ReflProbes_ProbePosition",
+          "NameIndex": 35,
+          "ByteOffset": 2048,
+          "ArraySize": 64,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "urp_ReflProbes_MipScaleOffset",
+          "NameIndex": 36,
+          "ByteOffset": 3072,
+          "ArraySize": 448,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ],
+      "StructParams": [],
+      "Size": 10240,
+      "IsPartialCB": true,
+      "CBParams": [
+        {
+          "ParamName": "urp_ReflProbes_BoxMax",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 64,
+          "ByteOffset": 0
+        },
+        {
+          "ParamName": "urp_ReflProbes_BoxMin",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 64,
+          "ByteOffset": 1024
+        },
+        {
+          "ParamName": "urp_ReflProbes_ProbePosition",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 64,
+          "ByteOffset": 2048
+        },
+        {
+          "ParamName": "urp_ReflProbes_MipScaleOffset",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 448,
+          "ByteOffset": 3072
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Dim": 4,
+          "Name": "urp_ReflProbes_BoxMax",
+          "NameIndex": 33,
+          "ByteOffset": 0,
+          "ArraySize": 64,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "urp_ReflProbes_BoxMin",
+          "NameIndex": 34,
+          "ByteOffset": 1024,
+          "ArraySize": 64,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "urp_ReflProbes_ProbePosition",
+          "NameIndex": 35,
+          "ByteOffset": 2048,
+          "ArraySize": 64,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "urp_ReflProbes_MipScaleOffset",
+          "NameIndex": 36,
+          "ByteOffset": 3072,
+          "ArraySize": 448,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ]
+    },
+    {
+      "Name": "UnityPerDraw",
+      "NameIndex": 1,
+      "MatrixParams": [],
+      "VectorParams": [
+        {
+          "Dim": 4,
+          "Name": "unity_RenderingLayer",
+          "NameIndex": 37,
+          "ByteOffset": 160,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ],
+      "StructParams": [],
+      "Size": 720,
+      "IsPartialCB": true,
+      "CBParams": [
+        {
+          "ParamName": "unity_RenderingLayer",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 160
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Dim": 4,
+          "Name": "unity_RenderingLayer",
+          "NameIndex": 37,
+          "ByteOffset": 160,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ]
+    },
+    {
+      "Name": "UnityPerMaterial",
+      "NameIndex": 2,
+      "MatrixParams": [],
+      "VectorParams": [
+        {
+          "Dim": 4,
+          "Name": "_BaseColor",
+          "NameIndex": 38,
+          "ByteOffset": 48,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_Smoothness",
+          "NameIndex": 39,
+          "ByteOffset": 100,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_Metallic",
+          "NameIndex": 40,
+          "ByteOffset": 104,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_Surface",
+          "NameIndex": 41,
+          "ByteOffset": 136,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ],
+      "StructParams": [],
+      "Size": 208,
+      "IsPartialCB": true,
+      "CBParams": [
+        {
+          "ParamName": "_BaseColor",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 48
+        },
+        {
+          "ParamName": "_Smoothness",
+          "ParamType": "Float",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 100
+        },
+        {
+          "ParamName": "_Metallic",
+          "ParamType": "Float",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 104
+        },
+        {
+          "ParamName": "_Surface",
+          "ParamType": "Float",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 136
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Dim": 4,
+          "Name": "_BaseColor",
+          "NameIndex": 38,
+          "ByteOffset": 48,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_Smoothness",
+          "NameIndex": 39,
+          "ByteOffset": 100,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_Metallic",
+          "NameIndex": 40,
+          "ByteOffset": 104,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_Surface",
+          "NameIndex": 41,
+          "ByteOffset": 136,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ]
+    },
+    {
+      "Name": "LightShadows",
+      "NameIndex": 12,
+      "MatrixParams": [],
+      "VectorParams": [
+        {
+          "Dim": 4,
+          "Name": "_MainLightShadowParams",
+          "NameIndex": 42,
+          "ByteOffset": 432,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ],
+      "StructParams": [],
+      "Size": 528,
+      "IsPartialCB": true,
+      "CBParams": [
+        {
+          "ParamName": "_MainLightShadowParams",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 432
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Dim": 4,
+          "Name": "_MainLightShadowParams",
+          "NameIndex": 42,
+          "ByteOffset": 432,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ]
+    },
+    {
+      "Name": "$Globals",
+      "NameIndex": -1,
+      "MatrixParams": [],
+      "VectorParams": [
+        {
+          "Dim": 1,
+          "Name": "_DitheringTextureInvSize",
+          "NameIndex": -1,
+          "ByteOffset": 2176,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ],
+      "StructParams": [],
+      "Size": 2192,
+      "IsPartialCB": false,
+      "CBParams": [
+        {
+          "ParamName": "_DitheringTextureInvSize",
+          "ParamType": "Float",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 2176
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Dim": 1,
+          "Name": "_DitheringTextureInvSize",
+          "NameIndex": -1,
+          "ByteOffset": 2176,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ]
+    },
+    {
+      "Name": "AdditionalLights",
+      "NameIndex": -1,
+      "MatrixParams": [],
+      "VectorParams": [],
+      "StructParams": [],
+      "Size": 24576,
+      "IsPartialCB": false,
+      "CBParams": [],
+      "AllNumericParams": []
+    },
+    {
+      "Name": "urp_ZBinBuffer",
+      "NameIndex": -1,
+      "MatrixParams": [],
+      "VectorParams": [],
+      "StructParams": [],
+      "Size": 16384,
+      "IsPartialCB": false,
+      "CBParams": [],
+      "AllNumericParams": []
+    },
+    {
+      "Name": "urp_TileBuffer",
+      "NameIndex": -1,
+      "MatrixParams": [],
+      "VectorParams": [],
+      "StructParams": [],
+      "Size": 65536,
+      "IsPartialCB": false,
+      "CBParams": [],
+      "AllNumericParams": []
+    },
+    {
+      "Name": "urp_ReflectionProbeBuffer",
+      "NameIndex": -1,
+      "MatrixParams": [],
+      "VectorParams": [],
+      "StructParams": [],
+      "Size": 10240,
+      "IsPartialCB": false,
+      "CBParams": [],
+      "AllNumericParams": []
+    },
+    {
+      "Name": "UnityPerDraw",
+      "NameIndex": -1,
+      "MatrixParams": [],
+      "VectorParams": [
+        {
+          "Dim": 4,
+          "Name": "unity_LODFade",
+          "NameIndex": -1,
+          "ByteOffset": 128,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ],
+      "StructParams": [],
+      "Size": 720,
+      "IsPartialCB": false,
+      "CBParams": [
+        {
+          "ParamName": "unity_LODFade",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 128
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Dim": 4,
+          "Name": "unity_LODFade",
+          "NameIndex": -1,
+          "ByteOffset": 128,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ]
+    },
+    {
+      "Name": "UnityPerMaterial",
+      "NameIndex": -1,
+      "MatrixParams": [],
+      "VectorParams": [],
+      "StructParams": [],
+      "Size": 208,
+      "IsPartialCB": false,
+      "CBParams": [],
+      "AllNumericParams": []
+    },
+    {
+      "Name": "LightShadows",
+      "NameIndex": -1,
+      "MatrixParams": [
+        {
+          "Name": "_MainLightWorldToShadow",
+          "NameIndex": -1,
+          "ByteOffset": 0,
+          "ArraySize": 5,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        }
+      ],
+      "VectorParams": [
+        {
+          "Dim": 4,
+          "Name": "_CascadeShadowSplitSpheres0",
+          "NameIndex": -1,
+          "ByteOffset": 320,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_CascadeShadowSplitSpheres1",
+          "NameIndex": -1,
+          "ByteOffset": 336,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_CascadeShadowSplitSpheres2",
+          "NameIndex": -1,
+          "ByteOffset": 352,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_CascadeShadowSplitSpheres3",
+          "NameIndex": -1,
+          "ByteOffset": 368,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_CascadeShadowSplitSphereRadii",
+          "NameIndex": -1,
+          "ByteOffset": 384,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_MainLightShadowOffset0",
+          "NameIndex": -1,
+          "ByteOffset": 400,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_MainLightShadowOffset1",
+          "NameIndex": -1,
+          "ByteOffset": 416,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_MainLightShadowmapSize",
+          "NameIndex": -1,
+          "ByteOffset": 448,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ],
+      "StructParams": [],
+      "Size": 528,
+      "IsPartialCB": false,
+      "CBParams": [
+        {
+          "ParamName": "_MainLightWorldToShadow",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 4,
+          "IsMatrix": true,
+          "ArraySize": 5,
+          "ByteOffset": 0
+        },
+        {
+          "ParamName": "_CascadeShadowSplitSpheres0",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 320
+        },
+        {
+          "ParamName": "_CascadeShadowSplitSpheres1",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 336
+        },
+        {
+          "ParamName": "_CascadeShadowSplitSpheres2",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 352
+        },
+        {
+          "ParamName": "_CascadeShadowSplitSpheres3",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 368
+        },
+        {
+          "ParamName": "_CascadeShadowSplitSphereRadii",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 384
+        },
+        {
+          "ParamName": "_MainLightShadowOffset0",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 400
+        },
+        {
+          "ParamName": "_MainLightShadowOffset1",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 416
+        },
+        {
+          "ParamName": "_MainLightShadowmapSize",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 448
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Name": "_MainLightWorldToShadow",
+          "NameIndex": -1,
+          "ByteOffset": 0,
+          "ArraySize": 5,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        },
+        {
+          "Dim": 4,
+          "Name": "_CascadeShadowSplitSpheres0",
+          "NameIndex": -1,
+          "ByteOffset": 320,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_CascadeShadowSplitSpheres1",
+          "NameIndex": -1,
+          "ByteOffset": 336,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_CascadeShadowSplitSpheres2",
+          "NameIndex": -1,
+          "ByteOffset": 352,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_CascadeShadowSplitSpheres3",
+          "NameIndex": -1,
+          "ByteOffset": 368,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_CascadeShadowSplitSphereRadii",
+          "NameIndex": -1,
+          "ByteOffset": 384,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_MainLightShadowOffset0",
+          "NameIndex": -1,
+          "ByteOffset": 400,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_MainLightShadowOffset1",
+          "NameIndex": -1,
+          "ByteOffset": 416,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_MainLightShadowmapSize",
+          "NameIndex": -1,
+          "ByteOffset": 448,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ]
+    },
+    {
+      "Name": "LightCookies",
+      "NameIndex": -1,
+      "MatrixParams": [
+        {
+          "Name": "_MainLightWorldToLight",
+          "NameIndex": -1,
+          "ByteOffset": 0,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        },
+        {
+          "Name": "_AdditionalLightsWorldToLights",
+          "NameIndex": -1,
+          "ByteOffset": 192,
+          "ArraySize": 256,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        }
+      ],
+      "VectorParams": [
+        {
+          "Dim": 1,
+          "Name": "_AdditionalLightsCookieEnableBits",
+          "NameIndex": -1,
+          "ByteOffset": 64,
+          "ArraySize": 8,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_MainLightCookieTextureFormat",
+          "NameIndex": -1,
+          "ByteOffset": 180,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_AdditionalLightsCookieAtlasTextureFormat",
+          "NameIndex": -1,
+          "ByteOffset": 184,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_AdditionalLightsCookieAtlasUVRects",
+          "NameIndex": -1,
+          "ByteOffset": 16576,
+          "ArraySize": 256,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_AdditionalLightsLightTypes",
+          "NameIndex": -1,
+          "ByteOffset": 20672,
+          "ArraySize": 256,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ],
+      "StructParams": [],
+      "Size": 24768,
+      "IsPartialCB": false,
+      "CBParams": [
+        {
+          "ParamName": "_MainLightWorldToLight",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 4,
+          "IsMatrix": true,
+          "ArraySize": 0,
+          "ByteOffset": 0
+        },
+        {
+          "ParamName": "_AdditionalLightsCookieEnableBits",
+          "ParamType": "Float",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 8,
+          "ByteOffset": 64
+        },
+        {
+          "ParamName": "_MainLightCookieTextureFormat",
+          "ParamType": "Float",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 180
+        },
+        {
+          "ParamName": "_AdditionalLightsCookieAtlasTextureFormat",
+          "ParamType": "Float",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 184
+        },
+        {
+          "ParamName": "_AdditionalLightsWorldToLights",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 4,
+          "IsMatrix": true,
+          "ArraySize": 256,
+          "ByteOffset": 192
+        },
+        {
+          "ParamName": "_AdditionalLightsCookieAtlasUVRects",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 256,
+          "ByteOffset": 16576
+        },
+        {
+          "ParamName": "_AdditionalLightsLightTypes",
+          "ParamType": "Float",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 256,
+          "ByteOffset": 20672
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Name": "_MainLightWorldToLight",
+          "NameIndex": -1,
+          "ByteOffset": 0,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        },
+        {
+          "Name": "_AdditionalLightsWorldToLights",
+          "NameIndex": -1,
+          "ByteOffset": 192,
+          "ArraySize": 256,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        },
+        {
+          "Dim": 1,
+          "Name": "_AdditionalLightsCookieEnableBits",
+          "NameIndex": -1,
+          "ByteOffset": 64,
+          "ArraySize": 8,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_MainLightCookieTextureFormat",
+          "NameIndex": -1,
+          "ByteOffset": 180,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_AdditionalLightsCookieAtlasTextureFormat",
+          "NameIndex": -1,
+          "ByteOffset": 184,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_AdditionalLightsCookieAtlasUVRects",
+          "NameIndex": -1,
+          "ByteOffset": 16576,
+          "ArraySize": 256,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_AdditionalLightsLightTypes",
+          "NameIndex": -1,
+          "ByteOffset": 20672,
+          "ArraySize": 256,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ]
+    }
+  ],
+  "ConstantBufferBindings": [
+    {
+      "Name": "$Globals",
+      "NameIndex": 0,
+      "Index": 0,
+      "Set": 0,
+      "ArraySize": 1
+    },
+    {
+      "Name": "AdditionalLights",
+      "NameIndex": 8,
+      "Index": 1,
+      "Set": 0,
+      "ArraySize": 1
+    },
+    {
+      "Name": "urp_ZBinBuffer",
+      "NameIndex": 9,
+      "Index": 2,
+      "Set": 0,
+      "ArraySize": 1
+    },
+    {
+      "Name": "urp_TileBuffer",
+      "NameIndex": 10,
+      "Index": 3,
+      "Set": 0,
+      "ArraySize": 1
+    },
+    {
+      "Name": "urp_ReflectionProbeBuffer",
+      "NameIndex": 11,
+      "Index": 4,
+      "Set": 0,
+      "ArraySize": 1
+    },
+    {
+      "Name": "UnityPerDraw",
+      "NameIndex": 1,
+      "Index": 5,
+      "Set": 0,
+      "ArraySize": 1
+    },
+    {
+      "Name": "UnityPerMaterial",
+      "NameIndex": 2,
+      "Index": 6,
+      "Set": 0,
+      "ArraySize": 1
+    },
+    {
+      "Name": "LightShadows",
+      "NameIndex": 12,
+      "Index": 7,
+      "Set": 0,
+      "ArraySize": 1
+    },
+    {
+      "Name": "LightCookies",
+      "NameIndex": -1,
+      "Index": 8,
+      "Set": 0,
+      "ArraySize": 0
+    }
+  ],
+  "TextureParameters": [
+    {
+      "Name": "urp_ReflProbes_Atlas",
+      "NameIndex": 7,
+      "Index": 1,
+      "Set": 0,
+      "SamplerIndex": -1,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_GlossyEnvironmentCubeMap",
+      "NameIndex": -1,
+      "Index": 0,
+      "Set": 0,
+      "SamplerIndex": 2,
+      "MultiSampled": false,
+      "Dim": 4
+    },
+    {
+      "Name": "_DitheringTexture",
+      "NameIndex": -1,
+      "Index": 8,
+      "Set": 0,
+      "SamplerIndex": -1,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "unity_Lightmap",
+      "NameIndex": -1,
+      "Index": 2,
+      "Set": 0,
+      "SamplerIndex": 3,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "unity_LightmapInd",
+      "NameIndex": -1,
+      "Index": 3,
+      "Set": 0,
+      "SamplerIndex": -1,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_BaseMap",
+      "NameIndex": -1,
+      "Index": 4,
+      "Set": 0,
+      "SamplerIndex": 4,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_MainLightShadowmapTexture",
+      "NameIndex": -1,
+      "Index": 5,
+      "Set": 0,
+      "SamplerIndex": -1,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_MainLightCookieTexture",
+      "NameIndex": -1,
+      "Index": 6,
+      "Set": 0,
+      "SamplerIndex": 6,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_AdditionalLightsCookieAtlasTexture",
+      "NameIndex": -1,
+      "Index": 7,
+      "Set": 0,
+      "SamplerIndex": -1,
+      "MultiSampled": false,
+      "Dim": 2
+    }
+  ],
+  "Samplers": [
+    {
+      "Sampler": 341,
+      "Index": 5,
+      "Set": 0
+    },
+    {
+      "Sampler": 0,
+      "Index": 1,
+      "Set": 0
+    }
+  ],
+  "Buffers": [],
+  "UAVs": [],
+  "EntryPoint": "main",
+  "DebugName": "Ruri/Scene/LitWrapper/SubShader0/Pass0/DX11PixelSM40/48"
+}

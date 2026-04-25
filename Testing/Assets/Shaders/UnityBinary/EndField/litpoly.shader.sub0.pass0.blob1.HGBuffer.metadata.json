@@ -1,0 +1,934 @@
+{
+  "ConstantBuffers": [
+    {
+      "Name": "ShaderVariablesGlobal",
+      "NameIndex": 3,
+      "MatrixParams": [
+        {
+          "Name": "_NonJitteredViewNoTransProjMatrix",
+          "NameIndex": 10,
+          "ByteOffset": 512,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        },
+        {
+          "Name": "_PrevNonJitteredViewNoTransProjMatrix",
+          "NameIndex": 11,
+          "ByteOffset": 912,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        }
+      ],
+      "VectorParams": [
+        {
+          "Dim": 1,
+          "Name": "_GlobalMipBias",
+          "NameIndex": 6,
+          "ByteOffset": 1728,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_WorldSpaceCameraPos_Internal",
+          "NameIndex": 7,
+          "ByteOffset": 704,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_PrevCamPosRWS_Internal",
+          "NameIndex": 8,
+          "ByteOffset": 1296,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_TaaJitterStrength",
+          "NameIndex": 9,
+          "ByteOffset": 1616,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ],
+      "StructParams": [],
+      "Size": 4512,
+      "IsPartialCB": true,
+      "CBParams": [
+        {
+          "ParamName": "_NonJitteredViewNoTransProjMatrix",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 4,
+          "IsMatrix": true,
+          "ArraySize": 0,
+          "ByteOffset": 512
+        },
+        {
+          "ParamName": "_WorldSpaceCameraPos_Internal",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 704
+        },
+        {
+          "ParamName": "_PrevNonJitteredViewNoTransProjMatrix",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 4,
+          "IsMatrix": true,
+          "ArraySize": 0,
+          "ByteOffset": 912
+        },
+        {
+          "ParamName": "_PrevCamPosRWS_Internal",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 1296
+        },
+        {
+          "ParamName": "_TaaJitterStrength",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 1616
+        },
+        {
+          "ParamName": "_GlobalMipBias",
+          "ParamType": "Float",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 1728
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Name": "_NonJitteredViewNoTransProjMatrix",
+          "NameIndex": 10,
+          "ByteOffset": 512,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        },
+        {
+          "Name": "_PrevNonJitteredViewNoTransProjMatrix",
+          "NameIndex": 11,
+          "ByteOffset": 912,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        },
+        {
+          "Dim": 1,
+          "Name": "_GlobalMipBias",
+          "NameIndex": 6,
+          "ByteOffset": 1728,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_WorldSpaceCameraPos_Internal",
+          "NameIndex": 7,
+          "ByteOffset": 704,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_PrevCamPosRWS_Internal",
+          "NameIndex": 8,
+          "ByteOffset": 1296,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_TaaJitterStrength",
+          "NameIndex": 9,
+          "ByteOffset": 1616,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ]
+    },
+    {
+      "Name": "UnityPerMaterial",
+      "NameIndex": 4,
+      "MatrixParams": [],
+      "VectorParams": [
+        {
+          "Dim": 1,
+          "Name": "_NormalScale",
+          "NameIndex": 12,
+          "ByteOffset": 0,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_RoughnessMin",
+          "NameIndex": 13,
+          "ByteOffset": 8,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_RoughnessMax",
+          "NameIndex": 14,
+          "ByteOffset": 12,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_OcclusionStrength",
+          "NameIndex": 15,
+          "ByteOffset": 16,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_BaseColor",
+          "NameIndex": 16,
+          "ByteOffset": 128,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ],
+      "StructParams": [],
+      "Size": 304,
+      "IsPartialCB": true,
+      "CBParams": [
+        {
+          "ParamName": "_NormalScale",
+          "ParamType": "Float",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 0
+        },
+        {
+          "ParamName": "_RoughnessMin",
+          "ParamType": "Float",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 8
+        },
+        {
+          "ParamName": "_RoughnessMax",
+          "ParamType": "Float",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 12
+        },
+        {
+          "ParamName": "_OcclusionStrength",
+          "ParamType": "Float",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 16
+        },
+        {
+          "ParamName": "_BaseColor",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 128
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Dim": 1,
+          "Name": "_NormalScale",
+          "NameIndex": 12,
+          "ByteOffset": 0,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_RoughnessMin",
+          "NameIndex": 13,
+          "ByteOffset": 8,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_RoughnessMax",
+          "NameIndex": 14,
+          "ByteOffset": 12,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_OcclusionStrength",
+          "NameIndex": 15,
+          "ByteOffset": 16,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_BaseColor",
+          "NameIndex": 16,
+          "ByteOffset": 128,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ]
+    },
+    {
+      "Name": "UnityInstancing_SRP_UnityPerDraw",
+      "NameIndex": 5,
+      "MatrixParams": [],
+      "VectorParams": [],
+      "StructParams": [
+        {
+          "Name": "UnityPerDrawArray",
+          "NameIndex": 17,
+          "Index": 0,
+          "ArraySize": 256,
+          "StructSize": 256,
+          "VectorMembers": [
+            {
+              "Dim": 4,
+              "Name": "UnityPerDrawArray.unity_LODFade",
+              "NameIndex": 18,
+              "ByteOffset": 64,
+              "ArraySize": 0,
+              "Type": "Float",
+              "RowCount": 4,
+              "ColumnCount": 1,
+              "IsMatrix": false
+            },
+            {
+              "Dim": 4,
+              "Name": "UnityPerDrawArray.unity_WorldTransformParams",
+              "NameIndex": 19,
+              "ByteOffset": 80,
+              "ArraySize": 0,
+              "Type": "Float",
+              "RowCount": 4,
+              "ColumnCount": 1,
+              "IsMatrix": false
+            },
+            {
+              "Dim": 4,
+              "Name": "UnityPerDrawArray.unity_MotionVectorsParamsInternal",
+              "NameIndex": 20,
+              "ByteOffset": 160,
+              "ArraySize": 0,
+              "Type": "Float",
+              "RowCount": 4,
+              "ColumnCount": 1,
+              "IsMatrix": false
+            },
+            {
+              "Dim": 4,
+              "Name": "UnityPerDrawArray.unity_Float4x5_Param0",
+              "NameIndex": 21,
+              "ByteOffset": 176,
+              "ArraySize": 0,
+              "Type": "Float",
+              "RowCount": 4,
+              "ColumnCount": 1,
+              "IsMatrix": false
+            },
+            {
+              "Dim": 4,
+              "Name": "UnityPerDrawArray.unity_Float4x5_Param1",
+              "NameIndex": 22,
+              "ByteOffset": 192,
+              "ArraySize": 0,
+              "Type": "Float",
+              "RowCount": 4,
+              "ColumnCount": 1,
+              "IsMatrix": false
+            },
+            {
+              "Dim": 4,
+              "Name": "UnityPerDrawArray.unity_Float4x5_Param2",
+              "NameIndex": 23,
+              "ByteOffset": 208,
+              "ArraySize": 0,
+              "Type": "Float",
+              "RowCount": 4,
+              "ColumnCount": 1,
+              "IsMatrix": false
+            },
+            {
+              "Dim": 4,
+              "Name": "UnityPerDrawArray.unity_Float4x5_Param3",
+              "NameIndex": 24,
+              "ByteOffset": 224,
+              "ArraySize": 0,
+              "Type": "Float",
+              "RowCount": 4,
+              "ColumnCount": 1,
+              "IsMatrix": false
+            },
+            {
+              "Dim": 4,
+              "Name": "UnityPerDrawArray.unity_Float4x5_Param4",
+              "NameIndex": 25,
+              "ByteOffset": 240,
+              "ArraySize": 0,
+              "Type": "Float",
+              "RowCount": 4,
+              "ColumnCount": 1,
+              "IsMatrix": false
+            }
+          ],
+          "MatrixMembers": [
+            {
+              "Name": "UnityPerDrawArray.unity_ObjectToWorld",
+              "NameIndex": 26,
+              "ByteOffset": 0,
+              "ArraySize": 0,
+              "Type": "Float",
+              "RowCount": 4,
+              "ColumnCount": 4,
+              "IsMatrix": true
+            },
+            {
+              "Name": "UnityPerDrawArray.unity_MatrixPreviousM",
+              "NameIndex": 27,
+              "ByteOffset": 96,
+              "ArraySize": 0,
+              "Type": "Float",
+              "RowCount": 4,
+              "ColumnCount": 4,
+              "IsMatrix": true
+            }
+          ],
+          "AllNumericMembers": [
+            {
+              "Name": "UnityPerDrawArray.unity_ObjectToWorld",
+              "NameIndex": 26,
+              "ByteOffset": 0,
+              "ArraySize": 0,
+              "Type": "Float",
+              "RowCount": 4,
+              "ColumnCount": 4,
+              "IsMatrix": true
+            },
+            {
+              "Name": "UnityPerDrawArray.unity_MatrixPreviousM",
+              "NameIndex": 27,
+              "ByteOffset": 96,
+              "ArraySize": 0,
+              "Type": "Float",
+              "RowCount": 4,
+              "ColumnCount": 4,
+              "IsMatrix": true
+            },
+            {
+              "Dim": 4,
+              "Name": "UnityPerDrawArray.unity_LODFade",
+              "NameIndex": 18,
+              "ByteOffset": 64,
+              "ArraySize": 0,
+              "Type": "Float",
+              "RowCount": 4,
+              "ColumnCount": 1,
+              "IsMatrix": false
+            },
+            {
+              "Dim": 4,
+              "Name": "UnityPerDrawArray.unity_WorldTransformParams",
+              "NameIndex": 19,
+              "ByteOffset": 80,
+              "ArraySize": 0,
+              "Type": "Float",
+              "RowCount": 4,
+              "ColumnCount": 1,
+              "IsMatrix": false
+            },
+            {
+              "Dim": 4,
+              "Name": "UnityPerDrawArray.unity_MotionVectorsParamsInternal",
+              "NameIndex": 20,
+              "ByteOffset": 160,
+              "ArraySize": 0,
+              "Type": "Float",
+              "RowCount": 4,
+              "ColumnCount": 1,
+              "IsMatrix": false
+            },
+            {
+              "Dim": 4,
+              "Name": "UnityPerDrawArray.unity_Float4x5_Param0",
+              "NameIndex": 21,
+              "ByteOffset": 176,
+              "ArraySize": 0,
+              "Type": "Float",
+              "RowCount": 4,
+              "ColumnCount": 1,
+              "IsMatrix": false
+            },
+            {
+              "Dim": 4,
+              "Name": "UnityPerDrawArray.unity_Float4x5_Param1",
+              "NameIndex": 22,
+              "ByteOffset": 192,
+              "ArraySize": 0,
+              "Type": "Float",
+              "RowCount": 4,
+              "ColumnCount": 1,
+              "IsMatrix": false
+            },
+            {
+              "Dim": 4,
+              "Name": "UnityPerDrawArray.unity_Float4x5_Param2",
+              "NameIndex": 23,
+              "ByteOffset": 208,
+              "ArraySize": 0,
+              "Type": "Float",
+              "RowCount": 4,
+              "ColumnCount": 1,
+              "IsMatrix": false
+            },
+            {
+              "Dim": 4,
+              "Name": "UnityPerDrawArray.unity_Float4x5_Param3",
+              "NameIndex": 24,
+              "ByteOffset": 224,
+              "ArraySize": 0,
+              "Type": "Float",
+              "RowCount": 4,
+              "ColumnCount": 1,
+              "IsMatrix": false
+            },
+            {
+              "Dim": 4,
+              "Name": "UnityPerDrawArray.unity_Float4x5_Param4",
+              "NameIndex": 25,
+              "ByteOffset": 240,
+              "ArraySize": 0,
+              "Type": "Float",
+              "RowCount": 4,
+              "ColumnCount": 1,
+              "IsMatrix": false
+            }
+          ]
+        }
+      ],
+      "Size": 65536,
+      "IsPartialCB": true,
+      "CBParams": [],
+      "AllNumericParams": []
+    }
+  ],
+  "ConstantBufferBindings": [
+    {
+      "Name": "ShaderVariablesGlobal",
+      "NameIndex": 3,
+      "Index": 0,
+      "Set": 0,
+      "ArraySize": 1
+    },
+    {
+      "Name": "UnityPerMaterial",
+      "NameIndex": 4,
+      "Index": 6,
+      "Set": 1,
+      "ArraySize": 1
+    },
+    {
+      "Name": "UnityInstancing_SRP_UnityPerDraw",
+      "NameIndex": 5,
+      "Index": 1,
+      "Set": 0,
+      "ArraySize": 1
+    },
+    {
+      "Name": "_PerPassConstants",
+      "NameIndex": -1,
+      "Index": 12,
+      "Set": 0,
+      "ArraySize": 0
+    },
+    {
+      "Name": "ShaderVariablesGlobal",
+      "NameIndex": -1,
+      "Index": 13,
+      "Set": 0,
+      "ArraySize": 0
+    },
+    {
+      "Name": "PerTerrainData",
+      "NameIndex": -1,
+      "Index": 14,
+      "Set": 0,
+      "ArraySize": 0
+    },
+    {
+      "Name": "PerCullingViewData",
+      "NameIndex": -1,
+      "Index": 15,
+      "Set": 0,
+      "ArraySize": 0
+    },
+    {
+      "Name": "_TerrainSubsurfaceConstants",
+      "NameIndex": -1,
+      "Index": 26,
+      "Set": 0,
+      "ArraySize": 0
+    },
+    {
+      "Name": "_LightDataBuffer",
+      "NameIndex": -1,
+      "Index": 27,
+      "Set": 0,
+      "ArraySize": 0
+    },
+    {
+      "Name": "UnityPerMaterial",
+      "NameIndex": -1,
+      "Index": 6,
+      "Set": 1,
+      "ArraySize": 0
+    },
+    {
+      "Name": "UnityInstancing_SRP_UnityPerDraw",
+      "NameIndex": -1,
+      "Index": 0,
+      "Set": 2,
+      "ArraySize": 0
+    }
+  ],
+  "TextureParameters": [
+    {
+      "Name": "_BaseColorMap",
+      "NameIndex": 0,
+      "Index": -1,
+      "Set": 0,
+      "SamplerIndex": 2,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_NormalMap",
+      "NameIndex": 1,
+      "Index": -1,
+      "Set": 0,
+      "SamplerIndex": 0,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_MROMap",
+      "NameIndex": 2,
+      "Index": -1,
+      "Set": 0,
+      "SamplerIndex": 1,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_WindGlobalNoiseTex",
+      "NameIndex": -1,
+      "Index": 0,
+      "Set": 0,
+      "SamplerIndex": -1,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_PrevFoliageInteractiveTex",
+      "NameIndex": -1,
+      "Index": 1,
+      "Set": 0,
+      "SamplerIndex": -1,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_FoliageOccluderFinalMask",
+      "NameIndex": -1,
+      "Index": 2,
+      "Set": 0,
+      "SamplerIndex": -1,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_FoliageInteractiveTex",
+      "NameIndex": -1,
+      "Index": 3,
+      "Set": 0,
+      "SamplerIndex": -1,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_HeightmapAtlas",
+      "NameIndex": -1,
+      "Index": 11,
+      "Set": 0,
+      "SamplerIndex": -1,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_TerrainDepthBuffer",
+      "NameIndex": -1,
+      "Index": 18,
+      "Set": 0,
+      "SamplerIndex": -1,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_PhysicalWet",
+      "NameIndex": -1,
+      "Index": 19,
+      "Set": 0,
+      "SamplerIndex": -1,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_PhysicalRO",
+      "NameIndex": -1,
+      "Index": 20,
+      "Set": 0,
+      "SamplerIndex": -1,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_PhysicalNormal",
+      "NameIndex": -1,
+      "Index": 21,
+      "Set": 0,
+      "SamplerIndex": -1,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_PhysicalBase",
+      "NameIndex": -1,
+      "Index": 22,
+      "Set": 0,
+      "SamplerIndex": -1,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_NormalmapAtlas",
+      "NameIndex": -1,
+      "Index": 23,
+      "Set": 0,
+      "SamplerIndex": -1,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_IndirectTex",
+      "NameIndex": -1,
+      "Index": 24,
+      "Set": 0,
+      "SamplerIndex": -1,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_AlbedoAtlas",
+      "NameIndex": -1,
+      "Index": 25,
+      "Set": 0,
+      "SamplerIndex": -1,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_NormalMap",
+      "NameIndex": -1,
+      "Index": 3,
+      "Set": 1,
+      "SamplerIndex": 0,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_MROMap",
+      "NameIndex": -1,
+      "Index": 4,
+      "Set": 1,
+      "SamplerIndex": 1,
+      "MultiSampled": false,
+      "Dim": 2
+    },
+    {
+      "Name": "_BaseColorMap",
+      "NameIndex": -1,
+      "Index": 5,
+      "Set": 1,
+      "SamplerIndex": 2,
+      "MultiSampled": false,
+      "Dim": 2
+    }
+  ],
+  "Samplers": [
+    {
+      "Sampler": 65538,
+      "Index": 5,
+      "Set": 0
+    },
+    {
+      "Sampler": 65622,
+      "Index": 6,
+      "Set": 0
+    },
+    {
+      "Sampler": 65536,
+      "Index": 7,
+      "Set": 0
+    },
+    {
+      "Sampler": 65620,
+      "Index": 8,
+      "Set": 0
+    },
+    {
+      "Sampler": 65537,
+      "Index": 9,
+      "Set": 0
+    },
+    {
+      "Sampler": 65621,
+      "Index": 10,
+      "Set": 0
+    },
+    {
+      "Sampler": 65620,
+      "Index": 17,
+      "Set": 0
+    },
+    {
+      "Sampler": 131071,
+      "Index": 0,
+      "Set": 1
+    },
+    {
+      "Sampler": 131071,
+      "Index": 1,
+      "Set": 1
+    },
+    {
+      "Sampler": 131071,
+      "Index": 2,
+      "Set": 1
+    }
+  ],
+  "Buffers": [
+    {
+      "Name": "_ClothSkeletonDataBuffer",
+      "NameIndex": -1,
+      "Index": 4,
+      "Set": 0,
+      "ArraySize": 0
+    },
+    {
+      "Name": "_VertexSkinMatrices",
+      "NameIndex": -1,
+      "Index": 16,
+      "Set": 0,
+      "ArraySize": 0
+    }
+  ],
+  "UAVs": [],
+  "EntryPoint": "main",
+  "DebugName": "HGRP/Blockout/LitPoly/SubShader0/Pass0/DX11VertexSM40/1"
+}

@@ -1,0 +1,323 @@
+{
+  "ConstantBuffers": [
+    {
+      "Name": "$Globals",
+      "NameIndex": 2,
+      "MatrixParams": [],
+      "VectorParams": [
+        {
+          "Dim": 3,
+          "Name": "_WorldSpaceCameraPos",
+          "NameIndex": 13,
+          "ByteOffset": 400,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 3,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_DistortionParams",
+          "NameIndex": 14,
+          "ByteOffset": 2272,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_DistortionCenter",
+          "NameIndex": 15,
+          "ByteOffset": 2288,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ],
+      "StructParams": [],
+      "Size": 2320,
+      "IsPartialCB": true,
+      "CBParams": [
+        {
+          "ParamName": "_WorldSpaceCameraPos",
+          "ParamType": "Float",
+          "Rows": 3,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 400
+        },
+        {
+          "ParamName": "_DistortionParams",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 2272
+        },
+        {
+          "ParamName": "_DistortionCenter",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 2288
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Dim": 3,
+          "Name": "_WorldSpaceCameraPos",
+          "NameIndex": 13,
+          "ByteOffset": 400,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 3,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_DistortionParams",
+          "NameIndex": 14,
+          "ByteOffset": 2272,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_DistortionCenter",
+          "NameIndex": 15,
+          "ByteOffset": 2288,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ]
+    },
+    {
+      "Name": "UnityPerDraw",
+      "NameIndex": 12,
+      "MatrixParams": [
+        {
+          "Name": "unity_ObjectToWorld",
+          "NameIndex": 16,
+          "ByteOffset": 0,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        }
+      ],
+      "VectorParams": [],
+      "StructParams": [],
+      "Size": 720,
+      "IsPartialCB": true,
+      "CBParams": [
+        {
+          "ParamName": "unity_ObjectToWorld",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 4,
+          "IsMatrix": true,
+          "ArraySize": 0,
+          "ByteOffset": 0
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Name": "unity_ObjectToWorld",
+          "NameIndex": 16,
+          "ByteOffset": 0,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        }
+      ]
+    },
+    {
+      "Name": "UnityPerMaterial",
+      "NameIndex": 3,
+      "MatrixParams": [],
+      "VectorParams": [
+        {
+          "Dim": 1,
+          "Name": "_TessellationFactor",
+          "NameIndex": 17,
+          "ByteOffset": 76,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_TessellationMinDist",
+          "NameIndex": 18,
+          "ByteOffset": 80,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_TessellationMaxDist",
+          "NameIndex": 19,
+          "ByteOffset": 84,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ],
+      "StructParams": [],
+      "Size": 96,
+      "IsPartialCB": true,
+      "CBParams": [
+        {
+          "ParamName": "_TessellationFactor",
+          "ParamType": "Float",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 76
+        },
+        {
+          "ParamName": "_TessellationMinDist",
+          "ParamType": "Float",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 80
+        },
+        {
+          "ParamName": "_TessellationMaxDist",
+          "ParamType": "Float",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 84
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Dim": 1,
+          "Name": "_TessellationFactor",
+          "NameIndex": 17,
+          "ByteOffset": 76,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_TessellationMinDist",
+          "NameIndex": 18,
+          "ByteOffset": 80,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_TessellationMaxDist",
+          "NameIndex": 19,
+          "ByteOffset": 84,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ]
+    },
+    {
+      "Name": "$Globals",
+      "NameIndex": -1,
+      "MatrixParams": [],
+      "VectorParams": [],
+      "StructParams": [],
+      "Size": 2320,
+      "IsPartialCB": false,
+      "CBParams": [],
+      "AllNumericParams": []
+    },
+    {
+      "Name": "UnityPerDraw",
+      "NameIndex": -1,
+      "MatrixParams": [],
+      "VectorParams": [],
+      "StructParams": [],
+      "Size": 720,
+      "IsPartialCB": false,
+      "CBParams": [],
+      "AllNumericParams": []
+    },
+    {
+      "Name": "UnityPerMaterial",
+      "NameIndex": -1,
+      "MatrixParams": [],
+      "VectorParams": [],
+      "StructParams": [],
+      "Size": 96,
+      "IsPartialCB": false,
+      "CBParams": [],
+      "AllNumericParams": []
+    }
+  ],
+  "ConstantBufferBindings": [
+    {
+      "Name": "$Globals",
+      "NameIndex": 2,
+      "Index": 0,
+      "Set": 0,
+      "ArraySize": 1
+    },
+    {
+      "Name": "UnityPerDraw",
+      "NameIndex": 12,
+      "Index": 1,
+      "Set": 0,
+      "ArraySize": 1
+    },
+    {
+      "Name": "UnityPerMaterial",
+      "NameIndex": 3,
+      "Index": 2,
+      "Set": 0,
+      "ArraySize": 1
+    }
+  ],
+  "TextureParameters": [],
+  "Samplers": [],
+  "Buffers": [],
+  "UAVs": [],
+  "EntryPoint": "main",
+  "DebugName": "Ruri/Scene/Lit/SubShader0/Pass0/DX11HullSM50/5"
+}

@@ -1,0 +1,147 @@
+{
+  "ConstantBuffers": [
+    {
+      "Name": "$Globals",
+      "NameIndex": 0,
+      "MatrixParams": [],
+      "VectorParams": [
+        {
+          "Dim": 4,
+          "Name": "_SourceSize",
+          "NameIndex": 5,
+          "ByteOffset": 1904,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_OffsetAndWeight",
+          "NameIndex": 6,
+          "ByteOffset": 1952,
+          "ArraySize": 16,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_SampleCount",
+          "NameIndex": 7,
+          "ByteOffset": 2208,
+          "ArraySize": 0,
+          "Type": "Int",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ],
+      "StructParams": [],
+      "Size": 2224,
+      "IsPartialCB": true,
+      "CBParams": [
+        {
+          "ParamName": "_SourceSize",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 1904
+        },
+        {
+          "ParamName": "_OffsetAndWeight",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 16,
+          "ByteOffset": 1952
+        },
+        {
+          "ParamName": "_SampleCount",
+          "ParamType": "Int",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 2208
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Dim": 4,
+          "Name": "_SourceSize",
+          "NameIndex": 5,
+          "ByteOffset": 1904,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_OffsetAndWeight",
+          "NameIndex": 6,
+          "ByteOffset": 1952,
+          "ArraySize": 16,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_SampleCount",
+          "NameIndex": 7,
+          "ByteOffset": 2208,
+          "ArraySize": 0,
+          "Type": "Int",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ]
+    },
+    {
+      "Name": "$Globals",
+      "NameIndex": -1,
+      "MatrixParams": [],
+      "VectorParams": [],
+      "StructParams": [],
+      "Size": 2224,
+      "IsPartialCB": false,
+      "CBParams": [],
+      "AllNumericParams": []
+    }
+  ],
+  "ConstantBufferBindings": [
+    {
+      "Name": "$Globals",
+      "NameIndex": 0,
+      "Index": 0,
+      "Set": 0,
+      "ArraySize": 1
+    }
+  ],
+  "TextureParameters": [
+    {
+      "Name": "_SourceTex",
+      "NameIndex": 4,
+      "Index": 0,
+      "Set": 0,
+      "SamplerIndex": -1,
+      "MultiSampled": false,
+      "Dim": 2
+    }
+  ],
+  "Samplers": [],
+  "Buffers": [],
+  "UAVs": [],
+  "EntryPoint": "main",
+  "DebugName": "Hidden/Lens Render Pipeline/PostProcess/ManjuuDepthOfField/SubShader0/Pass3/DX11PixelSM40/8"
+}

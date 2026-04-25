@@ -1,0 +1,134 @@
+{
+  "ConstantBuffers": [
+    {
+      "Name": "$Globals",
+      "NameIndex": 0,
+      "MatrixParams": [
+        {
+          "Name": "unity_MatrixVP",
+          "NameIndex": 2,
+          "ByteOffset": 1024,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        }
+      ],
+      "VectorParams": [],
+      "StructParams": [],
+      "Size": 2224,
+      "IsPartialCB": true,
+      "CBParams": [
+        {
+          "ParamName": "unity_MatrixVP",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 4,
+          "IsMatrix": true,
+          "ArraySize": 0,
+          "ByteOffset": 1024
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Name": "unity_MatrixVP",
+          "NameIndex": 2,
+          "ByteOffset": 1024,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        }
+      ]
+    },
+    {
+      "Name": "UnityPerDraw",
+      "NameIndex": 1,
+      "MatrixParams": [
+        {
+          "Name": "unity_ObjectToWorld",
+          "NameIndex": 3,
+          "ByteOffset": 0,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        }
+      ],
+      "VectorParams": [],
+      "StructParams": [],
+      "Size": 832,
+      "IsPartialCB": true,
+      "CBParams": [
+        {
+          "ParamName": "unity_ObjectToWorld",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 4,
+          "IsMatrix": true,
+          "ArraySize": 0,
+          "ByteOffset": 0
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Name": "unity_ObjectToWorld",
+          "NameIndex": 3,
+          "ByteOffset": 0,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        }
+      ]
+    },
+    {
+      "Name": "$Globals",
+      "NameIndex": -1,
+      "MatrixParams": [],
+      "VectorParams": [],
+      "StructParams": [],
+      "Size": 2224,
+      "IsPartialCB": false,
+      "CBParams": [],
+      "AllNumericParams": []
+    },
+    {
+      "Name": "UnityPerDraw",
+      "NameIndex": -1,
+      "MatrixParams": [],
+      "VectorParams": [],
+      "StructParams": [],
+      "Size": 832,
+      "IsPartialCB": false,
+      "CBParams": [],
+      "AllNumericParams": []
+    }
+  ],
+  "ConstantBufferBindings": [
+    {
+      "Name": "$Globals",
+      "NameIndex": 0,
+      "Index": 0,
+      "Set": 0,
+      "ArraySize": 1
+    },
+    {
+      "Name": "UnityPerDraw",
+      "NameIndex": 1,
+      "Index": 1,
+      "Set": 0,
+      "ArraySize": 1
+    }
+  ],
+  "TextureParameters": [],
+  "Samplers": [],
+  "Buffers": [],
+  "UAVs": [],
+  "EntryPoint": "main",
+  "DebugName": "Hidden/Lens Render Pipeline/PostProcess/ManjuuDepthOfField/SubShader0/Pass3/DX11VertexSM40/1"
+}

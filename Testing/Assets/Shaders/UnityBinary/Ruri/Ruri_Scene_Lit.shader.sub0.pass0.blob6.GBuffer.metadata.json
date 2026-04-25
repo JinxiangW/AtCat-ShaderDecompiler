@@ -1,0 +1,513 @@
+{
+  "ConstantBuffers": [
+    {
+      "Name": "$Globals",
+      "NameIndex": 2,
+      "MatrixParams": [
+        {
+          "Name": "unity_MatrixV",
+          "NameIndex": 23,
+          "ByteOffset": 1120,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        },
+        {
+          "Name": "unity_MatrixVP",
+          "NameIndex": 24,
+          "ByteOffset": 1312,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        },
+        {
+          "Name": "_DistortionMatrixVP",
+          "NameIndex": 25,
+          "ByteOffset": 2208,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        }
+      ],
+      "VectorParams": [
+        {
+          "Dim": 4,
+          "Name": "_ProjectionParams",
+          "NameIndex": 21,
+          "ByteOffset": 416,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_DistortionParams",
+          "NameIndex": 14,
+          "ByteOffset": 2272,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_DistortionCenter",
+          "NameIndex": 15,
+          "ByteOffset": 2288,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_DistortionDirection",
+          "NameIndex": 22,
+          "ByteOffset": 2304,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ],
+      "StructParams": [],
+      "Size": 2320,
+      "IsPartialCB": true,
+      "CBParams": [
+        {
+          "ParamName": "_ProjectionParams",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 416
+        },
+        {
+          "ParamName": "unity_MatrixV",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 4,
+          "IsMatrix": true,
+          "ArraySize": 0,
+          "ByteOffset": 1120
+        },
+        {
+          "ParamName": "unity_MatrixVP",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 4,
+          "IsMatrix": true,
+          "ArraySize": 0,
+          "ByteOffset": 1312
+        },
+        {
+          "ParamName": "_DistortionMatrixVP",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 4,
+          "IsMatrix": true,
+          "ArraySize": 0,
+          "ByteOffset": 2208
+        },
+        {
+          "ParamName": "_DistortionParams",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 2272
+        },
+        {
+          "ParamName": "_DistortionCenter",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 2288
+        },
+        {
+          "ParamName": "_DistortionDirection",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 2304
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Name": "unity_MatrixV",
+          "NameIndex": 23,
+          "ByteOffset": 1120,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        },
+        {
+          "Name": "unity_MatrixVP",
+          "NameIndex": 24,
+          "ByteOffset": 1312,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        },
+        {
+          "Name": "_DistortionMatrixVP",
+          "NameIndex": 25,
+          "ByteOffset": 2208,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        },
+        {
+          "Dim": 4,
+          "Name": "_ProjectionParams",
+          "NameIndex": 21,
+          "ByteOffset": 416,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_DistortionParams",
+          "NameIndex": 14,
+          "ByteOffset": 2272,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_DistortionCenter",
+          "NameIndex": 15,
+          "ByteOffset": 2288,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 4,
+          "Name": "_DistortionDirection",
+          "NameIndex": 22,
+          "ByteOffset": 2304,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ]
+    },
+    {
+      "Name": "UnityPerDraw",
+      "NameIndex": 12,
+      "MatrixParams": [
+        {
+          "Name": "unity_ObjectToWorld",
+          "NameIndex": 16,
+          "ByteOffset": 0,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        },
+        {
+          "Name": "unity_WorldToObject",
+          "NameIndex": 27,
+          "ByteOffset": 64,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        }
+      ],
+      "VectorParams": [
+        {
+          "Dim": 4,
+          "Name": "unity_WorldTransformParams",
+          "NameIndex": 26,
+          "ByteOffset": 144,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ],
+      "StructParams": [],
+      "Size": 720,
+      "IsPartialCB": true,
+      "CBParams": [
+        {
+          "ParamName": "unity_ObjectToWorld",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 4,
+          "IsMatrix": true,
+          "ArraySize": 0,
+          "ByteOffset": 0
+        },
+        {
+          "ParamName": "unity_WorldToObject",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 4,
+          "IsMatrix": true,
+          "ArraySize": 0,
+          "ByteOffset": 64
+        },
+        {
+          "ParamName": "unity_WorldTransformParams",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 144
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Name": "unity_ObjectToWorld",
+          "NameIndex": 16,
+          "ByteOffset": 0,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        },
+        {
+          "Name": "unity_WorldToObject",
+          "NameIndex": 27,
+          "ByteOffset": 64,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 4,
+          "IsMatrix": true
+        },
+        {
+          "Dim": 4,
+          "Name": "unity_WorldTransformParams",
+          "NameIndex": 26,
+          "ByteOffset": 144,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ]
+    },
+    {
+      "Name": "UnityPerMaterial",
+      "NameIndex": 3,
+      "MatrixParams": [],
+      "VectorParams": [
+        {
+          "Dim": 4,
+          "Name": "_BaseMap_ST",
+          "NameIndex": 28,
+          "ByteOffset": 0,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_UseDitherClip",
+          "NameIndex": 11,
+          "ByteOffset": 68,
+          "ArraySize": 0,
+          "Type": "Bool",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_DitherAlpha",
+          "NameIndex": 29,
+          "ByteOffset": 72,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ],
+      "StructParams": [],
+      "Size": 96,
+      "IsPartialCB": true,
+      "CBParams": [
+        {
+          "ParamName": "_BaseMap_ST",
+          "ParamType": "Float",
+          "Rows": 4,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 0
+        },
+        {
+          "ParamName": "_UseDitherClip",
+          "ParamType": "Bool",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 68
+        },
+        {
+          "ParamName": "_DitherAlpha",
+          "ParamType": "Float",
+          "Rows": 1,
+          "Columns": 1,
+          "IsMatrix": false,
+          "ArraySize": 0,
+          "ByteOffset": 72
+        }
+      ],
+      "AllNumericParams": [
+        {
+          "Dim": 4,
+          "Name": "_BaseMap_ST",
+          "NameIndex": 28,
+          "ByteOffset": 0,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 4,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_UseDitherClip",
+          "NameIndex": 11,
+          "ByteOffset": 68,
+          "ArraySize": 0,
+          "Type": "Bool",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        },
+        {
+          "Dim": 1,
+          "Name": "_DitherAlpha",
+          "NameIndex": 29,
+          "ByteOffset": 72,
+          "ArraySize": 0,
+          "Type": "Float",
+          "RowCount": 1,
+          "ColumnCount": 1,
+          "IsMatrix": false
+        }
+      ]
+    },
+    {
+      "Name": "$Globals",
+      "NameIndex": -1,
+      "MatrixParams": [],
+      "VectorParams": [],
+      "StructParams": [],
+      "Size": 2320,
+      "IsPartialCB": false,
+      "CBParams": [],
+      "AllNumericParams": []
+    },
+    {
+      "Name": "UnityPerDraw",
+      "NameIndex": -1,
+      "MatrixParams": [],
+      "VectorParams": [],
+      "StructParams": [],
+      "Size": 720,
+      "IsPartialCB": false,
+      "CBParams": [],
+      "AllNumericParams": []
+    },
+    {
+      "Name": "UnityPerMaterial",
+      "NameIndex": -1,
+      "MatrixParams": [],
+      "VectorParams": [],
+      "StructParams": [],
+      "Size": 96,
+      "IsPartialCB": false,
+      "CBParams": [],
+      "AllNumericParams": []
+    }
+  ],
+  "ConstantBufferBindings": [
+    {
+      "Name": "$Globals",
+      "NameIndex": 2,
+      "Index": 0,
+      "Set": 0,
+      "ArraySize": 1
+    },
+    {
+      "Name": "UnityPerDraw",
+      "NameIndex": 12,
+      "Index": 1,
+      "Set": 0,
+      "ArraySize": 1
+    },
+    {
+      "Name": "UnityPerMaterial",
+      "NameIndex": 3,
+      "Index": 2,
+      "Set": 0,
+      "ArraySize": 1
+    }
+  ],
+  "TextureParameters": [
+    {
+      "Name": "_GeometricDistortionMap",
+      "NameIndex": 20,
+      "Index": 0,
+      "Set": 0,
+      "SamplerIndex": 0,
+      "MultiSampled": false,
+      "Dim": 2
+    }
+  ],
+  "Samplers": [],
+  "Buffers": [],
+  "UAVs": [],
+  "EntryPoint": "main",
+  "DebugName": "Ruri/Scene/Lit/SubShader0/Pass0/DX11DomainSM50/6"
+}
