@@ -7,7 +7,7 @@ internal static class UeRuntimeShaderSymbolReader
 {
     private static readonly Regex GeneratedUniformBufferNamePattern = new("^CB\\d+UBO$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-    public static ShaderSymbolData Read(UnrealShaderParser.UnrealMetadata? metadata)
+    public static ShaderSymbolData Read(UnrealShaderParser.UnrealMetadata? metadata, UeMaterialUniformBufferLayout? materialLayout = null)
     {
         ShaderSymbolData symbols = new();
         if (metadata?.UniformBufferNames == null)
@@ -32,6 +32,8 @@ internal static class UeRuntimeShaderSymbolReader
                 ArraySize = 0,
             });
         }
+
+        UeShaderResourceTableSymbolizer.EnrichSymbolData(symbols, metadata, materialLayout);
 
         symbols.RefreshCompatibilityViews();
         return symbols;

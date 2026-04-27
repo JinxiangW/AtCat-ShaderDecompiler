@@ -135,6 +135,10 @@ public sealed class ShaderDecompiler : IDisposable
         if (metadata != null)
         {
             MergeMissingBindings(merged.ConstantBufferBindings, runtimeSymbols.ConstantBufferBindings, static (a, b) => a.Set == b.Set && a.Index == b.Index);
+            MergeMissingBindings(merged.TextureParameters, runtimeSymbols.TextureParameters, static (a, b) => a.Set == b.Set && a.Index == b.Index);
+            MergeMissingBindings(merged.Samplers, runtimeSymbols.Samplers, static (a, b) => a.Set == b.Set && a.Index == b.Index);
+            MergeMissingBindings(merged.Buffers, runtimeSymbols.Buffers, static (a, b) => a.Set == b.Set && a.Index == b.Index);
+            MergeMissingBindings(merged.UAVs, runtimeSymbols.UAVs, static (a, b) => a.Set == b.Set && a.Index == b.Index);
         }
 
         merged.RefreshCompatibilityViews();

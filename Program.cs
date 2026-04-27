@@ -51,6 +51,11 @@ namespace Ruri.ShaderTools
                 return RunAnalyzeSpirvImages(args);
             }
 
+            if (args.Length >= 1 && string.Equals(args[0], "--auto-decompile", StringComparison.OrdinalIgnoreCase))
+            {
+                return RunAutoDecompile(args);
+            }
+
             string inputPath = Path.GetFullPath(args[0]);
 
             if (TryRunUnityBinaryAuto(inputPath, args, out int unityBinaryExitCode))
@@ -260,8 +265,7 @@ namespace Ruri.ShaderTools
 
                 if (string.IsNullOrWhiteSpace(mappingPath))
                 {
-                    Console.Error.WriteLine("Error: ushaderlib processing requires an explicit --mapping <UnifiedShaderMetadata.json> argument.");
-                    return 1;
+                    Console.WriteLine("Note: --mapping not provided. Falling back to per-library .assetinfo.json/.stableinfo.json sidecars only.");
                 }
 
                 Console.WriteLine($"Mapping path: {(mappingPath ?? "<null>")}");
@@ -270,7 +274,7 @@ namespace Ruri.ShaderTools
                     Console.WriteLine($"Mapping exists: {File.Exists(mappingPath)}");
                 }
 
-                UeShaderLibraryAssetIndex assetIndex = UeShaderLibraryAssetIndexReader.Read(inputPath, lib, mappingPath, materialFilter);
+                UeShaderLibraryAssetIndex assetIndex = UeShaderLibraryAssetIndexReader.Read(inputPath, lib, mappingPath ?? string.Empty, materialFilter);
                 Dictionary<int, HashSet<string>> usageMap = assetIndex.UsageByShaderIndex;
                 foreach ((int shaderIndex, string displayName) in assetIndex.DisplayNameByShaderIndex)
                 {
@@ -371,6 +375,20 @@ namespace Ruri.ShaderTools
 
                                 if (injectionSymbols != null)
                                 {
+                                    if (bestMaterialInfo?.MaterialLayout != null)
+                                    {
+                                        try
+                                        {
+                                            UnrealShaderParser.Parse(code, out _, out UnrealShaderParser.UnrealMetadata? unrealMetadata);
+                                            UeShaderResourceTableSymbolizer.EnrichSymbolData(injectionSymbols, unrealMetadata, bestMaterialInfo.MaterialLayout);
+                                            injectionSymbols.RefreshCompatibilityViews();
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            Console.Error.WriteLine($"Material-aware SRT enrichment failed: {ex.Message}");
+                                        }
+                                    }
+
                                     try
                                     {
                                         DecompileResult resWithSymbols = decompiler.Decompile(code, ShaderArchitecture.Unknown, injectionSymbols, 50);
@@ -448,6 +466,96 @@ namespace Ruri.ShaderTools
                 11 => "AS", // Amplification
                 _ => $"Freq{frequency}"
             };
+        }
+
+        static int RunAutoDecompile(string[] args)
+        {
+            if (args.Length < 2)
+            {
+                Console.Error.WriteLine("Usage: ShaderDecompiler.exe --auto-decompile <exportRoot> [--material <filter>]");
+                Console.Error.WriteLine("  Loops every *.ushaderlib under <exportRoot>/Content and decompiles each to <exportRoot>/Decompiled/<libname>/.");
+                return 1;
+            }
+
+            string exportRoot = Path.GetFullPath(args[1]);
+            if (!Directory.Exists(exportRoot))
+            {
+                Console.Error.WriteLine($"Error: export root not found: {exportRoot}");
+                return 1;
+            }
+
+            string? materialFilter = null;
+            for (int i = 2; i < args.Length; i++)
+            {
+                if (string.Equals(args[i], "--material", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    materialFilter = args[i + 1];
+                    i++;
+                }
+            }
+
+            string contentDir = Path.Combine(exportRoot, "Content");
+            string searchRoot = Directory.Exists(contentDir) ? contentDir : exportRoot;
+            string[] libraries = Directory.GetFiles(searchRoot, "*.ushaderlib", SearchOption.AllDirectories)
+                .OrderBy(static path => path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            if (libraries.Length == 0)
+            {
+                Console.Error.WriteLine($"Error: no *.ushaderlib found under {searchRoot}");
+                return 1;
+            }
+
+            string mappingPath = Path.Combine(exportRoot, "UnifiedShaderMetadata.json");
+            bool hasMapping = File.Exists(mappingPath);
+            if (!hasMapping)
+            {
+                Console.Error.WriteLine($"Note: UnifiedShaderMetadata.json missing at {mappingPath}; falling back to sidecar-only resolution.");
+            }
+
+            string decompiledRoot = Path.Combine(exportRoot, "Decompiled");
+            Directory.CreateDirectory(decompiledRoot);
+
+            int failures = 0;
+            int totalShaders = 0;
+            foreach (string library in libraries)
+            {
+                string libName = Path.GetFileNameWithoutExtension(library);
+                string outputDir = Path.Combine(decompiledRoot, libName);
+                Console.WriteLine($"=== {libName} ===");
+                Console.WriteLine($"  library: {library}");
+                Console.WriteLine($"  output:  {outputDir}");
+
+                int rc;
+                try
+                {
+                    rc = ProcessUnrealLibrary(library, outputDir, false, hasMapping ? mappingPath : null, null, materialFilter);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"  Library {libName} crashed: {ex.Message}");
+                    failures++;
+                    continue;
+                }
+
+                if (rc != 0)
+                {
+                    failures++;
+                }
+
+                if (Directory.Exists(outputDir))
+                {
+                    int hlslCount = Directory.GetFiles(outputDir, "*.hlsl", SearchOption.TopDirectoryOnly).Length;
+                    int glslCount = Directory.GetFiles(outputDir, "*.glsl", SearchOption.TopDirectoryOnly).Length;
+                    int produced = hlslCount + glslCount;
+                    totalShaders += produced;
+                    Console.WriteLine($"  produced: {produced} shader source files (.hlsl={hlslCount}, .glsl={glslCount})");
+                }
+            }
+
+            Console.WriteLine();
+            Console.WriteLine($"Auto-decompile finished. Libraries={libraries.Length} Failed={failures} ProducedShaders={totalShaders}");
+            return failures == 0 ? 0 : 2;
         }
 
         static int RunAnalyzePreshader(string[] args)

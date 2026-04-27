@@ -74,4 +74,5 @@ internal sealed class UeShaderSymbolInputs
     public bool UsedLoadedMaterialResources { get; set; }
     public ConstantBuffer? MaterialConstantBuffer { get; set; }
     public List<FMaterialParameterInfo> NumericParameterInfos { get; } = new();
+    public UeMaterialUniformBufferLayout.MaterialResourceCounts? MaterialResourceCounts { get; set; }
 }

@@ -73,7 +73,10 @@ internal sealed class UeShaderSymbolReader
         ShaderSymbolData metadata = UeShaderSymbolBuilder.Build(inputs);
         string header = UeShaderSymbolHeaderWriter.Build(inputs);
         int score = inputs.UsedLoadedMaterialResources ? 2 : inputs.NumericParameterInfos.Count > 0 ? 1 : 0;
-        UeShaderSymbolSource source = new(normalizedPath, metadata, header, score, inputs.UsedLoadedMaterialResources);
+        UeMaterialUniformBufferLayout? materialLayout = inputs.MaterialResourceCounts != null
+            ? new UeMaterialUniformBufferLayout(inputs.MaterialResourceCounts)
+            : null;
+        UeShaderSymbolSource source = new(normalizedPath, metadata, header, score, inputs.UsedLoadedMaterialResources, materialLayout);
         _cache[cacheKey] = source;
         return source;
     }
@@ -114,4 +117,5 @@ internal sealed record UeShaderSymbolSource(
     ShaderSymbolData Metadata,
     string Header,
     int Score,
-    bool UsedLoadedMaterialResources);
+    bool UsedLoadedMaterialResources,
+    UeMaterialUniformBufferLayout? MaterialLayout);

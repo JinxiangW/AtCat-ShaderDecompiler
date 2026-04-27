@@ -22,6 +22,7 @@ internal static class UeShaderSymbolInputsReader
         {
             inputs.MaterialConstantBuffer = ReadMaterialConstantBuffer(uniformExpressionSet.Value);
             ReadUniformNumericParameters(uniformExpressionSet.Value, inputs.NumericParameterInfos);
+            inputs.MaterialResourceCounts = ReadMaterialResourceCounts(uniformExpressionSet.Value);
         }
 
         ReadFallbackNumericParameters(asset, inputs.NumericParameterInfos);
@@ -193,6 +194,52 @@ internal static class UeShaderSymbolInputsReader
 
         materialBuffer.CBParams.Sort((left, right) => left.ByteOffset.CompareTo(right.ByteOffset));
         return materialBuffer;
+    }
+
+    private static UeMaterialUniformBufferLayout.MaterialResourceCounts? ReadMaterialResourceCounts(JsonElement uniformExpressionSet)
+    {
+        if (!uniformExpressionSet.TryGetProperty("UniformTextureParameters", out JsonElement textureParams) || textureParams.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        // EMaterialTextureParameterType ordering matches FUniformExpressionSet::CreateBufferStruct:
+        //   0 = Standard2D, 1 = Cube, 2 = Array2D, 3 = ArrayCube, 4 = Volume, 5 = Virtual.
+        // External textures are a separate top-level array on the expression set.
+        int Standard2D = ReadTypedArrayLength(textureParams, 0);
+        int Cube = ReadTypedArrayLength(textureParams, 1);
+        int Array2D = ReadTypedArrayLength(textureParams, 2);
+        int ArrayCube = ReadTypedArrayLength(textureParams, 3);
+        int Volume = ReadTypedArrayLength(textureParams, 4);
+        int VirtualPhysical = ReadTypedArrayLength(textureParams, 5);
+
+        int External = 0;
+        if (uniformExpressionSet.TryGetProperty("UniformExternalTextureParameters", out JsonElement externalParams) && externalParams.ValueKind == JsonValueKind.Array)
+        {
+            External = externalParams.GetArrayLength();
+        }
+
+        // Page-table SRVs are emitted alongside virtual-texture physical pairs by CreateBufferStruct.
+        return new UeMaterialUniformBufferLayout.MaterialResourceCounts(
+            Standard2D: Standard2D,
+            Cube: Cube,
+            Array2D: Array2D,
+            ArrayCube: ArrayCube,
+            Volume: Volume,
+            External: External,
+            VirtualPhysical: VirtualPhysical,
+            VirtualPageTable: VirtualPhysical);
+    }
+
+    private static int ReadTypedArrayLength(JsonElement arrayOfArrays, int index)
+    {
+        if (index < 0 || index >= arrayOfArrays.GetArrayLength())
+        {
+            return 0;
+        }
+
+        JsonElement inner = arrayOfArrays[index];
+        return inner.ValueKind == JsonValueKind.Array ? inner.GetArrayLength() : 0;
     }
 
     private static void ReadUniformNumericParameters(JsonElement uniformExpressionSet, List<FMaterialParameterInfo> destination)

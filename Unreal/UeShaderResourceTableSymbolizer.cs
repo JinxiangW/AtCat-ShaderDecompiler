@@ -1,0 +1,170 @@
+using System.Collections.Generic;
+using System.Linq;
+
+namespace Ruri.ShaderTools.Unreal;
+
+// Bridges SRT decode + the shader's optional FShaderCodeUniformBuffers
+// list to a ShaderSymbolData populated with named bindings:
+//   - one BufferBinding per uniform buffer (`b<i>` named `<UBName>`)
+//   - one TextureParameter / SamplerParameter / BufferBinding /
+//     UAVParameter per SRT entry, named `<UBName>_<ResourceLabel>`.
+//
+// The ResourceLabel here is a *shape-correct placeholder* — for the
+// `Material` UB it is later overwritten with proper
+// `Texture2D_<i>` / `Texture2D_<i>Sampler` etc. by the Material UB
+// layout helper. For engine UBs (`View`, `OpaqueBasePass`, ...) it is
+// looked up against EngineUniformBuffers, with a placeholder fallback.
+//
+// Anonymous placeholders carry the UB context so that even when we
+// don't yet know the canonical member name, the decompiled HLSL gets
+// a far more readable identifier than spirv-cross's
+// `_RegisterSpace0[N]`.
+internal static class UeShaderResourceTableSymbolizer
+{
+    public static void EnrichSymbolData(
+        ShaderSymbolData target,
+        UnrealShaderParser.UnrealMetadata? unrealMetadata,
+        UeMaterialUniformBufferLayout? materialLayout = null)
+    {
+        if (unrealMetadata == null)
+        {
+            return;
+        }
+
+        IReadOnlyList<string>? uniformBufferNames = unrealMetadata.UniformBufferNames;
+        AppendUniformBufferBindings(target, uniformBufferNames);
+
+        FShaderResourceTable srt = unrealMetadata.SRT;
+        List<UeSrtRecord> records = UeShaderResourceTableDecoder.Decode(srt, uniformBufferNames);
+        foreach (UeSrtRecord record in records)
+        {
+            string resolvedName = ResolveResourceName(record, materialLayout);
+            switch (record.RegisterType)
+            {
+                case UeSrtRegisterType.Texture:
+                case UeSrtRegisterType.ShaderResourceView:
+                    AppendTextureParameter(target, record, resolvedName);
+                    break;
+                case UeSrtRegisterType.Sampler:
+                    AppendSamplerParameter(target, record, resolvedName);
+                    break;
+                case UeSrtRegisterType.UnorderedAccessView:
+                    AppendUavParameter(target, record, resolvedName);
+                    break;
+            }
+        }
+    }
+
+    private static void AppendUniformBufferBindings(ShaderSymbolData target, IReadOnlyList<string>? uniformBufferNames)
+    {
+        if (uniformBufferNames == null)
+        {
+            return;
+        }
+
+        for (int i = 0; i < uniformBufferNames.Count; i++)
+        {
+            string name = uniformBufferNames[i];
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                continue;
+            }
+
+            if (target.ConstantBufferBindings.Any(existing => existing.Set == 0 && existing.Index == i))
+            {
+                continue;
+            }
+
+            target.ConstantBufferBindings.Add(new BufferBinding
+            {
+                Name = name,
+                NameIndex = -1,
+                Index = i,
+                Set = 0,
+                ArraySize = 0,
+            });
+        }
+    }
+
+    private static void AppendTextureParameter(ShaderSymbolData target, UeSrtRecord record, string resolvedName)
+    {
+        if (target.TextureParameters.Any(existing => existing.Set == 0 && existing.Index == record.BindIndex))
+        {
+            return;
+        }
+
+        target.TextureParameters.Add(new TextureParameter
+        {
+            Name = resolvedName,
+            NameIndex = -1,
+            Index = record.BindIndex,
+            Set = 0,
+            SamplerIndex = -1,
+            MultiSampled = false,
+            Dim = 2,
+        });
+    }
+
+    private static void AppendSamplerParameter(ShaderSymbolData target, UeSrtRecord record, string resolvedName)
+    {
+        if (target.Samplers.Any(existing => existing.Set == 0 && existing.Index == record.BindIndex))
+        {
+            return;
+        }
+
+        target.Samplers.Add(new SamplerParameter
+        {
+            Sampler = (uint)record.BindIndex,
+            Index = record.BindIndex,
+            Set = 0,
+        });
+    }
+
+    private static void AppendUavParameter(ShaderSymbolData target, UeSrtRecord record, string resolvedName)
+    {
+        if (target.UAVs.Any(existing => existing.Set == 0 && existing.Index == record.BindIndex))
+        {
+            return;
+        }
+
+        target.UAVs.Add(new UAVParameter
+        {
+            Name = resolvedName,
+            NameIndex = -1,
+            Index = record.BindIndex,
+            Set = 0,
+            OriginalIndex = record.BindIndex,
+        });
+    }
+
+    private static string ResolveResourceName(UeSrtRecord record, UeMaterialUniformBufferLayout? materialLayout)
+    {
+        string ubName = string.IsNullOrWhiteSpace(record.UniformBufferName)
+            ? $"UB{record.UniformBufferIndex}"
+            : record.UniformBufferName!;
+
+        if (string.Equals(ubName, "Material", System.StringComparison.Ordinal) && materialLayout != null)
+        {
+            string? typed = materialLayout.ResolveResourceName(record);
+            if (!string.IsNullOrWhiteSpace(typed))
+            {
+                return typed!;
+            }
+        }
+
+        string? engine = EngineUniformBuffers.Resolve(ubName, record.ResourceIndex, record.RegisterType);
+        if (!string.IsNullOrWhiteSpace(engine))
+        {
+            return engine!;
+        }
+
+        string suffix = record.RegisterType switch
+        {
+            UeSrtRegisterType.Sampler => $"Sampler{record.ResourceIndex}",
+            UeSrtRegisterType.UnorderedAccessView => $"UAV{record.ResourceIndex}",
+            UeSrtRegisterType.ShaderResourceView => $"SRV{record.ResourceIndex}",
+            _ => $"Resource{record.ResourceIndex}",
+        };
+        return $"{ubName}_{suffix}";
+    }
+}
