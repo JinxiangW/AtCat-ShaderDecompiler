@@ -97,6 +97,81 @@ grep -c 'OpaqueBasePass_' *.hlsl | sort -t':' -k2 -n -r | head
 
 Pick the same shader index across iterations as the canonical fixture.
 
+## It. 6 (latest) — `MI_Cliff_Parent_PS_3500` material-symbol round
+
+Surgical run via `--shader-index 3500` on the SM5 Oni_Valley library.
+Material: `Oni_Valley_VFX/Content/Oni_Project/Materials/MI_Cliff_Parent`.
+Cross-reference: user-supplied `MI_Cliff_large.json` (a child instance
+of the same parent material).
+
+### What changed
+- Deleted `Unreal/EngineUniformBuffers.cs` (was hard-coded UE-source
+  layouts of `View` / `OpaqueBasePass` / `TranslucentBasePass` / etc.).
+  Banned by project rule. Symbolizer now falls through to UB-context
+  placeholder for engine UBs.
+- New `Unreal/UeUnifiedMaterialReader.cs` — reads
+  `MaterialInterfaces[<path>].LoadedShaderMaps[*].MaterialShaderMapContent.UniformExpressionSet`
+  directly out of the auto-export hook's
+  `UnifiedShaderMetadata.json`, so we no longer require per-material
+  `*.uasset.json` files (which the FModel UI only writes when the user
+  manually clicks Save Properties on every material).
+- `Unreal/UeShaderSymbolInputsReader.cs`:
+  - `ParseMaterialParameterInfo` now accepts both shapes
+    (`{ ParameterInfo: { Name } }` from per-material JSON, and the
+    flattened `{ ParameterName }` shape from the unified metadata).
+  - Material-CB extraction now populates `VectorParams`
+    (`[Name, Type, ByteOffset, RowCount, ColumnCount]`) instead of
+    raw `CBParams`. `RefreshCompatibilityViews` regenerates `CBParams`
+    from `VectorParams`+`MatrixParams`, and the SPIR-V structured
+    rewriter consumes the typed arrays. Direct `CBParams` adds were
+    being preserved by the data layer but hidden from the rewriter,
+    so named members never reached the HLSL output.
+  - Added `ReadFromUniformExpressionSet(materialPath, shaderPlatform, ues)`
+    public entry so the new unified reader can hand a UES JsonElement
+    straight in without faking the `LoadedMaterialResources` wrapper.
+- `Program.cs` — material lookup now tries `UeUnifiedMaterialReader`
+  first, falls back to the old per-material-JSON path. Material
+  layout from the unified reader is plumbed through to the SRT
+  symbolizer for typed Material-UB SRT names if any survive.
+
+### Result on shader 3500
+
+| Slot | Before this iteration | After |
+| --- | --- | --- |
+| `t2` | `View_PrimitiveSceneData` (FAKE — hard-coded from UE source) | `View_SRV45` (UB-context placeholder, source-truth honest) |
+| `t3` | `View_SkyIrradianceEnvironmentMap` (FAKE) | `View_SRV49` (placeholder) |
+| `t4`–`t14` (11 Texture2D) | anonymous | unchanged (loose bindings, not in SRT) |
+| `cbuffer Material` body | flat `float4 Material_1_m0[N]` | last-name-wins still on HLSL surface (collapsed array), but the metadata sidecar now carries the **12 correctly named** vector params: `SelectionColor` (b0), `UV Scale Near` (b16), `Normal blend` (b28), `Blend Sharpness (S)` (b32), `Blend Bias (S)` (b40), `Curvature cavity intensity` (b64), `Curvature highlights intensity` (b72), `AO tint` (b80), `AO tint power` (b108), `Specular detail` (b112), `Specular softness` (b116), `Roughness dullness` (b120) |
+
+All 12 names are **byte-identical** matches to the
+`ScalarParameterValues` and `VectorParameterValues` arrays in
+`MI_Cliff_large.json` — the user's cross-reference. Names trace from
+`UnifiedShaderMetadata.json`'s
+`UniformExpressionSet.UniformNumericParameters[i].ParameterName`
+through `UniformPreshaders[i]` → `UniformPreshaderFields[i].BufferOffset`,
+which is the only proven source-truth bridge for material CB members
+in shipping cooks.
+
+### Known follow-up
+
+- **HLSL `cbuffer` body is one collapsed array, not 12 named members.**
+  Cause: the cooked DXBC has the Material UB bytecode-side as a single
+  `float4 m0[N]` array (because RDEF was stripped and the only
+  reflection that survived is the flat array), so the SPIR-V module
+  has one struct member to begin with. Our SPIR-V structured-CB
+  rewriter currently *renames* the existing single member with the
+  last patched name; it does not split a one-member float4 array
+  into N members at proven byte offsets. The metadata sidecar already
+  has the right shape — the next iteration should teach the rewriter
+  to break a flat array into named members at known byte offsets.
+- **Material UB textures (T4–T14) stay anonymous.** The Material UB
+  in this shader's SRT has zero entries (the SRT's `ResourceTableBits`
+  for the Material UB index is unset). They're loose
+  `FShaderParameterBindings.ResourceParameters` slots — UE's other
+  binding path. Recovering names there is the open lead in
+  `CURRENT_LIMITATIONS.md` (CUE4Parse `Bindings.ResourceParameters`
+  deserialization investigation).
+
 ## Iteration Log
 - **It. 0** — Baseline established; SRT decoder, engine UB layouts,
   Material texture naming, and auto-decompile driver all missing.

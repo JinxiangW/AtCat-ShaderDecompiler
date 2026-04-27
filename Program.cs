@@ -470,6 +470,11 @@ namespace Ruri.ShaderTools
                             {
                                 File.WriteAllBytes(basePath + ".spv", res.IntermediateSpirv);
                             }
+
+                            if (!string.IsNullOrWhiteSpace(res.StructuredRewriteSummary))
+                            {
+                                File.WriteAllText(basePath + ".rewrite.txt", res.StructuredRewriteSummary);
+                            }
                             successCount++;
                         }
                         else

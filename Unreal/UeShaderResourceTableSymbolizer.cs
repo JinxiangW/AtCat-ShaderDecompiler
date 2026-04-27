@@ -35,6 +35,10 @@ internal static class UeShaderResourceTableSymbolizer
         AppendUniformBufferBindings(target, uniformBufferNames);
 
         FShaderResourceTable srt = unrealMetadata.SRT;
+        if (System.Environment.GetEnvironmentVariable("RURI_SRT_DEBUG") == "1")
+        {
+            DumpSrt(srt, uniformBufferNames);
+        }
         List<UeSrtRecord> records = UeShaderResourceTableDecoder.Decode(srt, uniformBufferNames);
         foreach (UeSrtRecord record in records)
         {
@@ -52,6 +56,39 @@ internal static class UeShaderResourceTableSymbolizer
                     AppendUavParameter(target, record, resolvedName);
                     break;
             }
+        }
+    }
+
+    private static void DumpSrt(FShaderResourceTable srt, IReadOnlyList<string>? uniformBufferNames)
+    {
+        System.Console.Error.WriteLine($"[SRT] ResourceTableBits=0x{srt.ResourceTableBits:X8} ({System.Convert.ToString(srt.ResourceTableBits, 2).PadLeft(32, '0')})");
+        if (uniformBufferNames != null)
+        {
+            for (int i = 0; i < uniformBufferNames.Count; i++)
+            {
+                bool used = (srt.ResourceTableBits & (1u << i)) != 0;
+                System.Console.Error.WriteLine($"[SRT] UB[{i}] = {uniformBufferNames[i]} (used={used})");
+            }
+        }
+        DumpMap("SRV/Texture", srt.ShaderResourceViewMap);
+        DumpMap("Sampler", srt.SamplerMap);
+        DumpMap("UAV", srt.UnorderedAccessViewMap);
+        DumpMap("LayoutHashes", srt.ResourceTableLayoutHashes);
+    }
+
+    private static void DumpMap(string label, IReadOnlyList<uint>? map)
+    {
+        if (map == null)
+        {
+            System.Console.Error.WriteLine($"[SRT] {label}: <null>");
+            return;
+        }
+        System.Console.Error.WriteLine($"[SRT] {label} ({map.Count} entries):");
+        for (int i = 0; i < map.Count; i++)
+        {
+            uint token = map[i];
+            (int bindIndex, int resourceIndex, int unpackedBufferIndex) = UeShaderResourceTableDecoder.Unpack(token);
+            System.Console.Error.WriteLine($"[SRT]   [{i:D3}] = 0x{token:X8} -> bind={bindIndex} resource={resourceIndex} ub={unpackedBufferIndex}");
         }
     }
 
