@@ -244,8 +244,6 @@ namespace Ruri.ShaderTools
             try 
             {
                 var nameMap = nameMapInput ?? new Dictionary<int, string>();
-                var usageMap = new Dictionary<int, HashSet<string>>();
-                ShaderLibraryTruthSidecarResolver sidecarResolver = ShaderLibraryTruthSidecarResolver.Load(inputPath);
                 string? normalizedMaterialFilter = string.IsNullOrWhiteSpace(materialFilter)
                     ? null
                     : materialFilter.Replace('\\', '/');
@@ -253,57 +251,6 @@ namespace Ruri.ShaderTools
 
                 var lib = UnrealShaderLibraryReader.Read(inputPath);
                 Console.WriteLine($"Read Library: {lib.Version} Version, {lib.ShaderEntries.Length} shaders.");
-
-                for (int shaderMapIndex = 0; shaderMapIndex < Math.Min(lib.ShaderMapEntries.Length, lib.ShaderMapHashes.Count); shaderMapIndex++)
-                {
-                    IReadOnlyCollection<string> provenAssets = sidecarResolver.GetAssetsForShaderMap(lib.ShaderMapHashes[shaderMapIndex]);
-                    if (provenAssets.Count == 0)
-                    {
-                        continue;
-                    }
-
-                    UnrealShaderLibraryReader.FShaderMapEntry shaderMapEntry = lib.ShaderMapEntries[shaderMapIndex];
-                    foreach (string asset in provenAssets)
-                    {
-                        for (uint k = 0; k < shaderMapEntry.NumShaders; k++)
-                        {
-                            long idxInternal = shaderMapEntry.ShaderIndicesOffset + k;
-                            if (idxInternal < 0 || idxInternal >= lib.ShaderIndices.Length)
-                            {
-                                continue;
-                            }
-
-                            int shaderIndex = (int)lib.ShaderIndices[idxInternal];
-                            if (!usageMap.TryGetValue(shaderIndex, out HashSet<string>? materials))
-                            {
-                                materials = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                                usageMap[shaderIndex] = materials;
-                            }
-
-                            materials.Add(asset);
-                        }
-                    }
-                }
-
-                for (int shaderIndex = 0; shaderIndex < lib.ShaderHashes.Count && shaderIndex < lib.ShaderEntries.Length; shaderIndex++)
-                {
-                    IReadOnlyCollection<string> provenAssets = sidecarResolver.GetAssetsForShaderHash(lib.ShaderHashes[shaderIndex], lib.ShaderEntries[shaderIndex].Frequency);
-                    if (provenAssets.Count == 0)
-                    {
-                        continue;
-                    }
-
-                    if (!usageMap.TryGetValue(shaderIndex, out HashSet<string>? materials))
-                    {
-                        materials = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                        usageMap[shaderIndex] = materials;
-                    }
-
-                    foreach (string asset in provenAssets)
-                    {
-                        materials.Add(asset);
-                    }
-                }
 
                 if (string.IsNullOrWhiteSpace(outputPath))
                 {
@@ -323,6 +270,16 @@ namespace Ruri.ShaderTools
                     Console.WriteLine($"Mapping exists: {File.Exists(mappingPath)}");
                 }
 
+                UeShaderLibraryAssetIndex assetIndex = UeShaderLibraryAssetIndexReader.Read(inputPath, lib, mappingPath, materialFilter);
+                Dictionary<int, HashSet<string>> usageMap = assetIndex.UsageByShaderIndex;
+                foreach ((int shaderIndex, string displayName) in assetIndex.DisplayNameByShaderIndex)
+                {
+                    if (!nameMap.ContainsKey(shaderIndex))
+                    {
+                        nameMap[shaderIndex] = displayName;
+                    }
+                }
+
                 // 3. Load unified UE metadata.
                 UnifiedShaderMetadataResolver? unifiedResolver = null;
                 if (!string.IsNullOrEmpty(mappingPath) && File.Exists(mappingPath))
@@ -333,53 +290,17 @@ namespace Ruri.ShaderTools
                     {
                         var hashToMats = unifiedResolver.BuildPackageShaderMapHashToMaterialsMap(normalizedMaterialFilter);
                         Console.WriteLine($"Loaded {hashToMats.Count} shader map hash entries.");
-
-                        int mapCount = Math.Min(lib.ShaderMapEntries.Length, lib.ShaderMapHashes.Count);
-                        int mappedShaders = 0;
-
-                        for (int i = 0; i < mapCount; i++)
-                        {
-                            var hash = lib.ShaderMapHashes[i];
-                            if (!hashToMats.TryGetValue(hash, out var mats))
-                            {
-                                continue;
-                            }
-
-                            var entry = lib.ShaderMapEntries[i];
-                            string fullMaterialPath = mats.FirstOrDefault() ?? "Unknown";
-                            var niceName = Path.GetFileNameWithoutExtension(fullMaterialPath);
-                            if (string.IsNullOrEmpty(niceName)) niceName = "UnknownMaterial";
-
-                            for (uint k = 0; k < entry.NumShaders; k++)
-                            {
-                                long idxInternal = entry.ShaderIndicesOffset + k;
-                                if (idxInternal < lib.ShaderIndices.Length)
-                                {
-                                    uint sIdx = lib.ShaderIndices[idxInternal];
-                                    if (!usageMap.ContainsKey((int)sIdx)) usageMap[(int)sIdx] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                                    foreach (var m in mats) usageMap[(int)sIdx].Add(m);
-
-                                    if (!nameMap.ContainsKey((int)sIdx))
-                                    {
-                                        nameMap[(int)sIdx] = niceName;
-                                        mappedShaders++;
-                                    }
-                                }
-                            }
-                        }
-
-                        Console.WriteLine($"Mapped {mappedShaders} shaders using unified metadata.");
                     }
                 }
 
                 // 4. Load runtime UE material metadata resolver.
-                UeMaterialJsonSymbolExtractor? materialSymbolExtractor = null;
+                UeShaderSymbolReader? materialSymbolExtractor = null;
                 if (!string.IsNullOrEmpty(mappingPath))
                 {
                     string exportRoot = Path.GetDirectoryName(mappingPath)!;
                     if (Directory.Exists(exportRoot))
                     {
-                        materialSymbolExtractor = new UeMaterialJsonSymbolExtractor(exportRoot, unifiedResolver);
+                        materialSymbolExtractor = new UeShaderSymbolReader(exportRoot);
                     }
                 }
 
@@ -437,7 +358,7 @@ namespace Ruri.ShaderTools
                                  sb.AppendLine($" * Stage: {typeSuffix}");
                                  sb.AppendLine($" * Used by {usedBy.Count} Materials:");
                                  
-                                  UeMaterialSymbolInfo? bestMaterialInfo = null;
+                                  UeShaderSymbolSource? bestMaterialInfo = null;
                                   string bestMaterialName = string.Empty;
                                   string shaderPlatformForShader = entry.Frequency switch
                                   {
@@ -449,7 +370,7 @@ namespace Ruri.ShaderTools
                                   {
                                       if (bestMaterialInfo == null && materialSymbolExtractor != null)
                                       {
-                                          bestMaterialInfo = materialSymbolExtractor.GetMaterial(material, shaderPlatformForShader);
+                                          bestMaterialInfo = materialSymbolExtractor.GetSource(material, shaderPlatformForShader);
                                           if (bestMaterialInfo != null)
                                           {
                                               bestMaterialName = material;

@@ -128,25 +128,20 @@ public sealed class ShaderDecompiler : IDisposable
 
     private Pipeline Pipe(byte[] binary, ShaderArchitecture format, ShaderSymbolData? metadata)
     {
-        ShaderBundle bundle = UnrealShaderParser.Parse(binary);
-        ShaderSymbolData merged = metadata ?? bundle.Symbols ?? new ShaderSymbolData();
-        if (metadata != null && bundle.Symbols != null)
+        byte[] nativeCode = UnrealShaderParser.Parse(binary, out ShaderArchitecture parsedArchitecture, out UnrealShaderParser.UnrealMetadata? unrealMetadata);
+        ShaderSymbolData runtimeSymbols = UeRuntimeShaderSymbolReader.Read(unrealMetadata);
+        ShaderSymbolData merged = metadata ?? runtimeSymbols;
+
+        if (metadata != null)
         {
-            if (string.IsNullOrWhiteSpace(merged.EntryPoint)) merged.EntryPoint = bundle.Symbols.EntryPoint;
-            if (string.IsNullOrWhiteSpace(merged.DebugName)) merged.DebugName = bundle.Symbols.DebugName;
-            AddMissing(merged.ConstantBufferBindings, bundle.Symbols.ConstantBufferBindings, static (a, b) => a.Set == b.Set && a.Index == b.Index && string.Equals(a.Name, b.Name, StringComparison.Ordinal));
-            AddMissing(merged.TextureParameters, bundle.Symbols.TextureParameters, static (a, b) => a.Set == b.Set && a.Index == b.Index && string.Equals(a.Name, b.Name, StringComparison.Ordinal));
-            AddMissing(merged.Samplers, bundle.Symbols.Samplers, static (a, b) => a.Set == b.Set && a.Index == b.Index);
-            AddMissing(merged.Buffers, bundle.Symbols.Buffers, static (a, b) => a.Set == b.Set && a.Index == b.Index && string.Equals(a.Name, b.Name, StringComparison.Ordinal));
-            AddMissing(merged.UAVs, bundle.Symbols.UAVs, static (a, b) => a.Set == b.Set && a.Index == b.Index && string.Equals(a.Name, b.Name, StringComparison.Ordinal));
-            AddMissing(merged.ConstantBuffers, bundle.Symbols.ConstantBuffers, static (a, b) => string.Equals(a.Name, b.Name, StringComparison.Ordinal));
+            MergeMissingBindings(merged.ConstantBufferBindings, runtimeSymbols.ConstantBufferBindings, static (a, b) => a.Set == b.Set && a.Index == b.Index && string.Equals(a.Name, b.Name, StringComparison.Ordinal));
         }
 
         merged.RefreshCompatibilityViews();
-        return new(bundle.NativeCode, Detect(format == ShaderArchitecture.Unknown ? bundle.Architecture : format, bundle.NativeCode), merged, bundle.EngineMetadata as UnrealShaderParser.UnrealMetadata);
+        return new(nativeCode, Detect(format == ShaderArchitecture.Unknown ? parsedArchitecture : format, nativeCode), merged, unrealMetadata);
     }
 
-    private static void AddMissing<T>(List<T> target, IEnumerable<T> source, Func<T, T, bool> match)
+    private static void MergeMissingBindings<T>(List<T> target, IEnumerable<T> source, Func<T, T, bool> match)
     {
         foreach (T item in source)
             if (!target.Any(existing => match(existing, item)))

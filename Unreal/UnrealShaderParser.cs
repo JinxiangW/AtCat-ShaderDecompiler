@@ -2,8 +2,9 @@ namespace Ruri.ShaderTools.Unreal
 {
     public class UnrealShaderParser
     {
-        public static ShaderBundle Parse(byte[] data)
+        public static byte[] Parse(byte[] data, out ShaderArchitecture architecture, out UnrealMetadata? metadata)
         {
+            metadata = null;
             using var reader = new BinaryReader(new MemoryStream(data));
             
             // Try to parse FShaderResourceTable
@@ -22,11 +23,13 @@ namespace Ruri.ShaderTools.Unreal
             // If data starts with "DXBC", it's raw.
             if (IsDxbc(data))
             {
-                return new ShaderBundle { NativeCode = data, Architecture = ShaderArchitecture.Dxbc };
+                architecture = ShaderArchitecture.Dxbc;
+                return data;
             }
             if (IsDxil(data))
             {
-                return new ShaderBundle { NativeCode = data, Architecture = ShaderArchitecture.Dxil };
+                architecture = ShaderArchitecture.Dxil;
+                return data;
             }
 
             // Assume UE format with SRT
@@ -86,7 +89,7 @@ namespace Ruri.ShaderTools.Unreal
             if (arch != ShaderArchitecture.Unknown && codeStart >= 0)
             {
                 // Parse optional data between SRT and Code
-                var metadata = new UnrealMetadata { SRT = srt, UniformBufferNames = new List<string>(), OptionalDataKeys = new List<string>() };
+                metadata = new UnrealMetadata { SRT = srt, UniformBufferNames = new List<string>(), OptionalDataKeys = new List<string>() };
 
                 // Extract code
                 int len = (int)(data.Length - codeStart);
@@ -99,31 +102,13 @@ namespace Ruri.ShaderTools.Unreal
                 byte[] code = new byte[nativeCodeSize];
                 Array.Copy(data, codeStart, code, 0, nativeCodeSize);
 
-                ParseOptionalDataFromShaderTail(code, metadata);
+                // UE source uses FShaderCodeReader on the full shader blob that still includes
+                // optional data at the tail. Parse optional data from the original entry bytes,
+                // not from the stripped native container we pass downstream for decompilation.
+                ParseOptionalDataFromShaderTail(data, metadata);
 
-                var bundle = new ShaderBundle 
-                { 
-                    NativeCode = code, 
-                    Architecture = arch,
-                    EngineMetadata = metadata 
-                };
-                
-                // Map Uniform Buffers
-                if (metadata.UniformBufferNames != null && metadata.UniformBufferNames.Count > 0)
-                {
-                    for (int i = 0; i < metadata.UniformBufferNames.Count; i++)
-                    {
-                        bundle.Symbols.ConstantBufferBindings.Add(new BufferBinding
-                        {
-                            Name = metadata.UniformBufferNames[i],
-                            Set = 0,
-                            Index = i,
-                            ArraySize = 0,
-                        });
-                    }
-                }
-                
-                return bundle;
+                architecture = arch;
+                return code;
             }
             
             // Fallback: Scan for magic in the whole buffer
@@ -151,10 +136,12 @@ namespace Ruri.ShaderTools.Unreal
                 int len = (int)(data.Length - fallbackOffset);
                 byte[] code = new byte[len];
                 Array.Copy(data, fallbackOffset, code, 0, len);
-                return new ShaderBundle { NativeCode = code, Architecture = fallbackArch };
+                architecture = fallbackArch;
+                return code;
             }
 
-            return new ShaderBundle { NativeCode = data, Architecture = ShaderArchitecture.Unknown };
+            architecture = ShaderArchitecture.Unknown;
+            return data;
         }
 
         public class UnrealMetadata
