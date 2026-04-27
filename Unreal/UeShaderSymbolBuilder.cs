@@ -17,22 +17,10 @@ internal static class UeShaderSymbolBuilder
         if (inputs.MaterialConstantBuffer != null)
         {
             metadata.ConstantBuffers.Add(inputs.MaterialConstantBuffer);
-            metadata.ConstantBufferBindings.Add(new BufferBinding
-            {
-                Name = inputs.MaterialConstantBuffer.Name,
-                NameIndex = -1,
-                Index = 0,
-                Set = 0,
-                ArraySize = 0,
-            });
         }
 
         metadata.ConstantBuffers = metadata.ConstantBuffers
             .GroupBy(static buffer => buffer.Name, StringComparer.Ordinal)
-            .Select(static group => group.First())
-            .ToList();
-        metadata.ConstantBufferBindings = metadata.ConstantBufferBindings
-            .GroupBy(static binding => $"{binding.Set}:{binding.Index}:{binding.Name}", StringComparer.Ordinal)
             .Select(static group => group.First())
             .ToList();
         metadata.RefreshCompatibilityViews();

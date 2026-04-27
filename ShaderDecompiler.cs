@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Text;
-using System.Text.RegularExpressions;
 using Ruri.ShaderTools.Spirv;
 using Ruri.ShaderTools.Unreal;
 
@@ -130,10 +129,23 @@ public sealed class ShaderDecompiler : IDisposable
     private Pipeline Pipe(byte[] binary, ShaderArchitecture format, ShaderSymbolData? metadata)
     {
         byte[] nativeCode = UnrealShaderParser.Parse(binary, out ShaderArchitecture parsedArchitecture, out UnrealShaderParser.UnrealMetadata? unrealMetadata);
-        ShaderSymbolData merged = metadata ?? new ShaderSymbolData();
+        ShaderSymbolData runtimeSymbols = UeRuntimeShaderSymbolReader.Read(unrealMetadata);
+        ShaderSymbolData merged = metadata ?? runtimeSymbols;
+
+        if (metadata != null)
+        {
+            MergeMissingBindings(merged.ConstantBufferBindings, runtimeSymbols.ConstantBufferBindings, static (a, b) => a.Set == b.Set && a.Index == b.Index);
+        }
 
         merged.RefreshCompatibilityViews();
         return new(nativeCode, Detect(format == ShaderArchitecture.Unknown ? parsedArchitecture : format, nativeCode), merged, unrealMetadata);
+    }
+
+    private static void MergeMissingBindings<T>(List<T> target, IEnumerable<T> source, Func<T, T, bool> match)
+    {
+        foreach (T item in source)
+            if (!target.Any(existing => match(existing, item)))
+                target.Add(item);
     }
 
     private static ShaderArchitecture Detect(ShaderArchitecture format, byte[] code)
@@ -296,58 +308,8 @@ public sealed class ShaderDecompiler : IDisposable
         return result;
     }
 
-    private ShaderSymbolData FinalizeMetadata(string sourceText, byte[] spirv, ShaderSymbolData metadata)
+    private static ShaderSymbolData FinalizeMetadata(string sourceText, byte[] spirv, ShaderSymbolData metadata)
     {
-        List<BufferBinding> hlslConstantBufferBindings = Regex.Matches(sourceText, @"\bcbuffer\s+(?<name>[A-Za-z0-9_$]+)\s*:\s*register\(b(?<binding>\d+)\)")
-            .Cast<Match>()
-            .Where(static match => match.Success)
-            .Select(static match => new BufferBinding
-            {
-                Name = match.Groups["name"].Value,
-                NameIndex = -1,
-                Index = int.Parse(match.Groups["binding"].Value),
-                Set = 0,
-                ArraySize = 0,
-            })
-            .GroupBy(static binding => $"{binding.Set}:{binding.Index}:{binding.Name}", StringComparer.Ordinal)
-            .Select(static group => group.First())
-            .OrderBy(static binding => binding.Set)
-            .ThenBy(static binding => binding.Index)
-            .ThenBy(static binding => binding.Name, StringComparer.Ordinal)
-            .ToList();
-
-        if (hlslConstantBufferBindings.Count > 0)
-        {
-            metadata.ConstantBufferBindings = hlslConstantBufferBindings;
-            metadata.RefreshCompatibilityViews();
-            return metadata;
-        }
-
-        IReadOnlyList<SpirvBindingInfo> bindings = _patcher.AnalyzeBindingsDetailed(spirv);
-        List<BufferBinding> reflectedConstantBufferBindings = bindings
-            .Where(static binding => string.Equals(binding.DescriptorType, "UniformBuffer", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(binding.CurrentName))
-            .Select(static binding => new BufferBinding
-            {
-                Name = binding.CurrentName!,
-                NameIndex = -1,
-                Index = binding.Binding,
-                Set = binding.Set,
-                ArraySize = 0,
-            })
-            .GroupBy(static binding => $"{binding.Set}:{binding.Index}:{binding.Name}", StringComparer.Ordinal)
-            .Select(static group => group.First())
-            .OrderBy(static binding => binding.Set)
-            .ThenBy(static binding => binding.Index)
-            .ThenBy(static binding => binding.Name, StringComparer.Ordinal)
-            .ToList();
-
-        if (reflectedConstantBufferBindings.Count == 0)
-        {
-            metadata.RefreshCompatibilityViews();
-            return metadata;
-        }
-
-        metadata.ConstantBufferBindings = reflectedConstantBufferBindings;
         metadata.RefreshCompatibilityViews();
         return metadata;
     }

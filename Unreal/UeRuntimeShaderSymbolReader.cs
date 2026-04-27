@@ -1,7 +1,12 @@
+using System;
+using System.Text.RegularExpressions;
+
 namespace Ruri.ShaderTools.Unreal;
 
 internal static class UeRuntimeShaderSymbolReader
 {
+    private static readonly Regex GeneratedUniformBufferNamePattern = new("^CB\\d+UBO$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     public static ShaderSymbolData Read(UnrealShaderParser.UnrealMetadata? metadata)
     {
         ShaderSymbolData symbols = new();
@@ -13,7 +18,7 @@ internal static class UeRuntimeShaderSymbolReader
         for (int i = 0; i < metadata.UniformBufferNames.Count; i++)
         {
             string name = metadata.UniformBufferNames[i];
-            if (string.IsNullOrWhiteSpace(name))
+            if (!IsCanonicalUniformBufferName(name))
             {
                 continue;
             }
@@ -30,5 +35,10 @@ internal static class UeRuntimeShaderSymbolReader
 
         symbols.RefreshCompatibilityViews();
         return symbols;
+    }
+
+    private static bool IsCanonicalUniformBufferName(string? name)
+    {
+        return !string.IsNullOrWhiteSpace(name) && !GeneratedUniformBufferNamePattern.IsMatch(name);
     }
 }
