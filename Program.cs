@@ -313,12 +313,21 @@ namespace Ruri.ShaderTools
 
                 // 4. Load runtime UE material metadata resolver.
                 UeShaderSymbolReader? materialSymbolExtractor = null;
+                UeUnifiedMaterialReader? unifiedMaterialReader = null;
                 if (!string.IsNullOrEmpty(mappingPath))
                 {
                     string exportRoot = Path.GetDirectoryName(mappingPath)!;
                     if (Directory.Exists(exportRoot))
                     {
                         materialSymbolExtractor = new UeShaderSymbolReader(exportRoot);
+                    }
+                    if (File.Exists(mappingPath))
+                    {
+                        unifiedMaterialReader = UeUnifiedMaterialReader.LoadFromFile(mappingPath);
+                        if (unifiedMaterialReader != null)
+                        {
+                            Console.WriteLine($"Unified material reader loaded from {mappingPath}.");
+                        }
                     }
                 }
 
@@ -395,6 +404,10 @@ namespace Ruri.ShaderTools
 
                                 foreach (string material in usedBy)
                                 {
+                                    if (bestMaterialInfo == null && unifiedMaterialReader != null)
+                                    {
+                                        bestMaterialInfo = unifiedMaterialReader.GetSource(material, shaderPlatformForShader);
+                                    }
                                     if (bestMaterialInfo == null && materialSymbolExtractor != null)
                                     {
                                         bestMaterialInfo = materialSymbolExtractor.GetSource(material, shaderPlatformForShader);

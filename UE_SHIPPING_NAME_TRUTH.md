@@ -299,3 +299,38 @@ replay, never a guessed compiler name.
 
 The matrix is closed-world for the D3D shipping path. New entries
 require a fresh source quote from `E:\UnrealEngine-5.1.1-release`.
+
+## Closed-world verification (2026-04-28)
+
+A second-pass research sweep specifically asked: is there **any**
+cooked-data path beyond the matrix above that carries engine-UB
+**member** names (`View_PerlinNoise3DTexture`,
+`OpaqueBasePass_PreIntegratedGFTexture`, …)? Eleven candidate paths
+inspected against UE 5.1.1 source:
+
+| # | Path | Verdict |
+| --- | --- | --- |
+| 1 | `FShaderPipelineCache` / `.upipelinecache` (`PipelineFileCache.h:26-243`) | **NO** — stores PSO state + shader hashes, no UB layout member names |
+| 2 | `'u'` `FShaderCodeUniformBuffers` (`ShaderCore.h:693-697`, `D3DShaderCompiler.inl:535-605`) | **NO** — `TArray<FString>` of UB *names* only, never member tables |
+| 3 | Sibling optional blocks (`'p'`/`'m'`/`'x'`/`'n'`/`'v'`) | **NO** — none carry layout |
+| 4 | `FRHIUniformBufferLayoutInitializer` serialization (`RHIResources.h:784-1030`) | **NO** — `Resources` is `(Offset, Type)` pairs only; the `Name` field is the *UB* name |
+| 5 | IoStore container metadata | **NO** — payload chunks, no shader reflection |
+| 6 | `AssetRegistry.bin` (`AssetRegistryArchive.h:18-82`) | **NO** — package/object metadata only |
+| 7 | `FShaderFactory::LoadShader` runtime path (`Shader.cpp`) | **NO** — uses C++-static `FRHIUniformBufferLayout` pointers registered at engine boot, never disk-loaded |
+| 8 | `r.Shaders.IncludeSource` `.usf` preservation | **NO** — does not exist in UE 5.1 cook output |
+| 9 | `'n'` `FShaderCodeName` + `CFLAG_ExtraShaderData` | **NO** — only shader source filename; gated; default off |
+| 10 | `FMaterialShaderMap.MemoryImageResult.ScriptNames` | **NO** for engine UB members — ScriptNames patches land on material parameter identity FNames only |
+| 11 | Oni Valley project-side custom serialization | **NO** — standard UE 5.1 demo, no extra reflection assets |
+
+**Final, project-binding answer: engine-UB member names are NOT
+recoverable from a default shipping cook on the D3D path.** The
+matrix above is closed-world for this engine version + cook target.
+
+Three theoretical paths were noted as out-of-scope:
+- Statically reflect the shipped game `.exe`'s `.data` section to
+  find `FShaderParametersMetadata` C++ singletons. Per-game-specific
+  rather than per-engine-version-specific, but expensive (PE parsing
+  + symbol layout matching across optimisation levels) and fragile.
+- Have the project ship a lookup table at cook time (non-standard).
+- Hard-code an engine-version-specific mapping. **Banned by project
+  rule** (see `CURRENT_LIMITATIONS.md`).

@@ -20,9 +20,7 @@ internal static class UeShaderSymbolInputsReader
 
         if (uniformExpressionSet.HasValue)
         {
-            inputs.MaterialConstantBuffer = ReadMaterialConstantBuffer(uniformExpressionSet.Value);
-            ReadUniformNumericParameters(uniformExpressionSet.Value, inputs.NumericParameterInfos);
-            inputs.MaterialResourceCounts = ReadMaterialResourceCounts(uniformExpressionSet.Value);
+            ReadUniformExpressionSet(inputs, uniformExpressionSet.Value);
         }
 
         ReadFallbackNumericParameters(asset, inputs.NumericParameterInfos);
@@ -30,6 +28,38 @@ internal static class UeShaderSymbolInputsReader
         return inputs.NumericParameterInfos.Count == 0 && inputs.MaterialConstantBuffer == null
             ? null
             : inputs;
+    }
+
+    // Direct entry: caller already has the FUniformExpressionSet element
+    // (e.g. from UnifiedShaderMetadata.json's
+    // `MaterialInterfaces[<path>].LoadedShaderMaps[*].MaterialShaderMapContent.UniformExpressionSet`),
+    // so we skip the per-material-asset wrapping and read the bridge
+    // straight off it. `UsedLoadedMaterialResources` is forced true so
+    // the source's score reflects that we picked a properly cooked
+    // shader map.
+    public static UeShaderSymbolInputs? ReadFromUniformExpressionSet(string materialPath, string? shaderPlatform, JsonElement uniformExpressionSet)
+    {
+        UeShaderSymbolInputs inputs = new()
+        {
+            MaterialPath = materialPath,
+            ShaderPlatform = shaderPlatform,
+            UsedLoadedMaterialResources = true,
+        };
+
+        ReadUniformExpressionSet(inputs, uniformExpressionSet);
+
+        return inputs.NumericParameterInfos.Count == 0
+               && inputs.MaterialConstantBuffer == null
+               && inputs.MaterialResourceCounts == null
+            ? null
+            : inputs;
+    }
+
+    private static void ReadUniformExpressionSet(UeShaderSymbolInputs inputs, JsonElement uniformExpressionSet)
+    {
+        inputs.MaterialConstantBuffer = ReadMaterialConstantBuffer(uniformExpressionSet);
+        ReadUniformNumericParameters(uniformExpressionSet, inputs.NumericParameterInfos);
+        inputs.MaterialResourceCounts = ReadMaterialResourceCounts(uniformExpressionSet);
     }
 
     private static JsonElement? SelectLoadedMaterialResource(JsonElement asset, string? shaderPlatform, ref UeShaderSymbolInputs inputs)
@@ -139,6 +169,7 @@ internal static class UeShaderSymbolInputsReader
         };
 
         HashSet<int> seenOffsets = new();
+        List<VectorParameter> vectorParams = new();
         foreach (JsonElement preshader in uniformPreshaders.EnumerateArray())
         {
             uint opcodeOffset = ReadUInt32(preshader, "OpcodeOffset");
@@ -175,24 +206,34 @@ internal static class UeShaderSymbolInputsReader
                 continue;
             }
 
-            materialBuffer.CBParams.Add(new ConstantBufferParameter
+            // Populate VectorParams (which the SPIR-V structured-CB rewriter
+            // and ShaderSymbolData.RefreshCompatibilityViews both consume)
+            // rather than CBParams directly. RefreshCompatibilityViews
+            // regenerates CBParams from VectorParams+MatrixParams; CBParams
+            // populated alone are kept only when the typed arrays are empty,
+            // which means the rewriter sees no struct members and emits a
+            // single collapsed float4 array instead of named members.
+            vectorParams.Add(new VectorParameter
             {
-                ParamName = parameterInfo.Name,
-                ParamType = ShaderParamType.Float,
-                Rows = rows,
-                Columns = columns,
-                IsMatrix = false,
+                Name = parameterInfo.Name,
+                NameIndex = -1,
+                Type = ShaderParamType.Float,
+                ByteOffset = byteOffset,
                 ArraySize = 1,
-                ByteOffset = byteOffset
+                IsMatrix = false,
+                RowCount = (byte)rows,
+                ColumnCount = 1,
             });
         }
 
-        if (materialBuffer.CBParams.Count == 0)
+        if (vectorParams.Count == 0)
         {
             return null;
         }
 
-        materialBuffer.CBParams.Sort((left, right) => left.ByteOffset.CompareTo(right.ByteOffset));
+        materialBuffer.VectorParams = vectorParams
+            .OrderBy(static p => p.ByteOffset)
+            .ToArray();
         return materialBuffer;
     }
 
@@ -318,21 +359,38 @@ internal static class UeShaderSymbolInputsReader
 
     private static FMaterialParameterInfo? ParseMaterialParameterInfo(JsonElement element)
     {
-        if (!element.TryGetProperty("ParameterInfo", out JsonElement parameterInfo) || parameterInfo.ValueKind != JsonValueKind.Object)
+        // Accept both shapes:
+        //   * per-material `.uasset.json` (FModel "Save Properties"):
+        //     `{ "ParameterInfo": { "Name": "...", "Association": "...", "Index": ... }, ... }`
+        //   * UnifiedShaderMetadata.json (Ruri.FModelHook hook output):
+        //     flattened `{ "ParameterName": "...", "Association": "...", "Index": ..., ... }`
+        JsonElement parameterInfo;
+        bool nested;
+        if (element.TryGetProperty("ParameterInfo", out parameterInfo) && parameterInfo.ValueKind == JsonValueKind.Object)
         {
-            return null;
+            nested = true;
+        }
+        else
+        {
+            parameterInfo = element;
+            nested = false;
         }
 
-        string? name = ReadString(parameterInfo, "Name");
+        string? name = nested
+            ? ReadString(parameterInfo, "Name")
+            : (ReadString(parameterInfo, "ParameterName") ?? ReadString(parameterInfo, "Name"));
         if (string.IsNullOrWhiteSpace(name) || string.Equals(name, "None", StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }
 
-        EMaterialParameterAssociation association = ReadString(parameterInfo, "Association") switch
+        string? associationRaw = ReadString(parameterInfo, "Association");
+        EMaterialParameterAssociation association = associationRaw switch
         {
             "EMaterialParameterAssociation::LayerParameter" => EMaterialParameterAssociation.LayerParameter,
             "EMaterialParameterAssociation::BlendParameter" => EMaterialParameterAssociation.BlendParameter,
+            "LayerParameter" => EMaterialParameterAssociation.LayerParameter,
+            "BlendParameter" => EMaterialParameterAssociation.BlendParameter,
             _ => EMaterialParameterAssociation.GlobalParameter
         };
 

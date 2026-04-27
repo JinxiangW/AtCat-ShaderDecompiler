@@ -128,15 +128,29 @@ byte that exists in the cooked game files we were handed.
 5. If you cannot find such a byte, the gap stays a gap. Document it
    here. Don't hard-code.
 
+## Closed research items
+
+- **2026-04-28 — Engine UB member names in cooked data: definitively
+  NO.** Eleven candidate paths inspected (pipeline cache, every
+  optional-data block including sibling keys, `FRHIUniformBufferLayout`
+  serialization, IoStore container metadata, `AssetRegistry.bin`,
+  runtime shader-factory path, `r.Shaders.IncludeSource`,
+  `FShaderCodeName`, `MemoryImageResult.ScriptNames`, Oni-Valley
+  project-side custom assets). Every one came back negative. Verdict
+  matrix appended to `UE_SHIPPING_NAME_TRUTH.md`. The closed-world
+  ceiling stands; the only way past it is statically reflecting the
+  shipped game `.exe`'s `.data` section to walk the
+  `FShaderParametersMetadata` C++ singletons, which is per-game-binary
+  specific and out of scope for the offline pipeline.
+
 ## Active research items
 
-- Whether any cooked-data path beyond the current verdict matrix
-  carries engine-UB member names (e.g. pipeline cache,
-  IoStore container metadata, `r.Shaders.IncludeSource=1` `.usf`
-  source preserved in the cook). Investigation in progress; results
-  will be appended to `UE_SHIPPING_NAME_TRUTH.md`.
 - Whether CUE4Parse fully deserializes
   `FShaderParameterBindings.ResourceParameters` /
   `FShaderParameterMapInfo.{TextureSamplers,SRVs}`, or whether the
   empty arrays observed on shipped material shaders represent a real
-  gap in the cooked data vs. a parser gap.
+  gap in the cooked data vs. a parser gap. Even if fully deserialized,
+  these arrays carry indices and types only — but they would let us
+  at least tag every loose t/s/u-slot as "this binding *is* a
+  per-shader-class loose parameter, not a missing UB entry", which is
+  better than the current undifferentiated `T<n>`.
