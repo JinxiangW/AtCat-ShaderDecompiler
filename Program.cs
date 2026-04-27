@@ -63,8 +63,15 @@ namespace Ruri.ShaderTools
                 return unityBinaryExitCode;
             }
 
-            string mode = args.Length > 1 && !args[1].StartsWith("--", StringComparison.Ordinal) ? args[1] : "";
-            string? outputPath = args.Length > 2 && !args[2].StartsWith("--", StringComparison.Ordinal) ? args[2] : null;
+            // For .ushaderlib inputs there is no legacy mode positional;
+            // args[1] is the output directory directly. For other inputs
+            // args[1] is the mode (dxbc/dxil/spv/-unknown) and args[2] is
+            // the output path.
+            bool isLibraryInput = inputPath.EndsWith(".ushaderlib", StringComparison.OrdinalIgnoreCase);
+            string mode = !isLibraryInput && args.Length > 1 && !args[1].StartsWith("--", StringComparison.Ordinal) ? args[1] : "";
+            string? outputPath = isLibraryInput
+                ? (args.Length > 1 && !args[1].StartsWith("--", StringComparison.Ordinal) ? args[1] : null)
+                : (args.Length > 2 && !args[2].StartsWith("--", StringComparison.Ordinal) ? args[2] : null);
             bool keepTemps = false;
             string? mappingPath = null;
             string? symbolsPath = null;

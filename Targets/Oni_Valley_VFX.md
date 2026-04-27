@@ -51,6 +51,7 @@ Tracked per loop. Update with hard counts each iteration.
 | 0 (baseline) | 0 (no SRT decode) | partial via UeShaderSymbolBuilder | 0 | many |
 | 1 | all UBs in 'u' optional block ✅ | placeholder `Material_SRVN` | placeholder `<UB>_SRVN` (e.g. `LumenCardScene_SRV0`, `View_SRV49`) | **0** across 16004 shaders ✅ |
 | 2 | unchanged ✅ | typed names plumbed (gated on FModel material `.json` exports) | `View / OpaqueBasePass / SceneTextures / LumenCardScene / VirtualShadowMap / RenderVolumetricCloudParameters` member names from UE 5.1.1 source | running... (see iteration log) |
+| 3 (research) | locked verdict matrix in `UE_SHIPPING_NAME_TRUTH.md` | confirmed: typed flat names = engine-generated, recoverable from material `.uasset` only — no shipping-cook-side compiler name truth | confirmed: never in cooked data, hardcoded mirror is the only path | n/a — no decompile run this iteration |
 
 Rules:
 - **UB names recovered (SRT)**: count of distinct uniform buffer
@@ -166,7 +167,98 @@ Pick the same shader index across iterations as the canonical fixture.
     still produces fully named `cbuffer ShaderVariablesGlobal`,
     `UnityInstancing_SRP_UnityPerDraw_1_UnityPerDrawArray[256u]`,
     etc. Dynamic indexing into the array of structs works as before.
-- **Open in v2** (next iteration's target):
+- **It. 3** — Source-truth research pass, no behaviour change.
+  - New doc: `Source/Ruri.ShaderDecompiler/UE_SHIPPING_NAME_TRUTH.md`.
+    Closed-world verdict matrix for default shipping cooks on the
+    D3D target. Sourced from direct quotes of UE 5.1.1
+    (`E:\UnrealEngine-5.1.1-release`).
+  - Corrections vs the prior assumption set:
+    - `'u'` (FShaderCodeUniformBuffers) is **unconditional** on the
+      D3D path (`D3DShaderCompiler.inl:603-607`), not gated by
+      `CFLAG_ExtraShaderData` as a partial reading suggested.
+      That explains why iteration 1 saw UB names on every Oni
+      Valley shader — that wasn't luck, that's the rule.
+    - DXBC `RDEF` chunk is stripped via `D3DStripShader(STRIP_REFLECTION_DATA)`
+      (`D3DShaderCompiler.cpp:1115-1140`) when
+      `CFLAG_GenerateSymbols` is unset — i.e. always in shipping.
+      So `Material_Texture2D_0` / `View_PerlinNoise3DTexture`
+      compiler names are NOT in shipping bytecode reflection.
+      Reconstructing them requires (a) Material UB layout from
+      the `.uasset`'s `FUniformExpressionSet` plus replay of
+      `CreateBufferStruct()` ordering, OR (b) a hard-coded mirror
+      of engine UB layouts.
+    - `'n'` (shader source filename) is gated on
+      `CFLAG_ExtraShaderData` → stripped by default in shipping.
+    - `FShaderParameterMap` (the only place compile-time names
+      lived for a shader) is **not** serialized into the cooked
+      archive at all.
+    - `FShaderParameterBindings` and `FShaderParameterMapInfo`
+      survive as frozen images but with **indices and types only,
+      no names**.
+    - Material `.uasset`s carry the full
+      `FUniformExpressionSet.UniformNumericParameters[*].ParameterInfo.Name`
+      / `UniformTextureParameters[Type][i].ParameterInfo.Name`
+      / `UniformExternalTextureParameters[*].ParameterName` —
+      always present, full user-facing names.
+  - Implication for iteration 4:
+    - The decompiler is now provably at the source-truth ceiling
+      for what's directly in cooked shader bytecode. To get
+      `Material_Texture2D_0` typed names, we need the material
+      `.uasset` exported (FModel UI step).
+    - Once FModel emits material JSONs + `UnifiedShaderMetadata.json`,
+      iteration 2's plumbing activates and typed names land
+      automatically. No code change required for that path.
+    - The next code-side gain is annotating each
+      `Material_Texture2D_<i>` resource with the user-facing
+      parameter name (`"Normal input"` etc.) recovered from
+      `UniformTextureParameters[Type][i].ParameterInfo.Name`.
+      Cleanest spot: extend `UeMaterialUniformBufferLayout` to
+      keep the per-typed-array names alongside the counts; the
+      symbolizer then folds them into the binding's Name (or a
+      sidecar comment) without changing the SPIR-V identifier.
+- **It. 4** — Headless FModel-driver hook lands.
+  - New file:
+    `Source/Ruri.FModelHook/Game/SBUE/AutoExport/UE_ShaderDecompiler_AutoExport_Hook.cs`
+    — registered with the new `GameType.UE_ShaderDecompiler_AutoExport`
+    in `Source/Ruri.FModelHook/Core/GameType.cs`.
+    Hook layout:
+    - `Initialize()` reads `Environment.GetCommandLineArgs()` and
+      sets static flags (`_autoExportRequested`, `_shaderOnly`,
+      `_quitWhenDone`, `_readyTimeoutSec`). All CLI parsing is
+      inside the hook — `Program.cs` stays clean.
+    - `[RetargetMethod(typeof(MainWindow), "OnLoaded", true, false)]`
+      detours the FModel main-window load event at entry. Detour
+      spawns a `Task.Run` that polls
+      `ApplicationService.ApplicationView.CUE4Parse.Provider`
+      until `Files.Count` settles, then iterates target entries
+      and marshals `vm.ExportData(entry, false)` back onto the
+      WPF dispatcher — so the existing `UE_ShaderDecompiler` hook
+      fires unchanged. No raw CUE4Parse re-bootstrap, no
+      reimplementation of Oodle/Zlib/AES setup; the user's current
+      FModel UserSettings drive the load.
+  - CLI surface (parsed inside the hook, never in `Program.cs`):
+    ```
+    Ruri.FModelHook.exe --auto-export-cook
+                        [--shader-only]
+                        [--no-quit]
+                        [--ready-timeout-sec <int>]
+    ```
+  - Verified parity with the user's manual FModel UI run:
+    - Manual run produced `UnifiedShaderMetadata.json` (102765476 bytes,
+      177 materials, Apr 28 05:54).
+    - Headless `--auto-export-cook --shader-only` produced
+      `UnifiedShaderMetadata.json` (102765476 bytes, 177 materials,
+      Apr 28 06:11) — byte-identical size.
+    - Same 4 `.ushaderlib` + `.assetinfo.json` + `.stableinfo.json`
+      sidecars under `<exportRoot>/Content/`.
+    - Hook log:
+      `[AutoExport] Done. shaders=4 materials=0`.
+  - Constraints respected: `UnifiedShaderMetadataExporter` was NOT
+    refactored; the existing `UE_ShaderDecompiler` hook was NOT
+    touched; `Program.cs` keeps its plain
+    `InitializeHooks() + LaunchFModel()` shape; all CLI args live
+    inside the hook module.
+- **Open in v5** (next iteration's target):
   - Material UB texture flat names: pipe per-material
     `UniformTextureParameters[*].Count` from the unified metadata
     into `UeMaterialUniformBufferLayout` so SRT slot 0 of `Material`
