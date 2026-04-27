@@ -10,6 +10,7 @@ public class ShaderSymbolData
     public List<UAVParameter> UAVs { get; set; } = new();
     public string EntryPoint { get; set; } = "main";
     public string? DebugName { get; set; }
+    public List<string> UsedMaterials { get; set; } = new();
 
     public IEnumerable<(string Name, int Binding, int Set, ShaderResourceType Type, char RegisterType)> EnumerateResourceBindings()
     {

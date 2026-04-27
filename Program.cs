@@ -346,99 +346,51 @@ namespace Ruri.ShaderTools
                             finalName = string.Join("_", finalName.Split(Path.GetInvalidFileNameChars()));
                             string sourceExtension = string.IsNullOrWhiteSpace(res.SourceFileExtension) ? ".hlsl" : res.SourceFileExtension;
                             string outName = $"{finalName}_{typeSuffix}_{i}{sourceExtension}";
-                             ShaderSymbolData? injectionSymbols = null;
-                             
-                            // Inject Header
+                            ShaderSymbolData? injectionSymbols = null;
                             if (usageMap.TryGetValue(i, out var usedBy))
                             {
-                                 var sb = new System.Text.StringBuilder();
-                                 sb.AppendLine("/*");
-                                 sb.AppendLine(" * UE Shader Info");
-                                 sb.AppendLine($" * Index: {i}");
-                                 sb.AppendLine($" * Stage: {typeSuffix}");
-                                 sb.AppendLine($" * Used by {usedBy.Count} Materials:");
-                                 
-                                  UeShaderSymbolSource? bestMaterialInfo = null;
-                                  string bestMaterialName = string.Empty;
-                                  string shaderPlatformForShader = entry.Frequency switch
-                                  {
-                                      0 or 1 or 2 or 3 or 4 or 5 => "SP_PCD3D_SM5",
-                                      _ => string.Empty
-                                  };
+                                UeShaderSymbolSource? bestMaterialInfo = null;
+                                string shaderPlatformForShader = entry.Frequency switch
+                                {
+                                    0 or 1 or 2 or 3 or 4 or 5 => "SP_PCD3D_SM5",
+                                    _ => string.Empty
+                                };
 
-                                  foreach (string material in usedBy)
-                                  {
-                                      if (bestMaterialInfo == null && materialSymbolExtractor != null)
-                                      {
-                                          bestMaterialInfo = materialSymbolExtractor.GetSource(material, shaderPlatformForShader);
-                                          if (bestMaterialInfo != null)
-                                          {
-                                              bestMaterialName = material;
-                                          }
-                                      }
+                                foreach (string material in usedBy)
+                                {
+                                    if (bestMaterialInfo == null && materialSymbolExtractor != null)
+                                    {
+                                        bestMaterialInfo = materialSymbolExtractor.GetSource(material, shaderPlatformForShader);
+                                    }
+                                }
 
-                                      if (usedBy.Count <= 20 || string.Equals(material, bestMaterialName, StringComparison.Ordinal))
-                                      {
-                                          sb.AppendLine($" *  - {material}");
-                                      }
-                                  }
-                                 
-                                 if(usedBy.Count > 20) sb.AppendLine($" *  ... and {usedBy.Count-20} more");
-                                  sb.AppendLine(" */");
-                                  sb.AppendLine("");
+                                if (bestMaterialInfo != null)
+                                {
+                                    injectionSymbols = bestMaterialInfo.Metadata;
+                                }
 
-                                  if (bestMaterialInfo != null)
-                                  {
-                                      sb.Append(bestMaterialInfo.Header);
-                                      injectionSymbols = bestMaterialInfo.Metadata;
-                                  }
+                                if (injectionSymbols != null)
+                                {
+                                    try
+                                    {
+                                        DecompileResult resWithSymbols = decompiler.Decompile(code, ShaderArchitecture.Unknown, injectionSymbols, 50);
+                                        if (resWithSymbols.Success)
+                                        {
+                                            res = resWithSymbols;
+                                        }
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Console.Error.WriteLine($"Symbol-injected redecompile failed: {ex.Message}");
+                                    }
+                                }
 
-                                  if (res.UnrealOptionalDataKeys is { Count: > 0 })
-                                  {
-                                        sb.AppendLine("/*");
-                                        sb.AppendLine(" * UE Shader Tail Optional Data");
-                                        sb.AppendLine($" * FShaderCodeName: {res.UnrealShaderCodeName ?? res.ShaderName ?? "unknown"}");
-                                       sb.AppendLine($" * OptionalDataKeys: {string.Join(", ", res.UnrealOptionalDataKeys)}");
-                                       sb.AppendLine($" * FShaderCodePackedResourceCounts: {res.UnrealShaderCodePackedResourceCounts ?? "<absent>"}");
-                                       sb.AppendLine($" * FShaderCodeResourceMasks: {res.UnrealShaderCodeResourceMasks ?? "<absent>"}");
-                                       sb.AppendLine($" * FShaderCodeFeatures: {res.UnrealShaderCodeFeatures ?? "<absent>"}");
-                                       sb.AppendLine($" * FShaderCodeVendorExtension: {res.UnrealShaderCodeVendorExtension ?? "<absent>"}");
-                                       sb.AppendLine($" * SM6Flag('6'): {res.UnrealSm6Flag ?? "<absent>"}");
-                                       if (res.UnrealUniformBufferNames is { Count: > 0 })
-                                       {
-                                           sb.AppendLine($" * FShaderCodeUniformBuffers: {string.Join(", ", res.UnrealUniformBufferNames)}");
-                                       }
-                                       else
-                                       {
-                                           sb.AppendLine(" * FShaderCodeUniformBuffers: <absent>");
-                                       }
-                                        sb.AppendLine(" */");
-                                        sb.AppendLine("");
-                                  }
-
-                                  if (injectionSymbols != null)
-                                  {
-                                      try
-                                      {
-                                          DecompileResult resWithSymbols = decompiler.Decompile(code, ShaderArchitecture.Unknown, injectionSymbols, 50);
-                                          if (resWithSymbols.Success)
-                                          {
-                                              res = resWithSymbols;
-                                          }
-                                      }
-                                      catch (Exception ex)
-                                      {
-                                          Console.Error.WriteLine($"Symbol-injected redecompile failed: {ex.Message}");
-                                      }
-                                  }
-
-                                  string sourceText = res.SourceCode ?? res.HlslSource ?? string.Empty;
-                                  sourceText = sb.ToString() + sourceText;
-                                  res.SourceCode = sourceText;
-                                  if (string.Equals(res.SourceLanguage, "hlsl", StringComparison.OrdinalIgnoreCase))
-                                  {
-                                      res.HlslSource = sourceText;
-                                  }
+                                if (res.FinalMetadata != null)
+                                {
+                                    res.FinalMetadata.UsedMaterials = usedBy
+                                        .OrderBy(static material => material, StringComparer.OrdinalIgnoreCase)
+                                        .ToList();
+                                }
                             }
 
                             string outputFilePath = Path.Combine(outputPath, outName);
@@ -453,7 +405,6 @@ namespace Ruri.ShaderTools
                             if (res.IntermediateSpirv != null && res.IntermediateSpirv.Length > 0)
                             {
                                 File.WriteAllBytes(basePath + ".spv", res.IntermediateSpirv);
-                                WriteSelfTestBindingDiagnostics(basePath + ".bindings.txt", res.IntermediateSpirv);
                             }
                             successCount++;
                         }
