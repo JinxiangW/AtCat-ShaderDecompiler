@@ -152,12 +152,18 @@ internal static class UeShaderResourceTableSymbolizer
             }
         }
 
-        string? engine = EngineUniformBuffers.Resolve(ubName, record.ResourceIndex, record.RegisterType);
-        if (!string.IsNullOrWhiteSpace(engine))
-        {
-            return engine!;
-        }
-
+        // Engine UBs (View, OpaqueBasePass, SceneTextures, LumenCardScene,
+        // VirtualShadowMap, ...) — their per-member names live only in
+        // engine C++ source and are NOT serialized into cooked data.
+        // Recovery from a shipping cook alone is impossible by design
+        // (see UE_SHIPPING_NAME_TRUTH.md). We deliberately do not
+        // hard-code those layouts: they would silently rot across UE
+        // versions and outright fabricate names for any custom-engine
+        // fork. So everything outside the Material UB falls through to
+        // the placeholder below — UB context is preserved (`View_SRV45`
+        // tells the reader which UB the slot belongs to and at which
+        // resource index) without inventing a member name we cannot
+        // prove from the game files.
         string suffix = record.RegisterType switch
         {
             UeSrtRegisterType.Sampler => $"Sampler{record.ResourceIndex}",

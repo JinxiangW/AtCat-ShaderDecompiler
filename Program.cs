@@ -76,6 +76,7 @@ namespace Ruri.ShaderTools
             string? mappingPath = null;
             string? symbolsPath = null;
             string? materialFilter = null;
+            HashSet<int>? shaderIndexFilter = null;
 
             var nameMap = new Dictionary<int, string>();
             for (int i = 1; i < args.Length; i++)
@@ -89,7 +90,7 @@ namespace Ruri.ShaderTools
                 else if (args[i] == "--mapping" && i + 1 < args.Length)
                 {
                     mappingPath = args[i + 1];
-                    i++; 
+                    i++;
                 }
                 else if (args[i] == "--symbols" && i + 1 < args.Length)
                 {
@@ -99,6 +100,12 @@ namespace Ruri.ShaderTools
                 else if (args[i] == "--material" && i + 1 < args.Length)
                 {
                     materialFilter = args[i + 1];
+                    i++;
+                }
+                else if (args[i] == "--shader-index" && i + 1 < args.Length && int.TryParse(args[i + 1], out int parsedIndex))
+                {
+                    shaderIndexFilter ??= new HashSet<int>();
+                    shaderIndexFilter.Add(parsedIndex);
                     i++;
                 }
             }
@@ -112,7 +119,7 @@ namespace Ruri.ShaderTools
             // Handle .ushaderlib
             if (inputPath.EndsWith(".ushaderlib", StringComparison.OrdinalIgnoreCase))
             {
-                return ProcessUnrealLibrary(inputPath, outputPath, keepTemps, mappingPath, nameMap, materialFilter);
+                return ProcessUnrealLibrary(inputPath, outputPath, keepTemps, mappingPath, nameMap, materialFilter, shaderIndexFilter);
             }
 
             // Legacy single file mode logic
@@ -251,7 +258,7 @@ namespace Ruri.ShaderTools
             return Path.Combine(outputRoot, relativeParent, baseName);
         }
 
-        static int ProcessUnrealLibrary(string inputPath, string? outputPath, bool keepTemps, string? mappingPath, Dictionary<int, string>? nameMapInput = null, string? materialFilter = null)
+        static int ProcessUnrealLibrary(string inputPath, string? outputPath, bool keepTemps, string? mappingPath, Dictionary<int, string>? nameMapInput = null, string? materialFilter = null, HashSet<int>? shaderIndexFilter = null)
         {
             try 
             {
@@ -316,18 +323,37 @@ namespace Ruri.ShaderTools
                 }
 
                 outputPath = Path.GetFullPath(outputPath);
-                RecreateDirectory(outputPath);
+                bool filteredRun = (shaderIndexFilter is { Count: > 0 }) || (materialFilterVariants is { Count: > 0 });
+                if (filteredRun)
+                {
+                    // Surgical single/few-shader iteration: don't nuke the
+                    // existing decompiled tree, just append.
+                    Directory.CreateDirectory(outputPath);
+                }
+                else
+                {
+                    RecreateDirectory(outputPath);
+                }
                 Console.WriteLine($"Session output: {outputPath}");
+                if (shaderIndexFilter is { Count: > 0 })
+                {
+                    Console.WriteLine($"Shader index filter: {string.Join(",", shaderIndexFilter)}");
+                }
 
                 using var decompiler = new ShaderDecompiler(outputPath);
                 int successCount = 0;
 
                 for(int i=0; i<lib.ShaderEntries.Length; i++)
                 {
+                    if (shaderIndexFilter is { Count: > 0 } && !shaderIndexFilter.Contains(i))
+                    {
+                        continue;
+                    }
+
                     var code = lib.GetShaderCode(i);
                     var entry = lib.ShaderEntries[i];
                     Console.WriteLine($"Shader {i}: Size={entry.Size}, Uncompressed={entry.UncompressedSize}, Offset={entry.Offset}");
-                    
+
                      if (code == null) continue;
 
                     if (materialFilterVariants is { Count: > 0 })
