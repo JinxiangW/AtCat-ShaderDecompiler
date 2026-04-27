@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Ruri.ShaderTools.Engine;
 
 namespace Ruri.ShaderTools.Unreal;
 
@@ -9,7 +10,7 @@ internal static class UeShaderLibraryAssetIndexReader
 {
     public static UeShaderLibraryAssetIndex Read(
         string shaderLibraryPath,
-        UnrealShaderLibraryReader.UnrealShaderLibrary lib,
+        UnrealShaderLibraryReader.ShaderLibrary lib,
         string unifiedMetadataPath,
         string? materialFilter)
     {
@@ -36,7 +37,7 @@ internal static class UeShaderLibraryAssetIndexReader
     }
 
     private static void AddSidecarUsage(
-        UnrealShaderLibraryReader.UnrealShaderLibrary lib,
+        UnrealShaderLibraryReader.ShaderLibrary lib,
         ShaderLibraryTruthSidecarResolver sidecarResolver,
         Dictionary<int, HashSet<string>> usageByShaderIndex)
     {
@@ -76,7 +77,7 @@ internal static class UeShaderLibraryAssetIndexReader
     }
 
     private static void AddUnifiedMetadataUsage(
-        UnrealShaderLibraryReader.UnrealShaderLibrary lib,
+        UnrealShaderLibraryReader.ShaderLibrary lib,
         UnifiedShaderMetadataResolver unifiedResolver,
         string? normalizedMaterialFilter,
         Dictionary<int, HashSet<string>> usageByShaderIndex,
