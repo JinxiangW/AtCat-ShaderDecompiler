@@ -6,7 +6,6 @@ public class ShaderSymbolData
     public List<BufferBinding> ConstantBufferBindings { get; set; } = new();
     public List<TextureParameter> TextureParameters { get; set; } = new();
     public List<SamplerParameter> Samplers { get; set; } = new();
-    public List<BufferBinding> Buffers { get; set; } = new();
     public List<UAVParameter> UAVs { get; set; } = new();
     public string EntryPoint { get; set; } = "main";
     public string? DebugName { get; set; }
@@ -29,11 +28,6 @@ public class ShaderSymbolData
             yield return ($"sampler_{sampler.Index}", sampler.Index, sampler.Set, ShaderResourceType.Sampler, 's');
         }
 
-        foreach (BufferBinding buffer in Buffers)
-        {
-            yield return (buffer.Name, buffer.Index, buffer.Set, ShaderResourceType.StructuredBuffer, 't');
-        }
-
         foreach (UAVParameter uav in UAVs)
         {
             yield return (uav.Name, uav.Index, uav.Set, ShaderResourceType.UAV, 'u');
@@ -42,7 +36,7 @@ public class ShaderSymbolData
 
     public int GetResourceBindingCount()
     {
-        return ConstantBufferBindings.Count + TextureParameters.Count + Samplers.Count + Buffers.Count + UAVs.Count;
+        return ConstantBufferBindings.Count + TextureParameters.Count + Samplers.Count + UAVs.Count;
     }
 
     public ConstantBuffer? GetConstantBufferByName(string name)

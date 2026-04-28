@@ -2,11 +2,9 @@ using Newtonsoft.Json;
 
 namespace Ruri.ShaderTools;
 
-// Mirrors Unity's AssetRipper ShaderBlob.Parameters.StructParameter (typed-only).
-// `Index` is the *byte offset* of this struct within the parent CB — the field
-// keeps the historical Unity name for wire compatibility with Unity-side
-// metadata.json (AssetRipper exporter writes `"Index"`). Semantically it is a
-// byte offset, not a bind slot.
+// Mirrors Unity AssetRipper StructParameter exactly.
+// `Index` is the byte offset of this struct within the parent CB (Unity wire
+// name kept for compat — semantically a byte offset, not a bind slot).
 public sealed class StructParameter
 {
     public StructParameter() { }
@@ -31,19 +29,14 @@ public sealed class StructParameter
     public MatrixParameter[] MatrixMembers { get; set; } = Array.Empty<MatrixParameter>();
 
     [JsonIgnore]
-    public IEnumerable<NumericShaderParameter> AllNumericMembers
+    public NumericShaderParameter[] AllNumericMembers
     {
         get
         {
-            foreach (MatrixParameter matrix in MatrixMembers)
-            {
-                yield return matrix;
-            }
-
-            foreach (VectorParameter vector in VectorMembers)
-            {
-                yield return vector;
-            }
+            NumericShaderParameter[] shaderParams = new NumericShaderParameter[MatrixMembers.Length + VectorMembers.Length];
+            MatrixMembers.CopyTo(shaderParams, 0);
+            VectorMembers.CopyTo(shaderParams, MatrixMembers.Length);
+            return shaderParams;
         }
     }
 }

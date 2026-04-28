@@ -2,11 +2,14 @@ using Newtonsoft.Json;
 
 namespace Ruri.ShaderTools;
 
-// Mirrors the Unity intermediate (AssetRipper ShaderBlob.Parameters.ConstantBuffer)
-// — typed-only structure. There is intentionally no flat compatibility list:
-// readers fill VectorParams / MatrixParams / StructParams once, the SPIR-V
-// rewriter and patcher consume those views directly. AllNumericParams is a
-// read-only iteration helper, never a separate storage.
+// Mirrors Unity AssetRipper ShaderBlob.Parameters.ConstantBuffer exactly.
+// Two storage buckets:
+//   MatrixParams  matrices (IsMatrix=true)
+//   VectorParams  scalars + vectors (IsMatrix=false, RowCount=1..4 — scalars
+//                 are RowCount=1, vectors are RowCount=2..4)
+// AllNumericParams is a computed getter (Matrix + Vector copy), not a third
+// storage. [JsonIgnore] is our local extension so the array doesn't double up
+// in metadata.json — the wire format is just MatrixParams + VectorParams.
 public sealed class ConstantBuffer
 {
     public ConstantBuffer() { }
@@ -31,19 +34,14 @@ public sealed class ConstantBuffer
     public bool IsPartialCB { get; set; }
 
     [JsonIgnore]
-    public IEnumerable<NumericShaderParameter> AllNumericParams
+    public NumericShaderParameter[] AllNumericParams
     {
         get
         {
-            foreach (MatrixParameter matrix in MatrixParams)
-            {
-                yield return matrix;
-            }
-
-            foreach (VectorParameter vector in VectorParams)
-            {
-                yield return vector;
-            }
+            NumericShaderParameter[] shaderParams = new NumericShaderParameter[MatrixParams.Length + VectorParams.Length];
+            MatrixParams.CopyTo(shaderParams, 0);
+            VectorParams.CopyTo(shaderParams, MatrixParams.Length);
+            return shaderParams;
         }
     }
 }

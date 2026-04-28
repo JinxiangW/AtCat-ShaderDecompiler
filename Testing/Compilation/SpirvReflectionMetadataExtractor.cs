@@ -247,12 +247,18 @@ internal static class SpirvReflectionMetadataExtractor
             string normalizedName = NormalizeTypePrefixedName(name);
             if (isReadonly)
             {
-                metadata.Buffers.Add(new BufferBinding
+                // Read-only SSBOs become Buffer<T>/StructuredBuffer<T> bindings on
+                // the t# register slot in HLSL. Unity's intermediate model puts
+                // these in TextureParameters with a buffer-shaped Dim (no separate
+                // Buffers list), so we mirror that here.
+                metadata.TextureParameters.Add(new TextureParameter
                 {
                     Name = normalizedName,
                     Set = 0,
                     Index = binding,
-                    ArraySize = 0,
+                    SamplerIndex = -1,
+                    MultiSampled = false,
+                    Dim = 0,
                 });
             }
             else
