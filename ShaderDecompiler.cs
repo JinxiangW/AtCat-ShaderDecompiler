@@ -274,21 +274,39 @@ public sealed class ShaderDecompiler : IDisposable
     private Source Emit(byte[] spirv, string? preferredEntryPoint, uint shaderModel, TempFiles temp)
     {
         (SpirvStage stage, string? entryPoint) = Entry(spirv, preferredEntryPoint);
-        return TryEmit(spirv, temp.Spirv, temp.Hlsl, entryPoint, stage, shaderModel, true, out string? hlsl)
-            ? new(hlsl!, "hlsl", ".hlsl")
-            : stage is SpirvStage.TessControl or SpirvStage.TessEvaluation or SpirvStage.Geometry && TryEmit(spirv, temp.Spirv, temp.Glsl, entryPoint, stage, shaderModel, false, out string? glsl)
-                ? new(glsl!, "glsl", ".glsl")
-                : throw new InvalidOperationException("Failed to decompile patched SPIR-V.");
+        // Hull / domain / geometry stages: spirv-cross HLSL backend does NOT implement the
+        // stage-specific builtins (InvocationId / TessCoord / TessLevel*, patch-constant-function
+        // emission, two-entry-point HS layout, etc.). Failing the HLSL attempt here is the
+        // documented behavior of the upstream tool, not a defect in our pipeline — so we suppress
+        // the noisy "spirv-cross failed" stderr on the first try, print one short clarifying note,
+        // and go straight to the GLSL backend (which DOES support these stages cleanly).
+        bool isTessOrGeom = stage is SpirvStage.TessControl or SpirvStage.TessEvaluation or SpirvStage.Geometry;
+
+        if (TryEmit(spirv, temp.Spirv, temp.Hlsl, entryPoint, stage, shaderModel, hlsl: true, quiet: isTessOrGeom, out string? hlsl))
+        {
+            return new(hlsl!, "hlsl", ".hlsl");
+        }
+
+        if (isTessOrGeom)
+        {
+            Console.Error.WriteLine($"[spirv-cross note] {stage} stage: HLSL backend lacks tessellation/geometry builtins (InvocationId / TessCoord / patch-constant emission). Falling back to GLSL output -- this is the expected path for this stage, not a regression.");
+            if (TryEmit(spirv, temp.Spirv, temp.Glsl, entryPoint, stage, shaderModel, hlsl: false, quiet: false, out string? glsl))
+            {
+                return new(glsl!, "glsl", ".glsl");
+            }
+        }
+
+        throw new InvalidOperationException("Failed to decompile patched SPIR-V.");
     }
 
-    private bool TryEmit(byte[] spirv, string tempSpv, string outputPath, string? entryPoint, SpirvStage stage, uint shaderModel, bool hlsl, out string? source)
+    private bool TryEmit(byte[] spirv, string tempSpv, string outputPath, string? entryPoint, SpirvStage stage, uint shaderModel, bool hlsl, bool quiet, out string? source)
     {
         source = null;
         File.WriteAllBytes(tempSpv, spirv);
         List<string> args = new() { Tool("spirv-cross.exe"), tempSpv, "--output", outputPath, hlsl ? "--hlsl" : "-V" };
         Args(args, entryPoint, stage);
         if (hlsl) { args.Add("--shader-model"); args.Add(shaderModel.ToString()); args.Add("--force-zero-initialized-variables"); }
-        if (!Run(args.ToArray(), "spirv-cross") || !File.Exists(outputPath)) { Delete(outputPath); return false; }
+        if (!Run(args.ToArray(), "spirv-cross", quiet: quiet) || !File.Exists(outputPath)) { Delete(outputPath); return false; }
         source = File.ReadAllText(outputPath, Encoding.UTF8);
         Delete(outputPath);
         return true;
@@ -444,7 +462,7 @@ public sealed class ShaderDecompiler : IDisposable
             : "BuiltIn decorations:" + Environment.NewLine + string.Join(Environment.NewLine, lines);
     }
 
-    private bool Run(string[] args, string name)
+    private bool Run(string[] args, string name, bool quiet = false)
     {
         ProcessStartInfo psi = new()
         {
@@ -473,7 +491,15 @@ public sealed class ShaderDecompiler : IDisposable
             return Log($"{name} timed out after {TimeoutMs}ms.");
         }
 
-        return process.ExitCode == 0 || Log($"{name} failed: {Trim(stderr.ToString())}{(string.IsNullOrWhiteSpace(stdout) ? string.Empty : Environment.NewLine + Trim(stdout))}");
+        if (process.ExitCode == 0)
+        {
+            return true;
+        }
+
+        // `quiet` is set when the caller already knows this attempt is expected to fail and a
+        // fallback path is queued (e.g. tess/geom HLSL → GLSL). Suppressing the stderr keeps the
+        // log clean and avoids the user mistaking expected fallback for a real defect.
+        return quiet || Log($"{name} failed: {Trim(stderr.ToString())}{(string.IsNullOrWhiteSpace(stdout) ? string.Empty : Environment.NewLine + Trim(stdout))}");
     }
 
     private bool Log(string error) { Debug.WriteLine(error); Console.Error.WriteLine(error); return false; }

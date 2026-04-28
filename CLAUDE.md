@@ -897,7 +897,30 @@ cbuffer LightCookies : register(b5)
 
 —— 注意 `_MainLightCookieTextureFormat` @ c11.y 和 `_AdditionalLightsCookieAtlasTextureFormat` @ c11.z 与 scalar 数组最后一个元素 `EnableBits[7]` @ c11.x 共享同一个 c11 寄存器,这是 HLSL cbuffer 标准玩法,现在能正确生成。
 
-### 9.8 当前轮遗留(open in v11)
+### 9.8 It. 11 — tess/geom 报错噪声降级为说明性 note
+
+`Emit()` 之前对 HS/DS/GS 也是先尝试 HLSL,失败后再走 GLSL 回退。问题是
+HLSL 这次失败的 stderr `spirv-cross failed: SPIRV-Cross threw an exception:
+Unsupported builtin in HLSL: 8` 会原样打印,看上去像 bug,实际上是
+**spirv-cross HLSL backend 长期未实现的 stage 限制**(InvocationId /
+TessCoord / 双 entry point / patch-constant function 等)。GLSL backend
+对 tess/geom 是支持的,所以回退路径就是预期路径,不是 regression。
+
+修法:
+- `TryEmit` / `Run` 加 `quiet` 参数。
+- `Emit()` 对 tess/geom stage 调 `TryEmit(... quiet=true)` 走 HLSL,
+  失败时**不**打 `spirv-cross failed: ...`,改成单行说明:
+  ```
+  [spirv-cross note] TessControl stage: HLSL backend lacks tessellation/
+  geometry builtins (InvocationId / TessCoord / patch-constant emission).
+  Falling back to GLSL output -- this is the expected path for this stage,
+  not a regression.
+  ```
+- 然后 GLSL fallback 走 `quiet=false`,如果 GLSL 也失败(真 bug),原样
+  打印 stderr。
+- 非 tess/geom stage 不受影响,HLSL 失败仍然 loud。
+
+### 9.9 当前轮遗留(open in v12)
 
 1. **UE 端 reader byte offset 错位** — `M_Bamboo_tree_PS_1904.Material`
    shader 在 register 2 (byte 32) 实际有访问,但 metadata 里 byte 32 没成
