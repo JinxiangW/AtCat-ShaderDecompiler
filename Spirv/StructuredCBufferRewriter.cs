@@ -1901,7 +1901,9 @@ internal sealed class StructuredCBufferRewriter
                 return true;
             }
 
-            return false;
+            // dynamic + dynamic: treat the whole expression as opaque dynamic id (stride=1, offset=0).
+            // Required for shaders that compute the per-element index via two runtime values
+            // (e.g. clusterIndex + lightOffset) and then add a constant per packed-array member offset.
         }
 
         if ((definition.OpCode == OpIMul || definition.OpCode == OpShiftLeftLogical) && definition.Words.Length >= 5)
@@ -1924,7 +1926,7 @@ internal sealed class StructuredCBufferRewriter
                 return true;
             }
 
-            return false;
+            // dynamic * dynamic: opaque dynamic id (stride=1, offset=0). Same rationale as IAdd.
         }
 
         dynamicIndexId = valueId;

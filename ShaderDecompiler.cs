@@ -255,7 +255,12 @@ public sealed class ShaderDecompiler : IDisposable
     }
 
     private static int? Member(SpirvBindingInfo binding, int byteOffset)
-        => binding.MemberOffsets.FirstOrDefault(pair => pair.Value == (uint)byteOffset).Key;
+    {
+        foreach (KeyValuePair<int, uint> pair in binding.MemberOffsets)
+            if (pair.Value == (uint)byteOffset)
+                return pair.Key;
+        return null;
+    }
 
     private Source Emit(byte[] spirv, string? preferredEntryPoint, uint shaderModel, TempFiles temp)
     {
