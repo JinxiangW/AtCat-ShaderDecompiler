@@ -1329,10 +1329,27 @@ internal sealed class StructuredCBufferRewriter
         // type tree that no longer exists, and spirv-cross fails validation with "Cannot subdivide
         // a scalar value" (or similar). NOP every access chain in `rewrittenAccessChains` with
         // zero remaining users.
-        Dictionary<uint, int> finalUseCounts = CountResultUses(module);
+        // Build the set of access chain ids that still have at least one live (non-NOP) OpLoad
+        // consuming them. We can't rely on a generic use-count because several SPIR-V ops carry
+        // literal values in operand slots — OpExtInst's instruction enum, OpCompositeExtract's
+        // literal indices, OpVectorShuffle component indices, etc. — and when those literals
+        // happen to coincide numerically with a real SSA id, the generic counter inflates the
+        // id's use count and a dead access chain stays alive. Looking at actual OpLoads dodges
+        // that without needing to encode every SPIR-V op's literal/id operand layout.
+        var aliveAccessChainConsumers = new HashSet<uint>();
+        foreach (SpirvInstruction inst in module.Instructions)
+        {
+            if (inst.OpCode != SpvOpCode.OpLoad || inst.Words.Length < 4)
+            {
+                continue;
+            }
+
+            aliveAccessChainConsumers.Add(inst[3]);
+        }
+
         foreach (uint accessChainId in rewrittenAccessChains.Keys)
         {
-            if (finalUseCounts.TryGetValue(accessChainId, out int useCount) && useCount > 0)
+            if (aliveAccessChainConsumers.Contains(accessChainId))
             {
                 continue;
             }

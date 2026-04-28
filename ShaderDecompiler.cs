@@ -16,7 +16,6 @@ public enum ShaderArchitecture
 public sealed class DecompileResult
 {
     public bool Success { get; set; }
-    public string? HlslSource { get; set; }
     public string? SourceCode { get; set; }
     public string SourceLanguage { get; set; } = "hlsl";
     public string SourceFileExtension { get; set; } = ".hlsl";
@@ -301,7 +300,6 @@ public sealed class ShaderDecompiler : IDisposable
         DecompileResult result = new()
         {
             Success = true,
-            HlslSource = source.Language == "hlsl" ? source.Text : null,
             SourceCode = source.Text,
             SourceLanguage = source.Language,
             SourceFileExtension = source.Extension,

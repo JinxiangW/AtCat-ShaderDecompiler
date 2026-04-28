@@ -777,7 +777,64 @@ cbuffer _Globals : register(b0)
 
 —— 23 个命名成员、混合标量/向量/矩阵/int、5 处空洞 packoffset(c4.y / c22.* / c23.* / c27.* / c28.* / c32.*)全部一次性正确。
 
-### 9.6 当前轮遗留(open in v9)
+### 9.6 It. 9 — 死 access chain cleanup 鲁棒化 + GLSL fallback 接通 harness
+
+新 fixture: `D:\RJ01512143_1.0Output\ExportedProject\Assets\Shader` 下的
+TextMeshPro 多变体 + Ruri_Scene_Lit blob5/blob6。
+
+#### Bug G — final cleanup 用 use-count 不可靠
+
+It.8 §Bug D 的 cleanup 通过 `CountResultUses` 找 use=0 的 access chain 并
+NOP。问题: SPIR-V 不少 op 的操作数槽是**字面量**而非 id —— `OpExtInst`
+的指令编号、`OpCompositeExtract` 的字面索引、`OpVectorShuffle` 的分量索引
+等。It.8 §Bug A 只处理了纯 metadata 类(OpDecorate / OpName 等),没覆盖
+这些数据流 op 里的字面量。
+
+实测: TextMeshPro blob7 的 access chain `%81` 没有任何 OpLoad 用,但被
+`%uint_81` 之类(实际是 `OpExtInst result type set 81 ...` 的 GLSL.std.450
+`Fma=81` 字面量)误算为 use,cleanup 跳过 → 死 access chain 留在
+模块里 → spirv-cross 验证失败。
+
+修法: 不再算 generic use count,改成**只看 OpLoad 是不是真有 live
+consumer**。`rewrittenAccessChains` 里 access chain 在 `aliveAccessChainConsumers`
+集合中(被 live OpLoad 用)就保留,否则 NOP。这样自动避开所有字面量噪声,
+也不需要为每个 SPIR-V op 维护操作数布局表。
+
+#### Bug H — Ruri.RipperHook harness 用 `HlslSource` 丢掉 GLSL fallback
+
+`ShaderRuriDecompileExporter.DecompilePasses` 从 `DecompileResult.HlslSource`
+取源码,但对 tessellation / geometry stage 的 GLSL fallback,`HlslSource`
+是 null(因为 `Result()` 里 `HlslSource = source.Language == "hlsl" ? text : null`)。
+导致 blob5/blob6 这类反编译实际成功,但 harness 输出 "No decompiled source generated"。
+
+修法: 改用 `decompiled.SourceCode`,语言无关、HLSL/GLSL 都拿得到。
+
+#### 验证结果
+
+| Fixture | Before | After |
+| --- | --- | --- |
+| TextMeshPro blob7 `$Globals` | spirv-cross HLSL `Cannot subdivide a scalar value` | 9 命名成员 + 6 处空洞 packoffset 一次过 ✅ |
+| Ruri_Scene_Lit blob5/blob6 (HS/DS) | harness 写 "No decompiled source generated" | GLSL fallback 文本写入 block.Source ✅ |
+| EndField blob1/blob2 / Deferred Clustered / TextMeshPro blob1 / UE M_Bamboo_tree | 全部命名 OK | 不退化 ✅ |
+
+TextMeshPro blob7 实际产物片段:
+
+```hlsl
+cbuffer _Globals : register(b0)
+{
+    float _Globals_1_FaceUVSpeedX : packoffset(c2);
+    float _Globals_1_FaceUVSpeedY : packoffset(c2.y);
+    float4 _Globals_1_FaceColor : packoffset(c3);
+    float _Globals_1_OutlineSoftness : packoffset(c4.y);
+    float _Globals_1_OutlineUVSpeedX : packoffset(c4.z);
+    float _Globals_1_OutlineUVSpeedY : packoffset(c4.w);
+    float4 _Globals_1_OutlineColor : packoffset(c5);
+    float _Globals_1_OutlineWidth : packoffset(c6);
+    float _Globals_1_ScaleRatioA : packoffset(c22.w);
+};
+```
+
+### 9.7 当前轮遗留(open in v10)
 
 1. **UE 端 reader byte offset 错位** — `M_Bamboo_tree_PS_1904.Material`
    shader 在 register 2 (byte 32) 实际有访问,但 metadata 里 byte 32 没成

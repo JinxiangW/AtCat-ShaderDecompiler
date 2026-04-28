@@ -141,7 +141,7 @@ namespace Ruri.ShaderTools
                 
                 if (result.Success)
                 {
-                    string sourceText = result.SourceCode ?? result.HlslSource ?? string.Empty;
+                    string sourceText = result.SourceCode ?? string.Empty;
                     if (outputPath != null) 
                     {
                         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
@@ -459,7 +459,7 @@ namespace Ruri.ShaderTools
 
                             string outputFilePath = Path.Combine(outputPath, outName);
                             string basePath = Path.Combine(outputPath, Path.GetFileNameWithoutExtension(outName));
-                            File.WriteAllText(outputFilePath, res.SourceCode ?? res.HlslSource ?? string.Empty);
+                            File.WriteAllText(outputFilePath, res.SourceCode ?? string.Empty);
 
                             if (res.FinalMetadata != null)
                             {
@@ -949,7 +949,7 @@ namespace Ruri.ShaderTools
                     try
                     {
                         var result = decompiler.Decompile(inputCase.Binary, inputCase.Format, metadata, 60);
-                        string sourceText = result.SourceCode ?? result.HlslSource ?? string.Empty;
+                        string sourceText = result.SourceCode ?? string.Empty;
                         if (!result.Success || string.IsNullOrWhiteSpace(sourceText))
                         {
                             if (stage.AllowKnownBackendLimitations && IsKnownSelfTestBackendLimitation(result.ErrorMessage))
@@ -1205,7 +1205,7 @@ namespace Ruri.ShaderTools
                 Directory.CreateDirectory(tempRoot);
                 using var decompiler = new ShaderDecompiler(tempRoot);
                 DecompileResult result = decompiler.Decompile(dxbc, ShaderArchitecture.Dxbc, metadata, 50);
-                string sourceText = result.SourceCode ?? result.HlslSource ?? string.Empty;
+                string sourceText = result.SourceCode ?? string.Empty;
                 if (!result.Success || string.IsNullOrWhiteSpace(sourceText) || result.IntermediateSpirv == null)
                 {
                     string error = result.ErrorMessage ?? "Unknown decompilation failure.";
