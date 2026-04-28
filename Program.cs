@@ -416,7 +416,21 @@ namespace Ruri.ShaderTools
 
                                 if (bestMaterialInfo != null)
                                 {
-                                    injectionSymbols = bestMaterialInfo.Metadata;
+                                    // Defensive copy: the unified material reader caches
+                                    // `Metadata` per (material, shaderPlatform). Multiple
+                                    // shaders share the same instance, but EnrichSymbolData
+                                    // and the texture-sampler-pair inferrer mutate it in
+                                    // place (adding ConstantBufferBindings, TextureParameters,
+                                    // Samplers from the *current* shader's SRT). Without a
+                                    // copy, those mutations accumulate across every shader
+                                    // that uses the same material -- shader 1904 ends up with
+                                    // 26 SRT entries (its own 11 plus 15 leftover from earlier
+                                    // shaders), which spirv-cross then dedupes with `_1`/`_2`
+                                    // suffixes ("Material_Bamboo_base_maps_1", "View_SRV45_2",
+                                    // etc.). Clone produces a per-shader writable view of the
+                                    // shared Material CB / parameter info while leaving the
+                                    // shared cache pristine for the next shader.
+                                    injectionSymbols = CloneShaderSymbolData(bestMaterialInfo.Metadata);
                                 }
 
                                 if (injectionSymbols != null)
@@ -496,6 +510,26 @@ namespace Ruri.ShaderTools
                 Console.Error.WriteLine($"Library Error: {ex.Message}");
                 return 1;
             }
+        }
+
+        // Shallow clone of ShaderSymbolData with fresh list instances for the
+        // mutable collections that downstream passes (SRT symbolizer, texture-
+        // sampler-pair inferrer, Pipe()'s MergeMissingBindings) modify. The
+        // contained ConstantBuffer / parameter records are immutable enough
+        // for our pipeline -- we only ever Add to lists, not mutate items.
+        static ShaderSymbolData CloneShaderSymbolData(ShaderSymbolData source)
+        {
+            return new ShaderSymbolData
+            {
+                ConstantBuffers = new List<ConstantBuffer>(source.ConstantBuffers),
+                ConstantBufferBindings = new List<BufferBinding>(source.ConstantBufferBindings),
+                TextureParameters = new List<TextureParameter>(source.TextureParameters),
+                Samplers = new List<SamplerParameter>(source.Samplers),
+                UAVs = new List<UAVParameter>(source.UAVs),
+                EntryPoint = source.EntryPoint,
+                DebugName = source.DebugName,
+                UsedMaterials = new List<string>(source.UsedMaterials),
+            };
         }
 
         static string GetShaderFreqString(byte frequency)
