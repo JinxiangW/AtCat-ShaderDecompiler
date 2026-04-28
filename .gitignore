@@ -10,8 +10,6 @@ bin
 .idea
 **/build/
 .vscode
-*.blend1
-*.zip
 launchSettings.json
 AssetRipper.SourceGenerated.xml
 Source/Ruri.RipperHook/PyTools/TypeTreeDump
