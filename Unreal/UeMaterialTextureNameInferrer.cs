@@ -218,11 +218,11 @@ internal static class UeMaterialTextureNameInferrer
 
     // SSM_FromTextureAsset (the only SSM whose sampler argument *is* the
     // texture's own paired sampler) emits sampler name "<TexName>Sampler".
-    // CreateBufferStruct's typed names that have a paired sampler are listed
-    // in MaterialUniformBufferLayout (Texture2D_<i>, TextureCube_<i>, ...).
-    // VirtualTexturePhysical_<i>Sampler is also a valid pair (UBMT_SRV, but
-    // sampler-paired by CreateBufferStruct line 495). The Wrap/Clamp suffix
-    // members and VTPageTable members do NOT have texture pairs.
+    // The TexName can be either CreateBufferStruct's typed name (Texture2D_<i>
+    // etc.) or the author-facing parameter name (`BambooBaseMaps`) when our
+    // layout substituted it. Either way, stripping the trailing "Sampler"
+    // suffix gives the texture's name. The Wrap/Clamp_WorldGroupSettings
+    // unconditional samplers don't have a paired texture, so reject them.
     private static string? DeriveTextureNameFromSamplerName(string samplerName)
     {
         const string SamplerSuffix = "Sampler";
@@ -237,9 +237,8 @@ internal static class UeMaterialTextureNameInferrer
 
         string textureName = samplerName.Substring(0, samplerName.Length - SamplerSuffix.Length);
 
-        // Reject the two unconditional fixed members. If they appear here it
-        // means the SamplerName parser appended "Sampler" to a non-paired
-        // member; that's a shape guard, not a real case in practice.
+        // Reject the two unconditional fixed members. They have no paired
+        // texture (UE emits them as standalone shared samplers).
         if (textureName.EndsWith("_Wrap_WorldGroupSettings", StringComparison.Ordinal)
             || textureName.EndsWith("_Clamp_WorldGroupSettings", StringComparison.Ordinal))
         {

@@ -1255,7 +1255,152 @@ SamplerState      Material_Texture2D_1Sampler      : register(s3);   // SRT + Cr
 - `Source/Ruri.ShaderDecompiler/ShaderDecompiler.cs`(在 `Patch()` 前调 `UeMaterialTextureNameInferrer.InferAndAppend`)
 - `Source/Ruri.ShaderDecompiler/UE_TEXTURE_BINDING_TRUTH.md`(机制 1.5 文档)
 
-### 9.12 当前轮遗留(open in v15)
+### 9.12 It. 15 — Material CB 缺失 VT 头部 + LWC 类型 + 用户面贴图名
+
+回应用户 "M_Alpha_grass_PS_4000 的材质球 cb 怎么都没恢复啊" + "材质球贴图
+应该看到明确的贴图名字"。三个 bug 一并修。
+
+#### Bug 1 — `BufferOffset` 锚点错: PreshaderField 的 BO 不是 MaterialUB byte 0 而是 PreshaderBuffer 起点
+
+UE 5.1 `MaterialUniformExpressions.cpp:347-365` 的 `CreateBufferStruct()`
+在 `Material` UB 的 numeric 区里依次 emit 三块:
+
+```
+[VTPackedPageTableUniform : VTStacks.Num() * 2 * 16 bytes]   (uint4 array)
+[VTPackedUniform          : NumVirtualTextures * 16 bytes]   (uint4 array)
+[PreshaderBuffer          : UniformPreshaderBufferSize * 16] (float4 array)
+```
+
+`UniformPreshaderField.BufferOffset` 是 4-byte 单位**相对于 PreshaderBuffer
+起点**,不是 MaterialUB byte 0。M_Bamboo_tree (无 VTStacks 无 Virtual)
+PreshaderBufferStart=0 巧合相等所以以前能跑;M_Alpha_grass(VTStacks=1
+Virtual=2)PreshaderBufferStart=64,以前的 `byteOffset = BufferOffset * 4`
+全错位 64,所有 preshader 字段命中错误的 byte 偏移 → rewriter 拒绝。
+
+修法: 新增 `ComputeNumericLayout` 从
+`UniformBufferLayoutInitializer.Resources[0].MemberOffset`(资源块起点 ==
+numeric 区结尾)和 `UniformPreshaderBufferSize` 反推
+`PreshaderBufferStart = numericEnd - PreshaderBufferSize * 16`,以及
+`vtPageTableBytes`(从 numericEnd 减去 vtUniformBytes 和 PreshaderBuffer
+得出)。所有 preshader 字段 byteOffset 改为 `preshaderBufferStart +
+BufferOffset * 4`。
+
+同时为 `VTPackedPageTableUniform` 和 `VTPackedUniform` 两块 prefix 区在
+layout 顶部 emit 命名 `uint4[N]` 数组,不让 rewriter 在那段 byte 上空着。
+
+#### Bug 2 — `TryMapFieldType` 只认 Float1..4,LWC `Double*` / `Int*` /
+`Bool*` / `Numeric*` / `Float4x4` / `Double4x4` 全部 silently skip
+
+`UniformPreshaderField.Type` 取自 UE `EValueType` 枚举(`ShaderTypes.h:93`)。
+LWC `Double<N>` 在 cbuffer 中由 `HLSLMaterialTranslator.cpp:3293-3308` 编码
+为 Tile + Offset 两个 float<N>(每段 N*4 字节,总 N*8 字节)。Int / Bool /
+Numeric 等价于 Float<N> 的内存布局。Float4x4 / Double4x4 是 64 / 128 字节
+矩阵。
+
+我们旧 `TryMapFieldType` 只匹配 Float1..4,其余直接 `continue` 跳过 → 命中
+LWC 字段时整个字节范围空着,rewriter 在 SPV access 处找不到成员就拒
+整 CB。
+
+修法: 引入 `FieldKind` 枚举(`Float`/`LwcDouble`/`Int`/`Bool`/`Numeric`/
+`Float4x4`/`LwcDouble4x4`),完整覆盖。各 kind 的 emission:
+
+- `Float`/`Numeric` → 单 `float<N>` 成员
+- `Int`/`Bool` → 单 `int<N>` 成员(HLSL cbuffer 的 bool 编码为 int)
+- `LwcDouble<N>` → emit `2*N` 个 scalar float(Tile_x/y/z + Offset_x/y/z)
+  各占 4 字节。**不 emit float<N>**,因为 LWC 的起点不一定 register 对齐
+  (HLSLMaterialTranslator 推进 UniformPreshaderOffset 时按 `NumComponents*2`
+  非按 register count padding),float3 起点在 `c<i>.w` 跨 register 边界,
+  HLSL packoffset 会拒。
+- `Float4x4` → 单 `MatrixParameter` 4×4
+- `LwcDouble4x4` → 两个 `MatrixParameter` (Tile + Offset, 64 字节间隔)
+
+`MatrixParameter` 进 `MaterialConstantBuffer.MatrixParams`(过去为空,本轮
+开始填充)。
+
+#### Bug 3 — 贴图绑定只显示 typed slot 名 `Material_Texture2D_<i>`,
+不显示用户面参数名
+
+用户期望: M_Bamboo_tree 的 `UniformTextureParameters[Standard2D][1]`
+ParameterInfo.Name = "Bamboo base maps" 应该出现在 HLSL 里(而不是
+`Material_Texture2D_1`)。
+
+修法: `MaterialResourceCounts` 加 `Standard2DAuthorNames` /
+`CubeAuthorNames` / 等等共 7 个 per-typed-block author-name list。
+`UeShaderSymbolInputsReader.ReadMaterialResourceCounts` 从
+`UniformTextureParameters[Type][i].ParameterInfo.Name` 读出来。
+`MaterialUniformBufferLayout.AppendTextureSamplerPairs` 在 author 名字
+非 "None"/非空时,用 `SanitizeHlslIdent(authorName)` 替换 typed slot 名,
+否则降级 `<TypedBase>_<i>`(原行为)。
+
+`SanitizeHlslIdent` 把空格/点/特殊字符替换为 `_`,首字符若是数字前置 `_`
+保 HLSL identifier 合法。例: "Bamboo base maps" → "Bamboo_base_maps",
+"10.Normal intensity" → "_0_Normal_intensity"。
+
+`UeMaterialTextureNameInferrer.DeriveTextureNameFromSamplerName` 不变 —
+strip 尾部 `Sampler` 即可,无论 base 名是 typed `Texture2D_1` 还是 author
+`Bamboo_base_maps`。
+
+#### 验证
+
+| Fixture | 之前 | 现在 |
+| --- | --- | --- |
+| `M_Bamboo_tree_PS_1904` Material CB | 22 命名成员 | 22 命名成员(不退化)✓ |
+| `M_Bamboo_tree_PS_1904` 贴图 | `Material_Texture2D_1 @ t10` | `Material_Bamboo_base_maps @ t10` ✓(用户面名字)|
+| `M_Bamboo_tree_PS_1904` sampler | `Material_Texture2D_1Sampler @ s4` | `Material_Bamboo_base_mapsSampler @ s4` ✓ |
+| `M_Alpha_grass_PS_4000` Material CB | `float4 Material_1_SelectionColor[14]`(rewriter 退化) | **24 命名成员**包括 `VTPackedPageTableUniform[2]`、`VTPackedUniform[2]`、`SelectionColor`、`Overlay_power`、`Grass_colour_patches`、`Wind_speed` 等用户面名字、和 LWC 段 `f_124_LwcTile_x..z` / `f_124_LwcOffset_x..z` 标量 ✓ |
+| `M_Alpha_grass_PS_4000` 贴图 | `Material_Texture2D_1 @ t8` | `Material_Texture2D_1 @ t8`(material 端 ParameterInfo.Name 全 "None"——对该材质无 author 名字可用,正确降级 typed slot)✓ |
+| EndField blob1 / blob2 (Unity) | OK | OK 不退化 ✓ |
+
+`M_Alpha_grass_PS_4000` 实际产物片段:
+
+```hlsl
+cbuffer Material : register(b3)
+{
+    uint4  Material_1_VTPackedPageTableUniform[2]  : packoffset(c0);
+    uint4  Material_1_VTPackedUniform[2]           : packoffset(c2);
+    float4 Material_1_SelectionColor               : packoffset(c4);
+    float  Material_1_SelectionColor_w             : packoffset(c5);
+    float3 Material_1_SelectionColor_xyz           : packoffset(c5.y);
+    float3 Material_1_f_96                         : packoffset(c6);
+    float3 Material_1_f_112                        : packoffset(c7);
+    float  Material_1_f_124_LwcTile_x              : packoffset(c7.w);
+    float  Material_1_f_124_LwcTile_y              : packoffset(c8);
+    float  Material_1_f_124_LwcTile_z              : packoffset(c8.y);
+    float  Material_1_f_124_LwcOffset_x            : packoffset(c8.z);
+    float  Material_1_f_124_LwcOffset_y            : packoffset(c8.w);
+    float  Material_1_f_124_LwcOffset_z            : packoffset(c9);
+    float  Material_1_Overlay_power                : packoffset(c9.y);
+    float  Material_1_Overlay_power_sat            : packoffset(c9.z);
+    float  Material_1_RVT_Blend_power              : packoffset(c9.w);
+    float4 Material_1_Grass_colour_patches         : packoffset(c10);
+    float3 Material_1_Grass_colour_patches_xyz    : packoffset(c11);
+    float3 Material_1_f_192                        : packoffset(c12);
+    float  Material_1_Grass_colour_patches_size    : packoffset(c12.w);
+    float  Material_1_Grass_colour_patches_size_rcp: packoffset(c13);
+    float  Material_1_Wind_speed                   : packoffset(c13.y);
+    float  Material_1_Wind_speed_sat               : packoffset(c13.z);
+    float  Material_1_Wind_directional_strength    : packoffset(c13.w);
+};
+```
+
+`M_Bamboo_tree_PS_1904` 贴图绑定片段:
+
+```hlsl
+Texture2D<float4> Material_Bamboo_base_maps        : register(t10);
+SamplerState      Material_Bamboo_base_mapsSampler : register(s4);
+```
+
+#### 文件
+
+- `Source/Ruri.ShaderDecompiler/Unreal/UeShaderSymbolInputsReader.cs`
+  (PreshaderBufferStart 计算、FieldKind 枚举、LWC 字节级 emission、author
+  name reader)
+- `Source/Ruri.ShaderDecompiler/Unreal/MaterialUniformBufferLayout.cs`
+  (author-name 替换 typed slot、author-name 索引反查、SanitizeHlslIdent)
+- `Source/Ruri.ShaderDecompiler/Unreal/UeMaterialTextureNameInferrer.cs`
+  (注释更新)
+
+### 9.13 当前轮遗留(open in v16)
 
 1. **EndField blob1 `ShaderVariablesGlobal` 6 → 5 layout 缩水** — §9.9 的
    旧 §2 项;blob2 同 metadata 是 6 个,差异在 SPIR-V access。需要确认是

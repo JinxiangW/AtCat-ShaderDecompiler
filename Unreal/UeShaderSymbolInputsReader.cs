@@ -168,6 +168,25 @@ internal static class UeShaderSymbolInputsReader
             Size = checked((int)constantBufferSize)
         };
 
+        // PreshaderField.BufferOffset is in float (4-byte) units relative to
+        // the START of `PreshaderBuffer`, NOT to byte 0 of the Material UB.
+        // CreateBufferStruct() (MaterialUniformExpressions.cpp:347-365) lays
+        // out:
+        //
+        //     [VTPackedPageTableUniform : VTStacks.Num() * 2 * 16 bytes]   (uint4 array)
+        //     [VTPackedUniform          : NumVirtualTextures * 16 bytes]   (uint4 array)
+        //     [PreshaderBuffer          : UniformPreshaderBufferSize * 16] (float4 array)
+        //     [Resources... (TEXTURE/SAMPLER/SRV pointers)]
+        //
+        // The HLSL cbuffer the shader compiles against contains all THREE
+        // numeric blocks (VT page-table uniform, VT uniform, preshader),
+        // so we need to model all three as members. PreshaderBuffer slots
+        // come from our `UniformPreshaderFields` walk below; the two VT
+        // blocks (sized in u4 multiples) are emitted up-front as named uint4
+        // arrays so the shader's accesses to them resolve.
+        (int preshaderBufferStart, int vtPageTableBytes, int vtUniformBytes) =
+            ComputeNumericLayout(uniformExpressionSet, (int)constantBufferSize);
+
         // Walk every preshader. Each is a `Material` CB slot writer:
         //   field[FieldIndex] = evaluate(opcode stream)
         // The field record carries the authoritative (BufferOffset, Type) of
@@ -184,6 +203,41 @@ internal static class UeShaderSymbolInputsReader
         HashSet<string> seenNames = new(StringComparer.Ordinal);
         List<VectorParameter> vectorParams = new();
         List<MatrixParameter> matrixParams = new();
+
+        if (vtPageTableBytes > 0)
+        {
+            // 2 * VTStacks.Num() uint4s starting at byte 0.
+            vectorParams.Add(new VectorParameter
+            {
+                Name = "VTPackedPageTableUniform",
+                NameIndex = -1,
+                Type = ShaderParamType.UInt,
+                ByteOffset = 0,
+                ArraySize = vtPageTableBytes / 16,
+                IsMatrix = false,
+                RowCount = 4,
+                ColumnCount = 1,
+            });
+            seenOffsets.Add(0);
+            seenNames.Add("VTPackedPageTableUniform");
+        }
+        if (vtUniformBytes > 0)
+        {
+            int vtUniformStart = vtPageTableBytes;
+            vectorParams.Add(new VectorParameter
+            {
+                Name = "VTPackedUniform",
+                NameIndex = -1,
+                Type = ShaderParamType.UInt,
+                ByteOffset = vtUniformStart,
+                ArraySize = vtUniformBytes / 16,
+                IsMatrix = false,
+                RowCount = 4,
+                ColumnCount = 1,
+            });
+            seenOffsets.Add(vtUniformStart);
+            seenNames.Add("VTPackedUniform");
+        }
         foreach (JsonElement preshader in uniformPreshaders.EnumerateArray())
         {
             uint opcodeOffset = ReadUInt32(preshader, "OpcodeOffset");
@@ -211,7 +265,7 @@ internal static class UeShaderSymbolInputsReader
                 continue;
             }
 
-            int byteOffset = checked((int)ReadUInt32(field, "BufferOffset") * 4);
+            int byteOffset = preshaderBufferStart + checked((int)ReadUInt32(field, "BufferOffset") * 4);
             if (!seenOffsets.Add(byteOffset))
             {
                 continue;
@@ -240,10 +294,32 @@ internal static class UeShaderSymbolInputsReader
                     break;
                 case FieldKind.LwcDouble:
                     {
-                        int offsetPart = byteOffset + rows * 4;
-                        seenOffsets.Add(offsetPart);
-                        AddVectorMember(vectorParams, seenNames, RegisterUniqueName(seenNames, $"{baseName}_LwcTile", byteOffset), byteOffset, rows, ShaderParamType.Float);
-                        AddVectorMember(vectorParams, seenNames, RegisterUniqueName(seenNames, $"{baseName}_LwcOffset", offsetPart), offsetPart, rows, ShaderParamType.Float);
+                        // LWC value occupies 2 * `rows` floats: Tile then
+                        // Offset. The starting byteOffset is whatever
+                        // BufferOffset says, which is NOT register-aligned in
+                        // general (LWC slots can begin mid-register because
+                        // HLSLMaterialTranslator advances UniformPreshaderOffset
+                        // by `NumComponents * 2` after each LWC, not by a
+                        // padded register count). So we cannot expose them as
+                        // float<N> vectors -- HLSL packoffset rules forbid
+                        // float3 starting at c<i>.w, etc. Emit each
+                        // component as its own scalar member; the rewriter
+                        // sees them as 2*rows back-to-back floats covering
+                        // the full LWC byte range, and spirv-cross emits
+                        // valid packoffset(c<i>.<comp>) for each.
+                        int totalComponents = rows * 2;
+                        for (int c = 0; c < totalComponents; c++)
+                        {
+                            int compOffset = byteOffset + c * 4;
+                            if (c > 0)
+                            {
+                                seenOffsets.Add(compOffset);
+                            }
+                            string compName = c < rows
+                                ? $"{baseName}_LwcTile_{"xyzw"[c]}"
+                                : $"{baseName}_LwcOffset_{"xyzw"[c - rows]}";
+                            AddVectorMember(vectorParams, seenNames, RegisterUniqueName(seenNames, compName, compOffset), compOffset, 1, ShaderParamType.Float);
+                        }
                         break;
                     }
                 case FieldKind.Float4x4:
@@ -275,6 +351,63 @@ internal static class UeShaderSymbolInputsReader
             .OrderBy(static p => p.ByteOffset)
             .ToArray();
         return materialBuffer;
+    }
+
+    // Compute the three numeric blocks inside the Material UB:
+    //   [VTPackedPageTableUniform : vtPageTableBytes] (uint4 array)
+    //   [VTPackedUniform          : vtUniformBytes]   (uint4 array)
+    //   [PreshaderBuffer          : preshaderBytes]   (float4 array starting at preshaderBufferStart)
+    //
+    // Source-of-truth split (per MaterialUniformExpressions.cpp:347-365):
+    //   - PreshaderBuffer size is `UniformPreshaderBufferSize * 16` bytes
+    //   - VTPackedUniform size is `Virtual_count * 16` bytes
+    //   - VTPackedPageTableUniform size = (numericEnd - prevTwo) bytes
+    //
+    // numericEnd = `UniformBufferLayoutInitializer.Resources[0].MemberOffset`
+    // when resources are present (start of the resource-pointer block), else
+    // the full ConstantBufferSize. Virtual_count = length of
+    // `UniformTextureParameters[Virtual]`.
+    private static (int preshaderBufferStart, int vtPageTableBytes, int vtUniformBytes) ComputeNumericLayout(
+        JsonElement uniformExpressionSet, int constantBufferSize)
+    {
+        int preshaderBufferSizeFloat4 = 0;
+        if (uniformExpressionSet.TryGetProperty("UniformPreshaderBufferSize", out JsonElement sizeElement)
+            && sizeElement.ValueKind == JsonValueKind.Number)
+        {
+            preshaderBufferSizeFloat4 = sizeElement.GetInt32();
+        }
+        int preshaderBufferBytes = Math.Max(0, preshaderBufferSizeFloat4) * 16;
+
+        int numericEnd = constantBufferSize;
+        if (uniformExpressionSet.TryGetProperty("UniformBufferLayoutInitializer", out JsonElement ubl)
+            && ubl.ValueKind == JsonValueKind.Object
+            && ubl.TryGetProperty("Resources", out JsonElement resources)
+            && resources.ValueKind == JsonValueKind.Array
+            && resources.GetArrayLength() > 0
+            && resources[0].TryGetProperty("MemberOffset", out JsonElement firstResourceOffset)
+            && firstResourceOffset.ValueKind == JsonValueKind.Number)
+        {
+            numericEnd = firstResourceOffset.GetInt32();
+        }
+
+        int virtualCount = 0;
+        if (uniformExpressionSet.TryGetProperty("UniformTextureParameters", out JsonElement textureParams)
+            && textureParams.ValueKind == JsonValueKind.Array
+            && textureParams.GetArrayLength() > 5
+            && textureParams[5].ValueKind == JsonValueKind.Array)
+        {
+            virtualCount = textureParams[5].GetArrayLength();
+        }
+        int vtUniformBytes = virtualCount * 16;
+
+        int vtPageTableBytes = numericEnd - preshaderBufferBytes - vtUniformBytes;
+        if (vtPageTableBytes < 0)
+        {
+            vtPageTableBytes = 0;
+        }
+
+        int preshaderBufferStart = vtPageTableBytes + vtUniformBytes;
+        return (preshaderBufferStart, vtPageTableBytes, vtUniformBytes);
     }
 
     private static string RegisterUniqueName(HashSet<string> seenNames, string candidate, int byteOffset)
@@ -511,6 +644,17 @@ internal static class UeShaderSymbolInputsReader
             totalResources = resources.GetArrayLength();
         }
 
+        // Per-typed-block author-facing texture parameter names. We read
+        // ParameterInfo.Name for each typed slot so the layout can replace
+        // `Texture2D_<i>` with the user-recognisable identifier.
+        IReadOnlyList<string?>? std2dNames = ReadTextureAuthorNames(textureParams, 0);
+        IReadOnlyList<string?>? cubeNames = ReadTextureAuthorNames(textureParams, 1);
+        IReadOnlyList<string?>? a2dNames = ReadTextureAuthorNames(textureParams, 2);
+        IReadOnlyList<string?>? acubeNames = ReadTextureAuthorNames(textureParams, 3);
+        IReadOnlyList<string?>? volNames = ReadTextureAuthorNames(textureParams, 4);
+        IReadOnlyList<string?>? virtNames = ReadTextureAuthorNames(textureParams, 5);
+        IReadOnlyList<string?>? extNames = ReadExternalAuthorNames(uniformExpressionSet);
+
         return new UeMaterialUniformBufferLayout.MaterialResourceCounts(
             Standard2D: Standard2D,
             Cube: Cube,
@@ -520,7 +664,53 @@ internal static class UeShaderSymbolInputsReader
             External: External,
             Virtual: Virtual,
             VirtualTextureStackLayerCounts: vtStackLayers,
-            TotalResourceCount: totalResources);
+            TotalResourceCount: totalResources,
+            Standard2DAuthorNames: std2dNames,
+            CubeAuthorNames: cubeNames,
+            Array2DAuthorNames: a2dNames,
+            ArrayCubeAuthorNames: acubeNames,
+            VolumeAuthorNames: volNames,
+            ExternalAuthorNames: extNames,
+            VirtualAuthorNames: virtNames);
+    }
+
+    private static IReadOnlyList<string?>? ReadTextureAuthorNames(JsonElement arrayOfArrays, int typeIndex)
+    {
+        if (typeIndex < 0 || typeIndex >= arrayOfArrays.GetArrayLength())
+        {
+            return null;
+        }
+
+        JsonElement inner = arrayOfArrays[typeIndex];
+        if (inner.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        List<string?> names = new(inner.GetArrayLength());
+        foreach (JsonElement entry in inner.EnumerateArray())
+        {
+            FMaterialParameterInfo? info = ParseMaterialParameterInfo(entry);
+            names.Add(info?.Name);
+        }
+        return names;
+    }
+
+    private static IReadOnlyList<string?>? ReadExternalAuthorNames(JsonElement uniformExpressionSet)
+    {
+        if (!uniformExpressionSet.TryGetProperty("UniformExternalTextureParameters", out JsonElement external)
+            || external.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        List<string?> names = new(external.GetArrayLength());
+        foreach (JsonElement entry in external.EnumerateArray())
+        {
+            FMaterialParameterInfo? info = ParseMaterialParameterInfo(entry);
+            names.Add(info?.Name);
+        }
+        return names;
     }
 
     // FMaterialVirtualTextureStack stores LayerUniformExpressionIndices as an

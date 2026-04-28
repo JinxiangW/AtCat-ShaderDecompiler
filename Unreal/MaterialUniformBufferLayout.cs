@@ -46,7 +46,17 @@ internal sealed class UeMaterialUniformBufferLayout
     public UeMaterialUniformBufferLayout(MaterialResourceCounts counts)
     {
         _resourceMemberNames = BuildResourceMemberNames(counts);
+        _typedSlotByAuthorName = BuildAuthorIndex(counts);
     }
+
+    private readonly Dictionary<string, string> _typedSlotByAuthorName;
+
+    // Author-facing parameter name -> typed slot name (e.g. "Bamboo_base_maps"
+    // -> "Texture2D_1"). Used by the texture-from-sampler-pair inferrer to
+    // resolve sampler names like "Material_Bamboo_base_mapsSampler" back to
+    // their typed slot when picking the texture binding name.
+    public bool TryResolveAuthorName(string authorName, out string typedSlot)
+        => _typedSlotByAuthorName.TryGetValue(authorName, out typedSlot!);
 
     public string? ResolveResourceName(UeSrtRecord record)
     {
@@ -64,12 +74,12 @@ internal sealed class UeMaterialUniformBufferLayout
     private static List<string> BuildResourceMemberNames(MaterialResourceCounts counts)
     {
         List<string> result = new();
-        AppendTextureSamplerPairs(result, "Texture2D", counts.Standard2D);
-        AppendTextureSamplerPairs(result, "TextureCube", counts.Cube);
-        AppendTextureSamplerPairs(result, "Texture2DArray", counts.Array2D);
-        AppendTextureSamplerPairs(result, "TextureCubeArray", counts.ArrayCube);
-        AppendTextureSamplerPairs(result, "VolumeTexture", counts.Volume);
-        AppendTextureSamplerPairs(result, "ExternalTexture", counts.External);
+        AppendTextureSamplerPairs(result, "Texture2D", counts.Standard2D, counts.Standard2DAuthorNames);
+        AppendTextureSamplerPairs(result, "TextureCube", counts.Cube, counts.CubeAuthorNames);
+        AppendTextureSamplerPairs(result, "Texture2DArray", counts.Array2D, counts.Array2DAuthorNames);
+        AppendTextureSamplerPairs(result, "TextureCubeArray", counts.ArrayCube, counts.ArrayCubeAuthorNames);
+        AppendTextureSamplerPairs(result, "VolumeTexture", counts.Volume, counts.VolumeAuthorNames);
+        AppendTextureSamplerPairs(result, "ExternalTexture", counts.External, counts.ExternalAuthorNames);
 
         // VirtualTextureStack page tables are inserted between External textures
         // and Virtual physical textures. Each stack emits:
@@ -114,19 +124,81 @@ internal sealed class UeMaterialUniformBufferLayout
             // this by comparing ResourceMemberNames.Count vs Resources.Num().
         }
 
-        AppendTextureSamplerPairs(result, "VirtualTexturePhysical", counts.Virtual);
+        AppendTextureSamplerPairs(result, "VirtualTexturePhysical", counts.Virtual, counts.VirtualAuthorNames);
         // Fixed members emitted unconditionally by CreateBufferStruct at the end.
         result.Add("Wrap_WorldGroupSettings");
         result.Add("Clamp_WorldGroupSettings");
         return result;
     }
 
-    private static void AppendTextureSamplerPairs(List<string> result, string baseName, int count)
+    private static void AppendTextureSamplerPairs(List<string> result, string baseName, int count, IReadOnlyList<string?>? authorNames = null)
     {
         for (int i = 0; i < count; i++)
         {
-            result.Add($"{baseName}_{i}");
-            result.Add($"{baseName}_{i}Sampler");
+            string? author = (authorNames != null && i < authorNames.Count) ? authorNames[i] : null;
+            // Prefer the author-facing parameter name when present (sanitized
+            // for HLSL identifiers); fall back to the typed slot name UE
+            // generated via CreateBufferStruct's printf. Either form is
+            // source-truth: typed comes from UE's `Texture2D_<i>` template,
+            // author-name comes from the `.uasset` ParameterInfo.Name.
+            string sanitized = SanitizeHlslIdent(author);
+            string textureName = string.IsNullOrEmpty(sanitized) ? $"{baseName}_{i}" : sanitized;
+            result.Add(textureName);
+            result.Add($"{textureName}Sampler");
+        }
+    }
+
+    private static string SanitizeHlslIdent(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw) || string.Equals(raw, "None", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
+
+        Span<char> buffer = stackalloc char[raw.Length];
+        int written = 0;
+        foreach (char c in raw)
+        {
+            char ch = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ? c : '_';
+            buffer[written++] = ch;
+        }
+        if (written == 0)
+        {
+            return string.Empty;
+        }
+        // HLSL identifier cannot start with a digit; prepend underscore.
+        if (buffer[0] >= '0' && buffer[0] <= '9')
+        {
+            return "_" + new string(buffer[..written]);
+        }
+        return new string(buffer[..written]);
+    }
+
+    private static Dictionary<string, string> BuildAuthorIndex(MaterialResourceCounts counts)
+    {
+        Dictionary<string, string> index = new(StringComparer.Ordinal);
+        Add(index, "Texture2D", counts.Standard2D, counts.Standard2DAuthorNames);
+        Add(index, "TextureCube", counts.Cube, counts.CubeAuthorNames);
+        Add(index, "Texture2DArray", counts.Array2D, counts.Array2DAuthorNames);
+        Add(index, "TextureCubeArray", counts.ArrayCube, counts.ArrayCubeAuthorNames);
+        Add(index, "VolumeTexture", counts.Volume, counts.VolumeAuthorNames);
+        Add(index, "ExternalTexture", counts.External, counts.ExternalAuthorNames);
+        Add(index, "VirtualTexturePhysical", counts.Virtual, counts.VirtualAuthorNames);
+        return index;
+
+        static void Add(Dictionary<string, string> idx, string baseName, int count, IReadOnlyList<string?>? authorNames)
+        {
+            if (authorNames == null) return;
+            for (int i = 0; i < count && i < authorNames.Count; i++)
+            {
+                string sanitized = SanitizeHlslIdent(authorNames[i]);
+                if (sanitized.Length > 0)
+                {
+                    // Map author-name -> typed slot for both texture and sampler
+                    idx[sanitized] = $"{baseName}_{i}";
+                    idx[sanitized + "Sampler"] = $"{baseName}_{i}Sampler";
+                }
+            }
         }
     }
 
@@ -161,5 +233,22 @@ internal sealed class UeMaterialUniformBufferLayout
         // FRHIUniformBufferLayoutInitializer.Resources[]. When the unified
         // metadata path strips VTStacks, this lets us infer the VT stack
         // count by subtraction so the layout still resolves correctly.
-        int? TotalResourceCount = null);
+        int? TotalResourceCount = null,
+        // Per-typed-block author names from
+        // UniformTextureParameters[Type][i].ParameterInfo.Name (or
+        // ParameterName in the flattened unified-metadata shape). Each list
+        // is parallel to the corresponding count: index `i` is the user-
+        // facing name of the `i`-th texture in that typed block, or null /
+        // "None" when the slot is anonymous (compiler-internal). When set,
+        // the layout uses these to override the typed slot names like
+        // `Texture2D_<i>` with the user-recognisable identifier so the
+        // HLSL output reads as `Material_BambooBaseMaps` rather than
+        // `Material_Texture2D_1`.
+        IReadOnlyList<string?>? Standard2DAuthorNames = null,
+        IReadOnlyList<string?>? CubeAuthorNames = null,
+        IReadOnlyList<string?>? Array2DAuthorNames = null,
+        IReadOnlyList<string?>? ArrayCubeAuthorNames = null,
+        IReadOnlyList<string?>? VolumeAuthorNames = null,
+        IReadOnlyList<string?>? ExternalAuthorNames = null,
+        IReadOnlyList<string?>? VirtualAuthorNames = null);
 }
