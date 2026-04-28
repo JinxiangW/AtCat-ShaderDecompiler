@@ -1210,6 +1210,14 @@ namespace Ruri.ShaderTools
                 {
                     string error = result.ErrorMessage ?? "Unknown decompilation failure.";
                     File.WriteAllText(Path.Combine(outputDir, "unitybinary.error.txt"), error);
+                    if (result.IntermediateSpirv is { Length: > 0 } failedSpirv)
+                    {
+                        File.WriteAllBytes(Path.Combine(outputDir, "unitybinary.spv"), failedSpirv);
+                    }
+                    if (!string.IsNullOrEmpty(result.StructuredRewriteSummary))
+                    {
+                        File.WriteAllText(Path.Combine(outputDir, "unitybinary.rewrite.txt"), result.StructuredRewriteSummary);
+                    }
                     Console.Error.WriteLine(error);
                     return 1;
                 }

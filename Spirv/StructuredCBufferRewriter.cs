@@ -68,6 +68,18 @@ internal sealed class StructuredCBufferRewriter
                 }
 
                 member.ResolvedTypeId = memberTypeId;
+                // Pre-resolve a scalar-of-the-same-component type for vec / matrix / scalar members
+                // so component access chains can produce ptr-scalar results.
+                member.ScalarTypeId = member.LogicalType.Kind switch
+                {
+                    LogicalTypeKind.Scalar => memberTypeId,
+                    LogicalTypeKind.Vector or LogicalTypeKind.Matrix => EnsureScalarType(module, types, member.LogicalType.ScalarKind),
+                    _ => 0
+                };
+                if (member.LogicalType.Kind == LogicalTypeKind.Matrix)
+                {
+                    member.ColumnVectorTypeId = EnsureVectorType(module, types, member.LogicalType.ScalarKind, member.LogicalType.Rows);
+                }
                 memberTypeIds.Add(memberTypeId);
             }
 
@@ -1226,7 +1238,7 @@ internal sealed class StructuredCBufferRewriter
             {
                 loadInfos[instruction[2]] = new RewrittenLoadInfo
                 {
-                    InstructionIndex = index,
+                    Instruction = instruction,
                     ResultId = instruction[2],
                     OriginalResultTypeId = instruction[1],
                     HasCompositeExtractUsers = false,
@@ -1285,7 +1297,7 @@ internal sealed class StructuredCBufferRewriter
 
         foreach (RewrittenLoadInfo loadInfo in loadInfos.Values)
         {
-            SpirvInstruction loadInstruction = module.Instructions[loadInfo.InstructionIndex];
+            SpirvInstruction loadInstruction = loadInfo.Instruction;
             if (loadInstruction.OpCode != SpvOpCode.OpLoad || loadInstruction.Words.Length < 4)
             {
                 continue;
@@ -1310,6 +1322,33 @@ internal sealed class StructuredCBufferRewriter
                 loadInstruction.Words = [SpvOpCode.MakeInstructionWord(SpvOpCode.OpNop, 1)];
             }
         }
+
+        // Final cleanup: any rewritten access chain whose only consumer was a NOP'd load is now
+        // dead. Leaving it in place is unsafe — the variable's pointer type was changed to the new
+        // struct, so an unrewritten old-style `OpAccessChain ptr-vec4 var %0 %register` walks a
+        // type tree that no longer exists, and spirv-cross fails validation with "Cannot subdivide
+        // a scalar value" (or similar). NOP every access chain in `rewrittenAccessChains` with
+        // zero remaining users.
+        Dictionary<uint, int> finalUseCounts = CountResultUses(module);
+        foreach (uint accessChainId in rewrittenAccessChains.Keys)
+        {
+            if (finalUseCounts.TryGetValue(accessChainId, out int useCount) && useCount > 0)
+            {
+                continue;
+            }
+
+            foreach (SpirvInstruction inst in module.Instructions)
+            {
+                if ((inst.OpCode != SpvOpCode.OpAccessChain && inst.OpCode != SpvOpCode.OpInBoundsAccessChain) || inst.Words.Length < 3 || inst[2] != accessChainId)
+                {
+                    continue;
+                }
+
+                inst.OpCode = SpvOpCode.OpNop;
+                inst.Words = [SpvOpCode.MakeInstructionWord(SpvOpCode.OpNop, 1)];
+                break;
+            }
+        }
     }
 
     private static Dictionary<uint, int> CountResultUses(SpirvModule module)
@@ -1317,6 +1356,17 @@ internal sealed class StructuredCBufferRewriter
         var uses = new Dictionary<uint, int>();
         foreach (SpirvInstruction instruction in module.Instructions)
         {
+            // Metadata / decoration instructions carry literal values (byte offsets, builtin enums,
+            // location indices, etc.) in operand slots. Counting them as id references inflates use
+            // counts whenever a literal happens to coincide with a real SSA id — which then breaks
+            // the NOP decision in RewriteLoadsAndCompositeExtracts (a load whose extracts were all
+            // rewritten gets kept alive because a literal with the same numeric value as the load's
+            // result id is misread as a "real" extra user).
+            if (IsLiteralBearingMetadataOp(instruction.OpCode))
+            {
+                continue;
+            }
+
             int? resultIdIndex = SpvInstructionTraits.GetResultIdIndex(instruction);
             int? resultTypeIndex = SpvInstructionTraits.GetResultTypeIdIndex(instruction);
             for (int operandIndex = 1; operandIndex < instruction.Words.Length; operandIndex++)
@@ -1332,6 +1382,33 @@ internal sealed class StructuredCBufferRewriter
         }
 
         return uses;
+    }
+
+    private static bool IsLiteralBearingMetadataOp(ushort opCode)
+    {
+        // Names, decorations, source/string blocks. None of these participate in data flow.
+        // Opcode numbers are stable per the SPIR-V spec.
+        return opCode == SpvOpCode.OpName              // 5
+            || opCode == SpvOpCode.OpMemberName        // 6
+            || opCode == SpvOpCode.OpDecorate          // 71
+            || opCode == SpvOpCode.OpMemberDecorate    // 72
+            || opCode == 73                            // OpDecorationGroup
+            || opCode == 74                            // OpGroupDecorate
+            || opCode == 75                            // OpGroupMemberDecorate
+            || opCode == 7                             // OpString
+            || opCode == 3                             // OpSource
+            || opCode == 2                             // OpSourceContinued
+            || opCode == 4                             // OpSourceExtension
+            || opCode == 330                           // OpModuleProcessed
+            || opCode == 8                             // OpLine
+            || opCode == 317                           // OpNoLine
+            || opCode == SpvOpCode.OpExecutionMode     // 16
+            || opCode == 331                           // OpExecutionModeId
+            || opCode == SpvOpCode.OpEntryPoint        // 15
+            || opCode == SpvOpCode.OpCapability        // 17
+            || opCode == 10                            // OpExtension
+            || opCode == SpvOpCode.OpExtInstImport     // 11
+            || opCode == SpvOpCode.OpMemoryModel;      // 14
     }
     private static bool TryParseFlatAccessChain(SpirvInstruction instruction, ConstantMaps constants, out FlatAccessPath accessPath)
     {
@@ -1527,15 +1604,19 @@ internal sealed class StructuredCBufferRewriter
 
             if (extraIndices.Count == 0)
             {
-                return CreateTranslation(constants, member.ResolvedTypeId, localRegister);
+                // Column access: matrix[col] yields a vec(rowCount), not a matrix.
+                return member.ColumnVectorTypeId != 0
+                    ? CreateTranslation(constants, member.ColumnVectorTypeId, localRegister)
+                    : null;
             }
 
-            if (componentIndex < 0 || componentIndex >= member.LogicalType.Rows || trailingIndices.Count > 0)
+            if (componentIndex < 0 || componentIndex >= member.LogicalType.Rows || trailingIndices.Count > 0 || member.ScalarTypeId == 0)
             {
                 return null;
             }
 
-            return CreateTranslation(constants, member.ResolvedTypeId, localRegister, componentIndex);
+            // Component access: matrix[col][component] yields a scalar.
+            return CreateTranslation(constants, member.ScalarTypeId, localRegister, componentIndex);
         }
 
         if (member.RegisterCount == 1)
@@ -1549,10 +1630,30 @@ internal sealed class StructuredCBufferRewriter
 
             if (member.LogicalType.Kind == LogicalTypeKind.Vector)
             {
+                if (trailingIndices.Count > 0)
+                {
+                    return null;
+                }
+
+                // Bare access (no per-component extra index): return the whole vector ptr.
+                // Adding a component index here was wrong — it would dive into the vector type but
+                // keep the parent vec4 result type, producing an invalid `ptr-vec4 [..., component]`
+                // access chain that spirv-cross rejects with "Cannot subdivide a scalar value".
+                if (extraIndices.Count == 0)
+                {
+                    return componentIndex == memberComponentOffset
+                        ? CreateTranslation(constants, member.ResolvedTypeId)
+                        : null;
+                }
+
                 int relativeComponentIndex = componentIndex - memberComponentOffset;
-                return relativeComponentIndex >= 0 && relativeComponentIndex < member.LogicalType.Rows && trailingIndices.Count == 0
-                    ? CreateTranslation(constants, member.ResolvedTypeId, relativeComponentIndex)
-                    : null;
+                if (relativeComponentIndex < 0 || relativeComponentIndex >= member.LogicalType.Rows || member.ScalarTypeId == 0)
+                {
+                    return null;
+                }
+
+                // Per-component access: dive one level deeper, ptr-scalar result.
+                return CreateTranslation(constants, member.ScalarTypeId, relativeComponentIndex);
             }
         }
 
@@ -1790,22 +1891,29 @@ internal sealed class StructuredCBufferRewriter
 
             if (extraIndices.Count == 0)
             {
+                // Column access (no per-component extra): ptr-vec(rowCount) result.
+                if (member.ColumnVectorTypeId == 0)
+                {
+                    return null;
+                }
+
                 return new StructuredAccessTranslation
                 {
                     Indices = [dynamicIndexId, registerConstantId],
-                    MemberTypeId = member.ResolvedTypeId
+                    MemberTypeId = member.ColumnVectorTypeId
                 };
             }
 
-            if (componentIndex < 0 || componentIndex >= member.LogicalType.Rows || !TryGetConstantId(constants, (uint)componentIndex, out uint componentConstantId))
+            if (componentIndex < 0 || componentIndex >= member.LogicalType.Rows || member.ScalarTypeId == 0 || !TryGetConstantId(constants, (uint)componentIndex, out uint componentConstantId))
             {
                 return null;
             }
 
+            // Component access: matrix[col][component] yields a scalar.
             return new StructuredAccessTranslation
             {
                 Indices = [dynamicIndexId, registerConstantId, componentConstantId],
-                MemberTypeId = member.ResolvedTypeId
+                MemberTypeId = member.ScalarTypeId
             };
         }
 
@@ -1829,8 +1937,23 @@ internal sealed class StructuredCBufferRewriter
         if (member.LogicalType.Kind == LogicalTypeKind.Vector)
         {
             int memberComponentOffset = (member.ByteOffset % 16) / 4;
+
+            if (extraIndices.Count == 0)
+            {
+                // Bare access into a dynamic-array vec4 member: ptr-vec4 result, only the array
+                // index. Adding a component index here would invalidate the access chain (see
+                // TranslateMemberAccess vec4 fix).
+                return componentIndex == memberComponentOffset
+                    ? new StructuredAccessTranslation
+                    {
+                        Indices = [dynamicIndexId],
+                        MemberTypeId = member.ResolvedTypeId
+                    }
+                    : null;
+            }
+
             int relativeComponentIndex = componentIndex - memberComponentOffset;
-            if (relativeComponentIndex < 0 || relativeComponentIndex >= member.LogicalType.Rows || !TryGetConstantId(constants, (uint)relativeComponentIndex, out uint componentConstantId))
+            if (relativeComponentIndex < 0 || relativeComponentIndex >= member.LogicalType.Rows || member.ScalarTypeId == 0 || !TryGetConstantId(constants, (uint)relativeComponentIndex, out uint componentConstantId))
             {
                 return null;
             }
@@ -1838,7 +1961,7 @@ internal sealed class StructuredCBufferRewriter
             return new StructuredAccessTranslation
             {
                 Indices = [dynamicIndexId, componentConstantId],
-                MemberTypeId = member.ResolvedTypeId
+                MemberTypeId = member.ScalarTypeId
             };
         }
 
@@ -2042,6 +2165,14 @@ internal sealed class StructuredCBufferRewriter
         public int RegisterOffset { get; set; }
         public int RegisterCount { get; set; }
         public uint ResolvedTypeId { get; set; }
+        // Scalar component type id for non-scalar members. Required so that a per-component access
+        // chain into a vec4 / matrix member ends up with the correct ptr-scalar result type instead
+        // of inheriting the parent vec4 / matrix type id (which would produce an invalid module that
+        // crashes spirv-cross with "Cannot subdivide a scalar value").
+        public uint ScalarTypeId { get; set; }
+        // Column vector type id for matrix members. `matrix[col]` returns a vec(rowCount), and the
+        // access chain that selects a column needs ptr-vec(rowCount), not ptr-matrix.
+        public uint ColumnVectorTypeId { get; set; }
     }
 
     private sealed class StructuredBufferLayout
@@ -2078,7 +2209,11 @@ internal sealed class StructuredCBufferRewriter
 
     private sealed class RewrittenLoadInfo
     {
-        public int InstructionIndex { get; set; }
+        // Direct reference to the OpLoad instruction. We can't cache its position because
+        // RewriteLoadsAndCompositeExtracts inserts new (access chain + load) pairs while iterating,
+        // which shifts every later position in module.Instructions. The class reference, however,
+        // stays valid across List.Insert.
+        public SpirvInstruction Instruction { get; set; } = null!;
         public uint ResultId { get; set; }
         public uint OriginalResultTypeId { get; set; }
         public bool HasCompositeExtractUsers { get; set; }

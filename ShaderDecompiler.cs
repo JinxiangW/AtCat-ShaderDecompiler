@@ -63,14 +63,17 @@ public sealed class ShaderDecompiler : IDisposable
         if (string.IsNullOrWhiteSpace(_toolsDir)) return Fail("Decompiler tools not found. Expected dxbc2dxil.exe, dxil-spirv.exe, and spirv-cross.exe.");
 
         TempFiles temp = Temps();
+        byte[]? lastSpirv = null;
         try
         {
             Pipeline p = Pipe(binary, format, metadata);
             byte[] spv = Spv(p.Format, p.Code, temp);
+            lastSpirv = spv;
             byte[] rewritten;
             try
             {
                 rewritten = _rewriter.Rewrite(spv, p.Metadata);
+                lastSpirv = rewritten;
             }
             catch (Exception ex)
             {
@@ -81,6 +84,7 @@ public sealed class ShaderDecompiler : IDisposable
             try
             {
                 patched = Patch(rewritten, p.Metadata);
+                lastSpirv = patched;
             }
             catch (Exception ex)
             {
@@ -101,7 +105,13 @@ public sealed class ShaderDecompiler : IDisposable
         }
         catch (Exception ex)
         {
-            return Fail(ex.ToString());
+            DecompileResult fail = Fail(ex.ToString());
+            // Attach the latest SPIR-V we managed to produce so callers can dump it for inspection
+            // — `unitybinary.spv` next to `unitybinary.error.txt` lets us spirv-dis the exact module
+            // that confused spirv-cross without re-running the pipeline.
+            fail.IntermediateSpirv = lastSpirv;
+            fail.StructuredRewriteSummary = _rewriter.LastRewriteSummary;
+            return fail;
         }
         finally
         {

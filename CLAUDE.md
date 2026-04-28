@@ -669,7 +669,115 @@ Ruri.ShaderDecompiler.exe <lib.ushaderlib> <outDir> --mapping <UnifiedShaderMeta
 `--shader-index` 接收 shader 编号(M_Bamboo_tree_PS_1904 即 N=1904),
 全表只反编译目标 shader,几秒内完成,适合 fixture 单测。
 
-### 9.5 当前轮遗留(open in v8)
+### 9.5 It. 8 — spirv-cross "Cannot subdivide a scalar value" 链式修复
+
+新 fixture(Unity 端,直接报 `SPIRV-Cross threw an exception: Cannot
+subdivide a scalar value!`):
+- `Testing/Assets/Shaders/UnityBinary/Ruri/TextMeshPro_Distance Field.shader.sub0.pass0.blob1..dxbc.bin`(vertex)
+- `Testing/Assets/Shaders/UnityBinary/Ruri/Ruri_Scene_Lit.shader.sub0.pass0.blob5.GBuffer.dxbc.bin`(HS,既报 subdivide 又报 InvocationId)
+
+之前 AI 走 GLSL fallback 绕过,但根因在 SPIR-V rewriter 的多个类型/标记
+错位。本轮一次性修通:
+
+#### Bug A — `CountResultUses` 把字面量当成 id 计数
+
+`OpMemberDecorate %_Globals_0 18 Offset 496` 的 `496` 是 byte 偏移**字面
+量**,但 `CountResultUses` 不分 literal/id,统统 `uses[operand]++`。当字
+面量数值恰好与某个真实 SSA id 相同时,该 id 的 use 计数被多算 → load 的
+`compositeUsers != totalUsers` 判定失败 → load 不被 NOP → 旧 vec4 load 留
+在新 ptr-scalar 之上 → spirv-cross 崩。
+
+修法: 跳过纯 metadata / 装饰指令(`OpName`/`OpMemberName`/`OpDecorate`/
+`OpMemberDecorate`/`OpString`/`OpSource*`/`OpLine*`/`OpExecutionMode*`/
+`OpEntryPoint`/`OpCapability`/`OpExtension*`/`OpMemoryModel`/
+`OpDecorationGroup`/`OpGroupDecorate*`),它们不构成数据流引用。
+新加 `IsLiteralBearingMetadataOp()` 网关。
+
+#### Bug B — vec4 成员 BARE 访问被误加 component 索引
+
+`TranslateMemberAccess` 在 `Vector` 分支无条件 `CreateTranslation(member.ResolvedTypeId, relativeComponentIndex)`,
+即使是裸取整个 vec4 也加 `[0]` 索引。结果 `OpAccessChain ptr-vec4 var memberIdx 0` 下钻到 scalar 但仍声明 ptr-vec4 → spirv-cross 崩。
+
+修法: 区分 `extraIndices.Count == 0`(裸取,不加索引,返回 ptr-vec4)和
+`>0`(分量取,加索引,返回 ptr-scalar)。`StructuredMemberLayout` 加
+`ScalarTypeId` 字段,在 `ResolveMemberTypeId` 时按
+`member.LogicalType.ScalarKind` 预解析。
+
+#### Bug C — matrix 成员 column 访问类型错位
+
+同样问题:`matrix[col]` 应该返回 ptr-vec(rowCount),不是 ptr-matrix。
+`matrix[col][component]` 应该返回 ptr-scalar。
+
+修法: `StructuredMemberLayout` 加 `ColumnVectorTypeId` 字段,在
+`ResolveMemberTypeId` 时通过 `EnsureVectorType` 预解析。Matrix 分支按
+extras 数量分流到 column-vec / scalar 类型。
+`TranslateDynamicArrayMemberAccess` 矩阵分支同样修。
+
+#### Bug D — `CanRewriteViaCompositeExtracts` 路径残留无效 access chain
+
+当 bare 访问无法直译但每个 `OpCompositeExtract` 都能直译时,旧逻辑保留
+原 access chain 不动。但 OpVariable 的指针类型已经被改成新 struct,旧 access chain `OpAccessChain ptr-vec4 var %0 %register` 走的是新 struct 不存在的旧 flat 数组,spirv-cross 验证失败。
+
+修法: `RewriteLoadsAndCompositeExtracts` 末尾加最终清理 — 重新统计
+`CountResultUses`,把 `rewrittenAccessChains` 里 use=0 的 access chain
+全部 NOP 掉。
+
+#### Bug E (顺手) — `RewrittenLoadInfo.InstructionIndex` 在 inserts 后失效
+
+虽然在当前数据上没观察到 stale,但概念上不正确:`module.Instructions.Insert`
+会让所有缓存的 index 失效。改为直接存 `SpirvInstruction` 引用(class,
+List.Insert 不影响引用)。
+
+#### Bug F — 失败时丢失 IntermediateSpirv 阻碍调试
+
+之前失败路径返回的 `DecompileResult` 没有 spv,`unitybinary.error.txt`
+只有异常 trace,无法 spirv-dis 看具体哪条指令崩。修为 `Decompile` 在
+catch 中也填充 `IntermediateSpirv` 和 `StructuredRewriteSummary`,Program.cs
+在失败时一并写出 `unitybinary.spv` + `unitybinary.rewrite.txt`。这是稳定改进。
+
+#### 验证结果
+
+| Fixture | Before | After |
+| --- | --- | --- |
+| TextMeshPro `$Globals` | spirv-cross HLSL 崩 | 23 命名成员全部 packoffset 正确,scalar/vec4/matrix/int 混合,空洞容忍 ✅ |
+| Ruri_Scene_Lit GBuffer (HS) | HLSL+GLSL 都崩(subdivide) | HLSL 仍因 `InvocationId` builtin 不支持崩,但 GLSL fallback 工作(原有路径)✅ |
+| Deferred Clustered AdditionalLights | 4 命名 `[256]` 全展开 | 不退化 ✅ |
+| EndField blob1 / blob2 ShaderVariablesGlobal / UnityPerMaterial / UnityInstancing_SRP_UnityPerDraw | 全部命名 OK | 不退化 ✅ |
+| UE M_Bamboo_tree | `Material_1_SelectionColor[16]`(rewriter 退化) | 不退化 ✅ |
+
+TextMeshPro 实际产物片段:
+
+```hlsl
+cbuffer _Globals : register(b0)
+{
+    float _Globals_1_FaceDilate : packoffset(c4);
+    float _Globals_1_OutlineSoftness : packoffset(c4.y);
+    float _Globals_1_OutlineWidth : packoffset(c6);
+    column_major float4x4 _Globals_1_EnvMatrix : packoffset(c11);
+    float _Globals_1_WeightNormal : packoffset(c22.y);
+    float _Globals_1_WeightBold : packoffset(c22.z);
+    float _Globals_1_ScaleRatioA : packoffset(c22.w);
+    float _Globals_1_VertexOffsetX : packoffset(c23.z);
+    float _Globals_1_VertexOffsetY : packoffset(c23.w);
+    float4 _Globals_1_ClipRect : packoffset(c26);
+    float _Globals_1_MaskSoftnessX : packoffset(c27);
+    float _Globals_1_MaskSoftnessY : packoffset(c27.y);
+    float _Globals_1_GradientScale : packoffset(c28);
+    float _Globals_1_ScaleX : packoffset(c28.y);
+    float _Globals_1_ScaleY : packoffset(c28.z);
+    float _Globals_1_PerspectiveFilter : packoffset(c28.w);
+    float _Globals_1_Sharpness : packoffset(c29);
+    float4 _Globals_1_FaceTex_ST : packoffset(c30);
+    float4 _Globals_1_OutlineTex_ST : packoffset(c31);
+    float _Globals_1_UIMaskSoftnessX : packoffset(c32);
+    float _Globals_1_UIMaskSoftnessY : packoffset(c32.y);
+    int _Globals_1_UIVertexColorAlwaysGammaSpace : packoffset(c32.z);
+};
+```
+
+—— 23 个命名成员、混合标量/向量/矩阵/int、5 处空洞 packoffset(c4.y / c22.* / c23.* / c27.* / c28.* / c32.*)全部一次性正确。
+
+### 9.6 当前轮遗留(open in v9)
 
 1. **UE 端 reader byte offset 错位** — `M_Bamboo_tree_PS_1904.Material`
    shader 在 register 2 (byte 32) 实际有访问,但 metadata 里 byte 32 没成
