@@ -839,7 +839,65 @@ cbuffer _Globals : register(b0)
 };
 ```
 
-### 9.7 当前轮遗留(open in v10)
+### 9.7 It. 10 — cbuffer 数组 stride 16-byte 对齐
+
+新 fixture(全部触发同一个 spirv-cross HLSL 错误):
+- `Hidden_Ruri Render Pipeline_ClusterDeferred.shader.*.dxbc.bin`(`LightCookies` CB 含 `_AdditionalLightsCookieEnableBits` scalar float[8])
+- `Hidden_TerrainEngine_Details_UniversalPipeline_WavingDoublePass.shader.*.dxbc.bin`(`AdditionalLights` CB 含 `_AdditionalLightsLayerMasks` scalar float[256])
+- `Ruri_Scene_LitWrapper.shader.*.dxbc.bin`(同上)
+
+报错:
+```
+SPIRV-Cross threw an exception: cbuffer ID 43 (name: LightCookies),
+  member index 1 (name: _AdditionalLightsCookieEnableBits) cannot be
+  expressed with either HLSL packing layout or packoffset.
+```
+
+#### Bug I — `ResolveMemberTypeId` 数组步长丢了 cbuffer 16-byte 对齐
+
+`HLSL cbuffer` 强制规定:**任何数组成员的每元素都跨一个 16-byte 寄存器
+槽**(`float arr[8]` 在 cbuffer 中占 128 字节,8 个 vec4 槽,每槽只用 .x)。
+
+旧代码对 scalar/vec2/vec3 数组用 `DeclaredByteSize / ArrayLength`,
+对 scalar 算成 `4*N/N = 4`、对 vec2 算成 8、对 vec3 算成 12。结果设
+`ArrayStride=4/8/12`,这种紧打包数组**HLSL cbuffer 表达不了**,
+spirv-cross 直接拒。只有 vec4(`Rows==4`)恰好被特判到 16,所以之前
+EndField/Deferred Clustered 那批 vec4 数组没崩。
+
+修法:`ResolveMemberTypeId` 的数组步长改为按 SPIR-V cbuffer 规则:
+- Struct 成员: `StructByteSize`
+- Matrix 成员: `Columns * 16`
+- 其它(scalar/vec2/vec3/vec4): 一律 `16`
+- 最低保 `Math.Max(stride, 16)`(原本是 `Math.Max(stride, 4)`)
+
+#### 验证
+
+| Fixture | Before | After |
+| --- | --- | --- |
+| ClusterDeferred LightCookies(7 成员混合 matrix4x4 / scalar[8] / scalar / matrix4x4[256] / vec4[256] / scalar[256]) | spirv-cross HLSL 拒 | 全部命名 packoffset 正确,空洞 c11.y / c11.z 也正确 ✅ |
+| WavingDoublePass AdditionalLights(`_AdditionalLightsLayerMasks[256]` scalar 数组 @ c1280) | 同样拒 | 5 个数组成员全 packoffset ✅ |
+| LitWrapper(同上) | 同样拒 | ✅ |
+| 三 shader 全 444 个变体 | 大量同类失败 | **0 失败** ✅ |
+| EndField blob1/2 / Deferred Clustered blob27 / TextMeshPro blob7 / UE M_Bamboo_tree | 命名 OK | 不退化 ✅ |
+
+ClusterDeferred LightCookies 实际产物:
+
+```hlsl
+cbuffer LightCookies : register(b5)
+{
+    column_major float4x4 LightCookies_1_MainLightWorldToLight                 : packoffset(c0);
+    float                  LightCookies_1_AdditionalLightsCookieEnableBits[8u] : packoffset(c4);
+    float                  LightCookies_1_MainLightCookieTextureFormat         : packoffset(c11.y);
+    float                  LightCookies_1_AdditionalLightsCookieAtlasTextureFormat : packoffset(c11.z);
+    column_major float4x4  LightCookies_1_AdditionalLightsWorldToLights[256]   : packoffset(c12);
+    float4                 LightCookies_1_AdditionalLightsCookieAtlasUVRects[256] : packoffset(c1036);
+    float                  LightCookies_1_AdditionalLightsLightTypes[256]      : packoffset(c1292);
+};
+```
+
+—— 注意 `_MainLightCookieTextureFormat` @ c11.y 和 `_AdditionalLightsCookieAtlasTextureFormat` @ c11.z 与 scalar 数组最后一个元素 `EnableBits[7]` @ c11.x 共享同一个 c11 寄存器,这是 HLSL cbuffer 标准玩法,现在能正确生成。
+
+### 9.8 当前轮遗留(open in v11)
 
 1. **UE 端 reader byte offset 错位** — `M_Bamboo_tree_PS_1904.Material`
    shader 在 register 2 (byte 32) 实际有访问,但 metadata 里 byte 32 没成

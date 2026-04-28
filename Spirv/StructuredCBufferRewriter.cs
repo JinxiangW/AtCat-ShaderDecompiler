@@ -653,14 +653,21 @@ internal sealed class StructuredCBufferRewriter
 
         if (logicalType.ArrayLength > 1)
         {
-            int stride = logicalType.Kind == LogicalTypeKind.Struct
-                ? logicalType.StructByteSize
-                : logicalType.Kind == LogicalTypeKind.Matrix
-                ? logicalType.Columns * 16
-                : logicalType.Kind == LogicalTypeKind.Vector && logicalType.Rows == 4
-                    ? 16
-                    : logicalType.DeclaredByteSize / logicalType.ArrayLength;
-            return EnsureArrayType(module, types, baseTypeId, logicalType.ArrayLength, Math.Max(stride, 4));
+            // HLSL cbuffer rule: every array element starts on a 16-byte boundary regardless of
+            // element size. So `float arr[8]` lands as 8 vec4 slots (128 bytes), with arr[i]
+            // occupying only `.x` of each slot. Matrices use a column-vec4 stride; structs use
+            // their own (caller-rounded) byte size.
+            //
+            // We can only emit this rewrite for cbuffer-bound members, so a smaller "tight" stride
+            // (4 / 8 / 12 bytes) was always wrong — spirv-cross HLSL backend would reject it with
+            //   "cbuffer ... cannot be expressed with either HLSL packing layout or packoffset".
+            int stride = logicalType.Kind switch
+            {
+                LogicalTypeKind.Struct => logicalType.StructByteSize,
+                LogicalTypeKind.Matrix => logicalType.Columns * 16,
+                _ => 16, // scalar / vec2 / vec3 / vec4 arrays — all 16-byte stride in cbuffer.
+            };
+            return EnsureArrayType(module, types, baseTypeId, logicalType.ArrayLength, Math.Max(stride, 16));
         }
 
         return baseTypeId;
