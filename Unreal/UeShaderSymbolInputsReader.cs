@@ -404,7 +404,7 @@ internal static class UeShaderSymbolInputsReader
         int Array2D = ReadTypedArrayLength(textureParams, 2);
         int ArrayCube = ReadTypedArrayLength(textureParams, 3);
         int Volume = ReadTypedArrayLength(textureParams, 4);
-        int VirtualPhysical = ReadTypedArrayLength(textureParams, 5);
+        int Virtual = ReadTypedArrayLength(textureParams, 5);
 
         int External = 0;
         if (uniformExpressionSet.TryGetProperty("UniformExternalTextureParameters", out JsonElement externalParams) && externalParams.ValueKind == JsonValueKind.Array)
@@ -412,7 +412,21 @@ internal static class UeShaderSymbolInputsReader
             External = externalParams.GetArrayLength();
         }
 
-        // Page-table SRVs are emitted alongside virtual-texture physical pairs by CreateBufferStruct.
+        // VTStack page tables are independent of UniformTextureParameters[Virtual].
+        // Each FMaterialVirtualTextureStack carries its own NumLayers, which gates
+        // whether a 5th-8th layer page table (VirtualTexturePageTable1_<i>) is
+        // emitted in addition to PageTable0/Indirection. We need the per-stack
+        // layer count, not just the stack count.
+        List<int>? vtStackLayers = null;
+        if (uniformExpressionSet.TryGetProperty("VTStacks", out JsonElement vtStacks) && vtStacks.ValueKind == JsonValueKind.Array)
+        {
+            vtStackLayers = new List<int>(vtStacks.GetArrayLength());
+            foreach (JsonElement stack in vtStacks.EnumerateArray())
+            {
+                vtStackLayers.Add(ReadVirtualTextureStackNumLayers(stack));
+            }
+        }
+
         return new UeMaterialUniformBufferLayout.MaterialResourceCounts(
             Standard2D: Standard2D,
             Cube: Cube,
@@ -420,8 +434,46 @@ internal static class UeShaderSymbolInputsReader
             ArrayCube: ArrayCube,
             Volume: Volume,
             External: External,
-            VirtualPhysical: VirtualPhysical,
-            VirtualPageTable: VirtualPhysical);
+            Virtual: Virtual,
+            VirtualTextureStackLayerCounts: vtStackLayers);
+    }
+
+    // FMaterialVirtualTextureStack stores LayerUniformExpressionIndices as an
+    // 8-element fixed array; "NumLayers" is the count of indices that are not
+    // INDEX_NONE. The shape in FModel/CUE4Parse JSON varies, so probe a few
+    // common forms; if none match we conservatively assume <=4 layers (no
+    // PageTable1_<i> entry).
+    private static int ReadVirtualTextureStackNumLayers(JsonElement stack)
+    {
+        if (stack.ValueKind != JsonValueKind.Object)
+        {
+            return 0;
+        }
+
+        if (stack.TryGetProperty("NumLayers", out JsonElement numLayers) && numLayers.ValueKind == JsonValueKind.Number)
+        {
+            return numLayers.GetInt32();
+        }
+
+        if (stack.TryGetProperty("LayerUniformExpressionIndices", out JsonElement layers) && layers.ValueKind == JsonValueKind.Array)
+        {
+            int count = 0;
+            foreach (JsonElement element in layers.EnumerateArray())
+            {
+                if (element.ValueKind != JsonValueKind.Number)
+                {
+                    continue;
+                }
+                int value = element.GetInt32();
+                if (value >= 0)
+                {
+                    count++;
+                }
+            }
+            return count;
+        }
+
+        return 0;
     }
 
     private static int ReadTypedArrayLength(JsonElement arrayOfArrays, int index)

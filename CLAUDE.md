@@ -9,6 +9,10 @@
 > 任何"反编译失败"类 bug 进场前先把那份 playbook 过一遍,里面有完整的
 > "看 stderr → spirv-dis → 比对 → 定位 → 修复 → 回归"工作流、SPIR-V 操
 > 作数布局速查、bug archetype 速查表、和已踩过的所有坑清单。
+>
+> **UE 贴图/采样器 binding 名字还原 → [UE_TEXTURE_BINDING_TRUTH.md](UE_TEXTURE_BINDING_TRUTH.md)**。
+> SRT token 流的语义、`FUniformExpressionSet::CreateBufferStruct()` 重放、
+> 引擎 UB / loose param 的 closed-world 上限,全在那。
 
 ---
 
@@ -1042,7 +1046,99 @@ SPV flat 数组覆盖范围是 16 个 float4(到 byte 256),不会读到 c16 —
   材质设计师起的真实名字(在 `M_Bamboo_tree.json` 里就是这样存的),不是
   reader 污染,无需"修"。
 
-### 9.10 当前轮遗留(open in v13)
+### 9.10 It. 13 — Material UB resource layout 修复匹配 UE 5.1 源码
+
+回应用户对**贴图名字还原 bindings**的研究请求。
+
+#### 旧 layout 的偏差(以 UE 5.1 源码为准)
+
+`MaterialUniformBufferLayout.cs` 旧版的 `BuildResourceMemberNames` 与
+`Engine/Source/Runtime/Engine/Private/Materials/MaterialUniformExpressions.cpp:341-503`
+有四处偏差:
+
+1. **Wrap_WorldGroupSettings + Clamp_WorldGroupSettings 缺失** — 这两个
+   sampler 由 `CreateBufferStruct` **无条件**追加在所有 typed 段之后(line
+   499-503),旧 layout 完全没生成 → SRT 命中这两个尾部 sampler 时
+   `ResolveResourceName` 返回 null,降级为 `<UB>_Sampler<index>` placeholder。
+2. **VTStack 页表段错位** — UE 把 VTStack 的 PageTable0/PageTable1/
+   Indirection 三个 TEXTURE 槽放在 ExternalTexture 之后、Virtual physical 之前
+   (line 473-486),旧 layout 把它放最后并简化为只 SRV(误以为是
+   `VirtualTexturePhysical` 的副产物)。
+3. **VTStack 计数维度错** — 旧 `VirtualPageTable` 计数复用了
+   `VirtualPhysical`(`UniformTextureParameters[Virtual]` 的长度),但 UE 的
+   VTStack 页表数 = `VTStacks.Num()`,且每个 stack 的 `PageTable1` 是否输
+   出取决于 `Stack.NumLayers > 4`。两者完全独立。
+4. **`UBMT_SRV` vs `UBMT_TEXTURE` 类型语义** — `VirtualTexturePhysical_<i>`
+   是 `UBMT_SRV`(line 493)而非 TEXTURE,UE 注释解释为支持 sRGB / non-sRGB
+   的别名访问。旧 layout 把它当作 TEXTURE 段(虽然命名仍正确,但下游
+   register class 推断会偏)。
+
+#### 修法
+
+`Source/Ruri.ShaderDecompiler/Unreal/MaterialUniformBufferLayout.cs` 重写
+`BuildResourceMemberNames`,严格按 `CreateBufferStruct()` line 419-503 的
+顺序铺出每段 resource 名。`MaterialResourceCounts` 加
+`VirtualTextureStackLayerCounts: IReadOnlyList<int>?` 字段(每个 VTStack
+的 `NumLayers`,gates `PageTable1_<i>` 的输出),旧的 `VirtualPhysical` /
+`VirtualPageTable` 二选一被替换为正交的 `Virtual` + `VirtualTextureStackLayerCounts`。
+
+`Source/Ruri.ShaderDecompiler/Unreal/UeShaderSymbolInputsReader.cs::ReadMaterialResourceCounts`
+新加 `ReadVirtualTextureStackNumLayers` helper,从
+`UniformExpressionSet.VTStacks[i]` 提取 `NumLayers`(优先读 `NumLayers`
+字段,降级为对 `LayerUniformExpressionIndices` 数 `>= 0` 的元素 — UE 用
+INDEX_NONE 表示未占用 layer)。
+
+#### 验证
+
+- `M_Bamboo_tree_PS_1904`: Material 的 `UniformBufferLayoutInitializer.Resources[]`
+  长度 = 6(2 Standard2D × (TEX+SAMPLER) + Wrap + Clamp = 4 + 2 = 6)。旧
+  layout 只产 4 个名字,SRT 命中 ResourceIndex=3 时返回
+  `Material_Texture2D_1Sampler` ✓。修后产 6 个名字,Resources[] 长度对账
+  完全一致。SRT `Material[3] = sampler bind=4` → `Material_Texture2D_1Sampler`
+  (即 "Bamboo base maps" 的 sampler)。
+- Unity 回归(EndField blob1/blob2)无变化 — 该路径仅 UE 端 Material UB
+  使用,Unity 不走。
+
+#### `M_Bamboo_tree_PS_1904` 的 binding 名字现状(每槽来源)
+
+```
+register(t0..t10):
+  t2  = Buffer<uint4> View_SRV45     <- SRT, View UB[45], engine UB placeholder ✓
+  rest = Texture2D/3D T<n>            <- loose params (FShaderParameterBindings.ResourceParameters[])
+                                          frozen image 只剩 (ByteOffset, BaseIndex, BaseType),
+                                          名字源 FShaderParameterMap 在 cook 时已 drop -> closed world
+
+register(s0..s4):
+  s0 = sampler_0       <- loose, closed world
+  s1 = sampler_1       <- SRT, View[39] -> placeholder "View_Sampler39" 但 sampler 名字目前在
+                          ShaderSymbolData.EnumerateResourceBindings 被硬编码为 "sampler_<index>",
+                          resolved name 不进 HLSL(设计选择,可改)
+  s2 = sampler_2       <- SRT, OpaqueBasePass[43] -> 同上
+  s3 = sampler_3       <- SRT, IndirectLightingCache[3] -> 同上
+  s4 = sampler_4       <- SRT, Material[3] = "Texture2D_1Sampler"(本 fixture 唯一 Mechanism 1
+                          可还原槽位 -> 当前显示 sampler_4,可改为 Material_Texture2D_1Sampler)
+```
+
+—— 16 个 binding 槽里**只有 1 个** (`sampler_4`) 的源是材质 UB SRT,其余
+全部是 engine UB SRT(closed-world 上限)或 loose params(closed-world 上
+限)。这与 UE 5.1 D3D shipping cook 的典型 Material PS 模式一致:大多数
+texture 走 loose,SRT 上 Material 的 binding 极少。
+
+#### Closed-world 三机制总结(详 `UE_TEXTURE_BINDING_TRUTH.md`)
+
+1. **SRT-bound via Material UB** → `CreateBufferStruct()` 重放,**可还原**。
+2. **SRT-bound via engine UB** (View / OpaqueBasePass / …) → 引擎 C++ 源
+   码 macro 闭合,cooked 不存,**不可还原** → placeholder
+   `<UBName>_<RegClass><ResIdx>`。
+3. **Loose params** (`FShaderParameterBindings.ResourceParameters[]`) →
+   per-shader-class C++ 参数 struct,frozen 后 `(ByteOffset, BaseIndex,
+   BaseType)` 三元组无名,**不可还原** → spirv-cross `T<n>`。
+
+唯一未做的可改进项:Mechanism 1 的 sampler 名字目前被
+`ShaderSymbolData.EnumerateResourceBindings` 重打成 `sampler_<index>`,
+resolved name 没流到 HLSL — 是设计选择,等用户拍。
+
+### 9.11 当前轮遗留(open in v14)
 
 1. **EndField blob1 `ShaderVariablesGlobal` 6 → 5 layout 缩水** — §9.9 的
    旧 §2 项;blob2 同 metadata 是 6 个,差异在 SPIR-V access。需要确认是
