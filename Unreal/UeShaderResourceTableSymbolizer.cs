@@ -154,6 +154,7 @@ internal static class UeShaderResourceTableSymbolizer
             Sampler = (uint)record.BindIndex,
             Index = record.BindIndex,
             Set = 0,
+            Name = resolvedName,
         });
     }
 

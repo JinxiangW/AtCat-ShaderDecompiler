@@ -79,6 +79,18 @@ public sealed class ShaderDecompiler : IDisposable
                 throw new InvalidOperationException($"Structured CBuffer rewrite failed.{Environment.NewLine}{DescribeBuiltInDecorations(spv)}", ex);
             }
 
+            // Recover Material UB texture names by analysing OpSampledImage
+            // (texture, sampler) pairs. UE's HLSL material translator emits
+            // `Texture.Sample(TextureSampler, ...)` as a mechanically paired
+            // call (HLSLMaterialTranslator.cpp:6110). Whenever the sampler in
+            // a SampledImage pair has been resolved to `Material_<TexName>Sampler`
+            // via SRT + CreateBufferStruct() replay, the texture in that pair
+            // is `Material_<TexName>` by source-truth construction. This adds
+            // matching TextureParameter entries to the metadata so the next
+            // patch step injects OpName for the texture. No-op when there are
+            // no Material samplers or no OpSampledImage pairs.
+            UeMaterialTextureNameInferrer.InferAndAppend(rewritten, p.Metadata);
+
             byte[] patched;
             try
             {

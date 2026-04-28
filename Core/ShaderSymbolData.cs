@@ -25,7 +25,10 @@ public class ShaderSymbolData
 
         foreach (SamplerParameter sampler in Samplers)
         {
-            yield return ($"sampler_{sampler.Index}", sampler.Index, sampler.Set, ShaderResourceType.Sampler, 's');
+            string name = string.IsNullOrWhiteSpace(sampler.Name)
+                ? $"sampler_{sampler.Index}"
+                : sampler.Name!;
+            yield return (name, sampler.Index, sampler.Set, ShaderResourceType.Sampler, 's');
         }
 
         foreach (UAVParameter uav in UAVs)

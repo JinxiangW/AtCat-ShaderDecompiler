@@ -1138,7 +1138,124 @@ texture 走 loose,SRT 上 Material 的 binding 极少。
 `ShaderSymbolData.EnumerateResourceBindings` 重打成 `sampler_<index>`,
 resolved name 没流到 HLSL — 是设计选择,等用户拍。
 
-### 9.11 当前轮遗留(open in v14)
+### 9.11 It. 14 — Material UB 贴图名字还原
+
+回应用户"材质球上的贴图一定可以找到啊"的要求。本轮三处改动让 Material UB
+的贴图槽位 + 配对采样器都拿到 source-truth 名字。
+
+#### 改动 1 — sampler 名字传播到 HLSL(默认开)
+
+旧版 `ShaderSymbolData.EnumerateResourceBindings` 把所有 sampler 槽位重打成
+`sampler_<index>`,即使 SRT symbolizer 已经 resolve 出
+`Material_Texture2D_1Sampler` 之类的真名,resolved name 也丢了。把
+`SamplerParameter` 加上 nullable `Name` 字段,symbolizer 把 resolved name
+塞进去,`EnumerateResourceBindings` 优先用 `Name`,空了才退化到
+`sampler_<index>`。结果: `s4` 在 HLSL 里就是
+`Material_Texture2D_1Sampler` 而不是 `sampler_4`。
+
+#### 改动 2 — 从 SPIR-V `OpSampledImage` 配对反推贴图名字
+
+UE 5.1 `HLSLMaterialTranslator.cpp:6108-6111` 对 `SSM_FromTextureAsset`
+(默认 `SamplerSource`)用同一行 `Printf` 写出贴图名 + `<TexName>Sampler`
+配对:
+
+```cpp
+if (SamplerSource == SSM_FromTextureAsset)
+{
+    SamplerStateCode = FString::Printf(TEXT("%sSampler"), *TextureName);
+}
+```
+
+也就是 `Material.Texture2D_<i>.Sample(Material.Texture2D_<i>Sampler, ...)`
+是机械生成的紧配对。`RemoveUniformBuffersFromSource()` 把点替换为下划线,
+shader 编译反射各拿一个 t / s 寄存器。SRT 通常只把 sampler 那一半上链
+(material 贴图很多走 loose params 提性能,贴图本身不进 SRT 的 SRV map)。
+但贴图名字还是可以反推: SPIR-V 里每个 `OpSampledImage` 是一对
+`(textureID, samplerID)`,我们已经从 SRT + `CreateBufferStruct` 拿到
+sampler 的 resolved 名字 `Material_<TexName>Sampler` —— 那同一对里的贴图
+就是 `Material_<TexName>`,这是 UE 那一行 `Printf` 字面强制的关系,不是
+启发式。
+
+实现在 `Source/Ruri.ShaderDecompiler/Unreal/UeMaterialTextureNameInferrer.cs`,
+从 `Decompile()` 在 `Patch()` 之前调一次。仅识别
+`Material_*Sampler` 形态(去 `Sampler` 后缀拿贴图名);其它 SSM 模式
+(`SSM_Wrap_WorldGroupSettings` / `SSM_Clamp_WorldGroupSettings`) 在 HLSL
+里走 `GetMaterialSharedSampler(...)` 宏,真正调用点的 sampler 是 *共享*
+sampler(`View.MaterialTextureBilinearWrapedSampler` /
+`Material.Wrap_WorldGroupSettings`),不是贴图自己那个,源码约束断了 —
+不跟,匿名留 `T<n>`。
+
+#### 改动 3 — 修复 `MaterialUniformBufferLayout` 的 VTStack count 推断
+
+`UnifiedShaderMetadata.json`(FModel 钩子产物)里**没有** `VTStacks` 数组,
+只有 `UniformBufferLayoutInitializer.Resources[]`。第一次跑 `M_Alpha_grass`
+时 layout 里 `VTStacks=0`,但材质 actual 有 1 stack(NumLayers=2),导致
+索引整体错位 2,SRT 命中 `Material[8]` resolve 成 `VirtualTexturePhysical_1`
+(实际是 `_0`)、`Material[10]` resolve 成 `Wrap_WorldGroupSettings`
+(实际是 `VirtualTexturePhysical_1`),然后名字被传给一个 t-register binding
+最后 HLSL 出现 `Texture2D<float4> Material_Wrap_WorldGroupSettings : register(t11)`
+(sampler 名字塞到 texture 槽,显然错)。
+
+修法: `MaterialResourceCounts` 加 `int? TotalResourceCount`(从
+`Resources[]` 的长度直接读)。`BuildResourceMemberNames` 在 `VTStacks` 缺
+失时,从 `TotalResourceCount` 减去其它已知 block(Standard2D + Cube +
+Array2D + ArrayCube + Volume + External 各 ×2 + Virtual ×2 + 末尾 2 个固
+定 sampler)算出 VTStack 区段的 TEXTURE 数,再除以 2 反推 stack 数(假
+设所有 stack 的 NumLayers ≤ 4,这是绝大多数项目情况)。如果 TEXTURE 数
+是奇数,说明至少一个 stack 的 NumLayers > 4,需要 actual `VTStacks`,
+此时跳过 page-table 段,后面索引也对不上,留给上层报告。
+
+`ReadMaterialResourceCounts` 同步从 `UniformBufferLayoutInitializer.Resources`
+读 `TotalResourceCount`,plumb 进去。
+
+#### 验证
+
+| Fixture | Before(本轮) | After(本轮) |
+| --- | --- | --- |
+| `M_Bamboo_tree_PS_1904` | 1 命名 sampler(隐藏在 `sampler_4` 下) + 0 命名 material 贴图 | `Material_Texture2D_1Sampler @ s4` + `Material_Texture2D_1 @ t10` ✅ |
+| `M_Alpha_grass_PS_4000` | sampler 名字丢失,`Material_Wrap_WorldGroupSettings` 错塞到 t11 | `Material_Texture2D_1`/`_VirtualTexturePhysical_0`/`_1` 全部 t-binding 命名正确,sampler 同步命名 ✅ |
+| `MI_Cliff_Parent_PS_3500` | 0 命名 | 3 个 `Material_Texture2D_7/8/9` 贴图 + 3 个配对 sampler 全部命名 ✅ |
+| EndField blob1 / blob2 (Unity) | OK | OK 不退化 ✅ |
+
+下面是 `M_Alpha_grass_PS_4000` 实际产物,所有 Material UB 的 binding 都
+拿到 source-truth 名字:
+
+```hlsl
+Buffer<uint4>     View_SRV45                       : register(t2);   // 引擎 UB placeholder
+Buffer<uint4>     View_SRV49                       : register(t3);   // 引擎 UB placeholder
+Texture2D<float4> Material_Texture2D_1             : register(t8);   // SPV 配对反推 (SSM_FromTextureAsset)
+Texture2D<float4> Material_VirtualTexturePhysical_0: register(t10);  // SRT + CreateBufferStruct replay
+Texture2D<float4> Material_VirtualTexturePhysical_1: register(t11);  // SRT + CreateBufferStruct replay
+SamplerState      Material_Texture2D_1Sampler      : register(s3);   // SRT + CreateBufferStruct replay
+```
+
+#### 哪些贴图仍然匿名(closed-world 上限)
+
+剩余的 `T<n>`:
+- 有 `View_*` / `OpaqueBasePass_*` 等引擎 UB 形态的 → SRT-bound 但是引擎
+  UB,成员名只在引擎 C++ 源,项目规则禁止硬编码 → placeholder
+  `<UB>_SRV<i>` / `<UB>_Sampler<i>`(已就位)。
+- 既不在 SRT 也找不到 SSM_FromTextureAsset 配对的 → 真 loose params,frozen
+  image 三元组 `(ByteOffset, BaseIndex, BaseType)` 无名字 → 匿名 `T<n>`。
+- Material 贴图但 SamplerSource = `SSM_Wrap_WorldGroupSettings` /
+  `SSM_Clamp_WorldGroupSettings` / `SSM_TerrainWeightmapGroupSettings` →
+  shader 调用点的 sampler 是共享的,不是贴图自己那个,跟不到 → 匿名。
+  这是 closed-world 第三类(SPV 不可证明,不应猜)。
+
+#### 文件
+
+新增 `Source/Ruri.ShaderDecompiler/Unreal/UeMaterialTextureNameInferrer.cs`。
+
+修改:
+- `Source/Ruri.ShaderDecompiler/Core/Parameters/SamplerParameter.cs`(加 `Name`)
+- `Source/Ruri.ShaderDecompiler/Core/ShaderSymbolData.cs`(`EnumerateResourceBindings` 用 `Name`)
+- `Source/Ruri.ShaderDecompiler/Unreal/UeShaderResourceTableSymbolizer.cs`(`AppendSamplerParameter` 写 `Name`)
+- `Source/Ruri.ShaderDecompiler/Unreal/MaterialUniformBufferLayout.cs`(VTStack 推断)
+- `Source/Ruri.ShaderDecompiler/Unreal/UeShaderSymbolInputsReader.cs`(读 `TotalResourceCount`)
+- `Source/Ruri.ShaderDecompiler/ShaderDecompiler.cs`(在 `Patch()` 前调 `UeMaterialTextureNameInferrer.InferAndAppend`)
+- `Source/Ruri.ShaderDecompiler/UE_TEXTURE_BINDING_TRUTH.md`(机制 1.5 文档)
+
+### 9.12 当前轮遗留(open in v15)
 
 1. **EndField blob1 `ShaderVariablesGlobal` 6 → 5 layout 缩水** — §9.9 的
    旧 §2 项;blob2 同 metadata 是 6 个,差异在 SPIR-V access。需要确认是

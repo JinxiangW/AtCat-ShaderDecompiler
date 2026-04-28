@@ -183,6 +183,7 @@ internal static class UeShaderSymbolInputsReader
         HashSet<int> seenOffsets = new();
         HashSet<string> seenNames = new(StringComparer.Ordinal);
         List<VectorParameter> vectorParams = new();
+        List<MatrixParameter> matrixParams = new();
         foreach (JsonElement preshader in uniformPreshaders.EnumerateArray())
         {
             uint opcodeOffset = ReadUInt32(preshader, "OpcodeOffset");
@@ -204,7 +205,8 @@ internal static class UeShaderSymbolInputsReader
             }
 
             JsonElement field = uniformPreshaderFields[checked((int)fieldIndex)];
-            if (!TryMapFieldType(ReadString(field, "Type"), out int rows, out _))
+            FieldKind kind = TryMapFieldType(ReadString(field, "Type"), out int rows);
+            if (kind == FieldKind.Unknown)
             {
                 continue;
             }
@@ -215,27 +217,53 @@ internal static class UeShaderSymbolInputsReader
                 continue;
             }
 
-            string name = DerivePreshaderName(opcodeData, opcodeOffset, opcodeSize, uniformNumericParameters, byteOffset);
-            if (!seenNames.Add(name))
-            {
-                name = $"{name}_at_{byteOffset}";
-                seenNames.Add(name);
-            }
+            string baseName = DerivePreshaderName(opcodeData, opcodeOffset, opcodeSize, uniformNumericParameters, byteOffset);
 
-            vectorParams.Add(new VectorParameter
+            // Most kinds emit one member at byteOffset.
+            // LWC (Double*) emits TWO members: Tile + Offset, side-by-side, the
+            // way HLSLMaterialTranslator.cpp:3322-3331 unpacks them at runtime
+            // (`MakeLWCVector%d(Tile, Offset)` with Tile @ UniformOffset and
+            // Offset @ UniformOffset + NumComponents). Treat them as
+            // un-prefixed Float<N>s so the rewriter just sees back-to-back
+            // float vectors covering the full byte range.
+            switch (kind)
             {
-                Name = name,
-                NameIndex = -1,
-                Type = ShaderParamType.Float,
-                ByteOffset = byteOffset,
-                ArraySize = 1,
-                IsMatrix = false,
-                RowCount = (byte)rows,
-                ColumnCount = 1,
-            });
+                case FieldKind.Float:
+                case FieldKind.Numeric:
+                    AddVectorMember(vectorParams, seenNames, RegisterUniqueName(seenNames, baseName, byteOffset), byteOffset, rows, ShaderParamType.Float);
+                    break;
+                case FieldKind.Int:
+                    AddVectorMember(vectorParams, seenNames, RegisterUniqueName(seenNames, baseName, byteOffset), byteOffset, rows, ShaderParamType.Int);
+                    break;
+                case FieldKind.Bool:
+                    AddVectorMember(vectorParams, seenNames, RegisterUniqueName(seenNames, baseName, byteOffset), byteOffset, rows, ShaderParamType.Bool);
+                    break;
+                case FieldKind.LwcDouble:
+                    {
+                        int offsetPart = byteOffset + rows * 4;
+                        seenOffsets.Add(offsetPart);
+                        AddVectorMember(vectorParams, seenNames, RegisterUniqueName(seenNames, $"{baseName}_LwcTile", byteOffset), byteOffset, rows, ShaderParamType.Float);
+                        AddVectorMember(vectorParams, seenNames, RegisterUniqueName(seenNames, $"{baseName}_LwcOffset", offsetPart), offsetPart, rows, ShaderParamType.Float);
+                        break;
+                    }
+                case FieldKind.Float4x4:
+                    AddMatrixMember(matrixParams, RegisterUniqueName(seenNames, baseName, byteOffset), byteOffset, ShaderParamType.Float);
+                    break;
+                case FieldKind.LwcDouble4x4:
+                    {
+                        // Float4x4 is 64 bytes (4 columns of float4). LWC
+                        // double4x4 is two of them back-to-back: Tile then
+                        // Offset, 64 bytes apart.
+                        int offsetPart = byteOffset + 64;
+                        seenOffsets.Add(offsetPart);
+                        AddMatrixMember(matrixParams, RegisterUniqueName(seenNames, $"{baseName}_LwcTile", byteOffset), byteOffset, ShaderParamType.Float);
+                        AddMatrixMember(matrixParams, RegisterUniqueName(seenNames, $"{baseName}_LwcOffset", offsetPart), offsetPart, ShaderParamType.Float);
+                        break;
+                    }
+            }
         }
 
-        if (vectorParams.Count == 0)
+        if (vectorParams.Count == 0 && matrixParams.Count == 0)
         {
             return null;
         }
@@ -243,7 +271,51 @@ internal static class UeShaderSymbolInputsReader
         materialBuffer.VectorParams = vectorParams
             .OrderBy(static p => p.ByteOffset)
             .ToArray();
+        materialBuffer.MatrixParams = matrixParams
+            .OrderBy(static p => p.ByteOffset)
+            .ToArray();
         return materialBuffer;
+    }
+
+    private static string RegisterUniqueName(HashSet<string> seenNames, string candidate, int byteOffset)
+    {
+        if (seenNames.Add(candidate))
+        {
+            return candidate;
+        }
+        string disambiguated = $"{candidate}_at_{byteOffset}";
+        seenNames.Add(disambiguated);
+        return disambiguated;
+    }
+
+    private static void AddVectorMember(List<VectorParameter> destination, HashSet<string> _seenNames, string name, int byteOffset, int rows, ShaderParamType type)
+    {
+        destination.Add(new VectorParameter
+        {
+            Name = name,
+            NameIndex = -1,
+            Type = type,
+            ByteOffset = byteOffset,
+            ArraySize = 1,
+            IsMatrix = false,
+            RowCount = (byte)rows,
+            ColumnCount = 1,
+        });
+    }
+
+    private static void AddMatrixMember(List<MatrixParameter> destination, string name, int byteOffset, ShaderParamType type)
+    {
+        destination.Add(new MatrixParameter
+        {
+            Name = name,
+            NameIndex = -1,
+            Type = type,
+            ByteOffset = byteOffset,
+            ArraySize = 1,
+            IsMatrix = true,
+            RowCount = 4,
+            ColumnCount = 4,
+        });
     }
 
     private static string SwizzleSuffix(byte numE, byte r, byte g, byte b, byte a)
@@ -427,6 +499,18 @@ internal static class UeShaderSymbolInputsReader
             }
         }
 
+        // Read the actual Resources[] length so the layout helper can infer
+        // VTStack count when the JSON shape (e.g. UnifiedShaderMetadata) does
+        // not carry the VTStacks array directly.
+        int? totalResources = null;
+        if (uniformExpressionSet.TryGetProperty("UniformBufferLayoutInitializer", out JsonElement ubl)
+            && ubl.ValueKind == JsonValueKind.Object
+            && ubl.TryGetProperty("Resources", out JsonElement resources)
+            && resources.ValueKind == JsonValueKind.Array)
+        {
+            totalResources = resources.GetArrayLength();
+        }
+
         return new UeMaterialUniformBufferLayout.MaterialResourceCounts(
             Standard2D: Standard2D,
             Cube: Cube,
@@ -435,7 +519,8 @@ internal static class UeShaderSymbolInputsReader
             Volume: Volume,
             External: External,
             Virtual: Virtual,
-            VirtualTextureStackLayerCounts: vtStackLayers);
+            VirtualTextureStackLayerCounts: vtStackLayers,
+            TotalResourceCount: totalResources);
     }
 
     // FMaterialVirtualTextureStack stores LayerUniformExpressionIndices as an
@@ -533,26 +618,53 @@ internal static class UeShaderSymbolInputsReader
         }
     }
 
-    private static bool TryMapFieldType(string? fieldType, out int rows, out int columns)
+    // UE 5.1 Engine/Source/Runtime/Engine/Public/Shader/ShaderTypes.h:93-139
+    // EValueType. We need to know the **scalar component count** of every
+    // type that can appear as a UniformPreshaderField, plus the special LWC
+    // (Double*) shape because UE encodes those as Tile+Offset float pairs in
+    // the cbuffer (HLSLMaterialTranslator.cpp:3293-3308: `bIsLWC ? Double :
+    // Float` component type, with `UniformPreshaderOffset += bIsLWC ?
+    // NumComponents * 2u : NumComponents` -> the field reserves 2*N float
+    // slots starting at BufferOffset).
+    private enum FieldKind { Unknown, Float, LwcDouble, Int, Bool, Numeric, Float4x4, LwcDouble4x4 }
+
+    private static FieldKind TryMapFieldType(string? fieldType, out int rows)
     {
         rows = 0;
-        columns = 1;
         switch (fieldType)
         {
-            case "Float1":
-                rows = 1;
-                return true;
-            case "Float2":
-                rows = 2;
-                return true;
-            case "Float3":
-                rows = 3;
-                return true;
-            case "Float4":
-                rows = 4;
-                return true;
-            default:
-                return false;
+            case "Float1": rows = 1; return FieldKind.Float;
+            case "Float2": rows = 2; return FieldKind.Float;
+            case "Float3": rows = 3; return FieldKind.Float;
+            case "Float4": rows = 4; return FieldKind.Float;
+
+            case "Double1": rows = 1; return FieldKind.LwcDouble;
+            case "Double2": rows = 2; return FieldKind.LwcDouble;
+            case "Double3": rows = 3; return FieldKind.LwcDouble;
+            case "Double4": rows = 4; return FieldKind.LwcDouble;
+
+            case "Int1": rows = 1; return FieldKind.Int;
+            case "Int2": rows = 2; return FieldKind.Int;
+            case "Int3": rows = 3; return FieldKind.Int;
+            case "Int4": rows = 4; return FieldKind.Int;
+
+            case "Bool1": rows = 1; return FieldKind.Bool;
+            case "Bool2": rows = 2; return FieldKind.Bool;
+            case "Bool3": rows = 3; return FieldKind.Bool;
+            case "Bool4": rows = 4; return FieldKind.Bool;
+
+            // EValueType::Numeric* is a generic placeholder that resolves to
+            // Float at evaluation time; HLSLMaterialTranslator never emits it
+            // as a buffer field type but we accept it as Float defensively.
+            case "Numeric1": rows = 1; return FieldKind.Numeric;
+            case "Numeric2": rows = 2; return FieldKind.Numeric;
+            case "Numeric3": rows = 3; return FieldKind.Numeric;
+            case "Numeric4": rows = 4; return FieldKind.Numeric;
+
+            case "Float4x4": rows = 4; return FieldKind.Float4x4;
+            case "Double4x4": rows = 4; return FieldKind.LwcDouble4x4;
+
+            default: return FieldKind.Unknown;
         }
     }
 

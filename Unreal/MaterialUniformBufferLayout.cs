@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace Ruri.ShaderTools.Unreal;
@@ -69,7 +70,50 @@ internal sealed class UeMaterialUniformBufferLayout
         AppendTextureSamplerPairs(result, "TextureCubeArray", counts.ArrayCube);
         AppendTextureSamplerPairs(result, "VolumeTexture", counts.Volume);
         AppendTextureSamplerPairs(result, "ExternalTexture", counts.External);
-        AppendVirtualTextureStacks(result, counts.VirtualTextureStackLayerCounts);
+
+        // VirtualTextureStack page tables are inserted between External textures
+        // and Virtual physical textures. Each stack emits:
+        //   PageTable0_<i>           (TEXTURE)
+        //   [PageTable1_<i>          (TEXTURE) — only when Stack.NumLayers > 4]
+        //   PageTableIndirection_<i> (TEXTURE)
+        //
+        // Per-stack `NumLayers` is the source of truth, but it is NOT carried
+        // by `UnifiedShaderMetadata.json` (FModel's hook flattens UES without
+        // the VTStacks array). When `VirtualTextureStackLayerCounts` is null,
+        // we INFER the stack count from the `Resources[]` length: there's a
+        // known number of texture entries between the External block and the
+        // Virtual physical block, and any TEXTURE entry there must be a VT
+        // page-table member. We assume `NumLayers <= 4` for every stack
+        // (the dominant case in shipped projects); a `>4`-layer stack would
+        // require the actual VTStacks array to disambiguate.
+        if (counts.VirtualTextureStackLayerCounts != null)
+        {
+            AppendVirtualTextureStacks(result, counts.VirtualTextureStackLayerCounts);
+        }
+        else if (counts.TotalResourceCount is int total)
+        {
+            int textureSamplerPairsConsumed = 2 * (counts.Standard2D + counts.Cube + counts.Array2D + counts.ArrayCube + counts.Volume + counts.External);
+            int virtualPhysicalConsumed = 2 * counts.Virtual;
+            int fixedTrailingSamplers = 2; // Wrap + Clamp
+            int vtStackTextureCount = total - textureSamplerPairsConsumed - virtualPhysicalConsumed - fixedTrailingSamplers;
+            if (vtStackTextureCount > 0 && vtStackTextureCount % 2 == 0)
+            {
+                int inferredStackCount = vtStackTextureCount / 2;
+                List<int> assumedLayers = new(inferredStackCount);
+                for (int i = 0; i < inferredStackCount; i++)
+                {
+                    assumedLayers.Add(2); // <= 4 -> emit PageTable0 + Indirection only
+                }
+                AppendVirtualTextureStacks(result, assumedLayers);
+            }
+            // If vtStackTextureCount % 2 != 0, at least one stack must have
+            // NumLayers > 4 (3 entries) and we cannot uniquely solve the mix
+            // without the actual VTStacks array. Skip the page-table block;
+            // downstream layout will be off after this block, so do not name
+            // anything past External when this happens. Caller can detect
+            // this by comparing ResourceMemberNames.Count vs Resources.Num().
+        }
+
         AppendTextureSamplerPairs(result, "VirtualTexturePhysical", counts.Virtual);
         // Fixed members emitted unconditionally by CreateBufferStruct at the end.
         result.Add("Wrap_WorldGroupSettings");
@@ -112,5 +156,10 @@ internal sealed class UeMaterialUniformBufferLayout
         int Volume,
         int External,
         int Virtual,
-        IReadOnlyList<int>? VirtualTextureStackLayerCounts);
+        IReadOnlyList<int>? VirtualTextureStackLayerCounts,
+        // Optional: total number of entries in
+        // FRHIUniformBufferLayoutInitializer.Resources[]. When the unified
+        // metadata path strips VTStacks, this lets us infer the VT stack
+        // count by subtraction so the layout still resolves correctly.
+        int? TotalResourceCount = null);
 }
