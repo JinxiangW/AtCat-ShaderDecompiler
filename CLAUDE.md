@@ -4,6 +4,11 @@
 > `CURRENT_LIMITATIONS.md` / `SHADER_MAPPING_RESEARCH.md` /
 > `UE_SHIPPING_NAME_TRUTH.md` / `Targets/Oni_Valley_VFX.md` 已合并至本
 > 文件。后续修改只更新这里。
+>
+> **SPIR-V 阶段调试与修复方法论 → [SPIRV_DEBUG_PLAYBOOK.md](SPIRV_DEBUG_PLAYBOOK.md)**。
+> 任何"反编译失败"类 bug 进场前先把那份 playbook 过一遍,里面有完整的
+> "看 stderr → spirv-dis → 比对 → 定位 → 修复 → 回归"工作流、SPIR-V 操
+> 作数布局速查、bug archetype 速查表、和已踩过的所有坑清单。
 
 ---
 
