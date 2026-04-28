@@ -35,7 +35,6 @@ internal static class UeRuntimeShaderSymbolReader
 
         UeShaderResourceTableSymbolizer.EnrichSymbolData(symbols, metadata, materialLayout);
 
-        symbols.RefreshCompatibilityViews();
         return symbols;
     }
 

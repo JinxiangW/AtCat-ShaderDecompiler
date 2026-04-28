@@ -400,7 +400,9 @@ internal sealed class StructuredCBufferRewriter
 
     private static StructuredBufferLayout? BuildStructuredLayout(FlatUniformBufferInfo flatBuffer)
     {
-        if (flatBuffer.ConstantBuffer.CBParams.Count == 0 && flatBuffer.ConstantBuffer.StructParams.Length == 0)
+        ConstantBuffer constantBuffer = flatBuffer.ConstantBuffer;
+        bool hasNumeric = constantBuffer.VectorParams.Length > 0 || constantBuffer.MatrixParams.Length > 0;
+        if (!hasNumeric && constantBuffer.StructParams.Length == 0)
         {
             return null;
         }
@@ -409,7 +411,7 @@ internal sealed class StructuredCBufferRewriter
         var members = new List<StructuredMemberLayout>();
         int maxAvailableByteOffset = flatBuffer.ArrayLength * 16;
 
-        foreach (ConstantBufferParameter parameter in flatBuffer.ConstantBuffer.CBParams.OrderBy(static parameter => parameter.ByteOffset))
+        foreach (NumericShaderParameter parameter in constantBuffer.AllNumericParams.OrderBy(static parameter => parameter.ByteOffset))
         {
             StructuredMemberLayout? member = TryCreateScalarOrVectorMember(parameter, maxAvailableByteOffset);
             if (member == null)
@@ -477,7 +479,7 @@ internal sealed class StructuredCBufferRewriter
         return !string.IsNullOrWhiteSpace(member.Name) && member.Name.StartsWith("_pad", StringComparison.Ordinal);
     }
 
-    private static StructuredMemberLayout? TryCreateScalarOrVectorMember(ConstantBufferParameter parameter, int maxAvailableByteOffset)
+    private static StructuredMemberLayout? TryCreateScalarOrVectorMember(NumericShaderParameter parameter, int maxAvailableByteOffset)
     {
         if (parameter.ByteOffset < 0 || parameter.ByteOffset >= maxAvailableByteOffset)
         {
@@ -492,7 +494,7 @@ internal sealed class StructuredCBufferRewriter
 
         return new StructuredMemberLayout
         {
-            Name = parameter.ParamName,
+            Name = parameter.Name ?? string.Empty,
             ByteOffset = parameter.ByteOffset,
             Metadata = parameter,
             LogicalType = logicalType,
@@ -503,14 +505,15 @@ internal sealed class StructuredCBufferRewriter
 
     private static StructuredMemberLayout? TryCreateStructMember(StructParameter structParameter, int maxAvailableByteOffset)
     {
-        if (structParameter.Index < 0 || structParameter.Index >= maxAvailableByteOffset || structParameter.CBParams.Count == 0)
+        bool hasMembers = structParameter.VectorMembers.Length > 0 || structParameter.MatrixMembers.Length > 0;
+        if (structParameter.Index < 0 || structParameter.Index >= maxAvailableByteOffset || !hasMembers)
         {
             return null;
         }
 
         var childMembers = new List<StructuredMemberLayout>();
         int structEnd = Math.Min(maxAvailableByteOffset, structParameter.Index + Math.Max(structParameter.StructSize, 0));
-        foreach (ConstantBufferParameter child in structParameter.CBParams.OrderBy(static parameter => parameter.ByteOffset))
+        foreach (NumericShaderParameter child in structParameter.AllNumericMembers.OrderBy(static parameter => parameter.ByteOffset))
         {
             if (child.ByteOffset < structParameter.Index || child.ByteOffset >= structEnd)
             {
@@ -525,7 +528,7 @@ internal sealed class StructuredCBufferRewriter
 
             childMembers.Add(new StructuredMemberLayout
             {
-                Name = child.ParamName,
+                Name = child.Name ?? string.Empty,
                 ByteOffset = child.ByteOffset - structParameter.Index,
                 Metadata = child,
                 LogicalType = childType,
@@ -570,14 +573,14 @@ internal sealed class StructuredCBufferRewriter
             : member.LogicalType.DeclaredByteSize;
     }
 
-    private static MemberLogicalType? TryCreateLogicalTypeFromMetadata(ConstantBufferParameter parameter)
+    private static MemberLogicalType? TryCreateLogicalTypeFromMetadata(NumericShaderParameter parameter)
     {
-        if (parameter.Rows <= 0 || parameter.Columns <= 0)
+        if (parameter.RowCount <= 0 || parameter.ColumnCount <= 0)
         {
             return null;
         }
 
-        ScalarKind? scalarKind = TryResolveScalarKind(parameter.ParamType);
+        ScalarKind? scalarKind = TryResolveScalarKind(parameter.Type);
         if (scalarKind == null)
         {
             return null;
@@ -587,10 +590,10 @@ internal sealed class StructuredCBufferRewriter
         {
             Kind = parameter.IsMatrix
                 ? LogicalTypeKind.Matrix
-                : parameter.Rows == 1 ? LogicalTypeKind.Scalar : LogicalTypeKind.Vector,
+                : parameter.RowCount == 1 ? LogicalTypeKind.Scalar : LogicalTypeKind.Vector,
             ScalarKind = scalarKind.Value,
-            Rows = parameter.Rows,
-            Columns = parameter.Columns,
+            Rows = parameter.RowCount,
+            Columns = parameter.ColumnCount,
             ArrayLength = Math.Max(parameter.ArraySize, 1),
             DeclaredByteSize = GetDeclaredByteSize(parameter),
             UscIndex = parameter.ByteOffset,
@@ -610,15 +613,15 @@ internal sealed class StructuredCBufferRewriter
         };
     }
 
-    private static int GetDeclaredByteSize(ConstantBufferParameter parameter)
+    private static int GetDeclaredByteSize(NumericShaderParameter parameter)
     {
         int arrayLength = Math.Max(parameter.ArraySize, 1);
         if (parameter.IsMatrix)
         {
-            return parameter.Columns * 16 * arrayLength;
+            return parameter.ColumnCount * 16 * arrayLength;
         }
 
-        return parameter.Rows * parameter.Columns * arrayLength * 4;
+        return parameter.RowCount * parameter.ColumnCount * arrayLength * 4;
     }
 
     private static int GetRequiredRegisterCount(int byteOffset, MemberLogicalType type)
@@ -2184,7 +2187,7 @@ internal sealed class StructuredCBufferRewriter
     {
         public string Name { get; set; } = string.Empty;
         public int ByteOffset { get; set; }
-        public ConstantBufferParameter Metadata { get; set; } = null!;
+        public NumericShaderParameter Metadata { get; set; } = null!;
         public MemberLogicalType LogicalType { get; set; } = null!;
         public int RegisterOffset { get; set; }
         public int RegisterCount { get; set; }

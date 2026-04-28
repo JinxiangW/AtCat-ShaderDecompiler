@@ -2,6 +2,11 @@ using Newtonsoft.Json;
 
 namespace Ruri.ShaderTools;
 
+// Mirrors Unity's AssetRipper ShaderBlob.Parameters.StructParameter (typed-only).
+// `Index` is the *byte offset* of this struct within the parent CB — the field
+// keeps the historical Unity name for wire compatibility with Unity-side
+// metadata.json (AssetRipper exporter writes `"Index"`). Semantically it is a
+// byte offset, not a bind slot.
 public sealed class StructParameter
 {
     public StructParameter() { }
@@ -26,8 +31,6 @@ public sealed class StructParameter
     public MatrixParameter[] MatrixMembers { get; set; } = Array.Empty<MatrixParameter>();
 
     [JsonIgnore]
-    public List<ConstantBufferParameter> CBParams { get; set; } = new();
-
     public IEnumerable<NumericShaderParameter> AllNumericMembers
     {
         get

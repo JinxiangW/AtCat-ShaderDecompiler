@@ -23,7 +23,6 @@ internal static class UeShaderSymbolBuilder
             .GroupBy(static buffer => buffer.Name, StringComparer.Ordinal)
             .Select(static group => group.First())
             .ToList();
-        metadata.RefreshCompatibilityViews();
         return metadata;
     }
 }
@@ -55,9 +54,11 @@ internal static class UeShaderSymbolHeaderWriter
 
         if (inputs.MaterialConstantBuffer != null)
         {
-            foreach (ConstantBufferParameter parameter in inputs.MaterialConstantBuffer.CBParams.Take(32))
+            foreach (NumericShaderParameter parameter in inputs.MaterialConstantBuffer.AllNumericParams
+                         .OrderBy(static p => p.ByteOffset)
+                         .Take(32))
             {
-                sb.AppendLine($" * MaterialCB: {parameter.ParamName} @ byte {parameter.ByteOffset} rows={parameter.Rows} cols={parameter.Columns}");
+                sb.AppendLine($" * MaterialCB: {parameter.Name} @ byte {parameter.ByteOffset} rows={parameter.RowCount} cols={parameter.ColumnCount}");
             }
         }
 

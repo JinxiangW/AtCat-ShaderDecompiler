@@ -427,7 +427,6 @@ namespace Ruri.ShaderTools
                                         {
                                             UnrealShaderParser.Parse(code, out _, out UnrealShaderParser.UnrealMetadata? unrealMetadata);
                                             UeShaderResourceTableSymbolizer.EnrichSymbolData(injectionSymbols, unrealMetadata, bestMaterialInfo.MaterialLayout);
-                                            injectionSymbols.RefreshCompatibilityViews();
                                         }
                                         catch (Exception ex)
                                         {
@@ -1020,7 +1019,7 @@ namespace Ruri.ShaderTools
                       failures.Add($"[{stage.Name}/{caseName}] Missing reflected resource symbol: {constantBuffer.Name}");
                   }
 
-                 List<ConstantBufferParameter> allParameters = GetAllConstantBufferParameters(constantBuffer);
+                 List<NumericShaderParameter> allParameters = GetAllConstantBufferParameters(constantBuffer);
                  if (allParameters.Count == 0)
                  {
                      continue;
@@ -1028,7 +1027,7 @@ namespace Ruri.ShaderTools
 
                  if (ShouldAllowCompressedMatrixMembers(constantBuffer))
                  {
-                      bool hasAnyMember = allParameters.Any(parameter => ContainsSelfTestToken(source, spirv, parameter.ParamName));
+                      bool hasAnyMember = allParameters.Any(parameter => ContainsSelfTestToken(source, spirv, parameter.Name ?? string.Empty));
                      if (!hasAnyMember)
                      {
                          failures.Add($"[{stage.Name}/{caseName}] Missing reflected member symbols for compressed matrix buffer: {constantBuffer.Name}");
@@ -1037,11 +1036,11 @@ namespace Ruri.ShaderTools
                      continue;
                  }
 
-                 foreach (ConstantBufferParameter parameter in allParameters)
+                 foreach (NumericShaderParameter parameter in allParameters)
                  {
-                      if (!ContainsSelfTestToken(source, spirv, parameter.ParamName))
+                      if (!ContainsSelfTestToken(source, spirv, parameter.Name ?? string.Empty))
                       {
-                          failures.Add($"[{stage.Name}/{caseName}] Missing reflected member symbol: {constantBuffer.Name}.{parameter.ParamName}");
+                          failures.Add($"[{stage.Name}/{caseName}] Missing reflected member symbol: {constantBuffer.Name}.{parameter.Name}");
                       }
                  }
              }
@@ -1059,13 +1058,13 @@ namespace Ruri.ShaderTools
 
         static bool ShouldAllowCompressedMatrixMembers(ConstantBuffer constantBuffer)
         {
-            List<ConstantBufferParameter> allParameters = GetAllConstantBufferParameters(constantBuffer);
+            List<NumericShaderParameter> allParameters = GetAllConstantBufferParameters(constantBuffer);
             if (allParameters.Count == 0)
             {
                 return false;
             }
 
-            return allParameters.All(parameter => parameter.IsMatrix && parameter.Rows == 4 && parameter.Columns == 4);
+            return allParameters.All(parameter => parameter.IsMatrix && parameter.RowCount == 4 && parameter.ColumnCount == 4);
         }
 
         static bool ContainsSelfTestToken(string source, byte[]? spirv, string token)
@@ -1524,7 +1523,7 @@ namespace Ruri.ShaderTools
         {
             foreach (ConstantBuffer constantBuffer in metadata.ConstantBuffers)
             {
-                foreach (ConstantBufferParameter parameter in GetAllConstantBufferParameters(constantBuffer))
+                foreach (NumericShaderParameter parameter in GetAllConstantBufferParameters(constantBuffer))
                 {
                     ValidateUscLayout(parameter);
                 }
@@ -1617,32 +1616,32 @@ namespace Ruri.ShaderTools
             }
         }
 
-        static List<ConstantBufferParameter> GetAllConstantBufferParameters(ConstantBuffer constantBuffer)
+        static List<NumericShaderParameter> GetAllConstantBufferParameters(ConstantBuffer constantBuffer)
         {
-            var result = new List<ConstantBufferParameter>(constantBuffer.CBParams);
+            var result = new List<NumericShaderParameter>(constantBuffer.AllNumericParams);
             foreach (StructParameter structParameter in constantBuffer.StructParams)
             {
-                result.AddRange(structParameter.CBParams);
+                result.AddRange(structParameter.AllNumericMembers);
             }
 
             return result;
         }
 
-        static void ValidateUscLayout(ConstantBufferParameter parameter)
+        static void ValidateUscLayout(NumericShaderParameter parameter)
         {
             if (parameter == null)
             {
                 return;
             }
 
-            if (parameter.Rows <= 0 || parameter.Columns <= 0)
+            if (parameter.RowCount <= 0 || parameter.ColumnCount <= 0)
             {
-                throw new InvalidOperationException($"Missing USC metadata dimensions for parameter '{parameter.ParamName}'.");
+                throw new InvalidOperationException($"Missing USC metadata dimensions for parameter '{parameter.Name}'.");
             }
 
             if (parameter.ByteOffset < 0)
             {
-                throw new InvalidOperationException($"Missing USC metadata byte index for parameter '{parameter.ParamName}'.");
+                throw new InvalidOperationException($"Missing USC metadata byte index for parameter '{parameter.Name}'.");
             }
 
             if (parameter.ArraySize <= 0)

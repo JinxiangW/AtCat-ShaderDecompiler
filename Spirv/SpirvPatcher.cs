@@ -333,7 +333,7 @@ public class SpirvPatcher
                 }
             }
 
-            foreach (var parameter in constantBuffer.CBParams.Where(p => !string.IsNullOrWhiteSpace(p.ParamName)))
+            foreach (NumericShaderParameter parameter in constantBuffer.AllNumericParams.Where(static p => !string.IsNullOrWhiteSpace(p.Name)))
             {
                 int? targetIndex = null;
 
@@ -349,10 +349,10 @@ public class SpirvPatcher
                     }
                 }
 
-				if (targetIndex.HasValue)
-				{
-					memberNames.Add((match.StructTypeId.Value, (uint)targetIndex.Value, parameter.ParamName));
-				}
+                if (targetIndex.HasValue)
+                {
+                    memberNames.Add((match.StructTypeId.Value, (uint)targetIndex.Value, parameter.Name!));
+                }
             }
         }
         

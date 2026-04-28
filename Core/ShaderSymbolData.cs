@@ -68,65 +68,10 @@ public class ShaderSymbolData
         return BuildMergedConstantBuffer(matches);
     }
 
-    public void RefreshCompatibilityViews()
-    {
-        foreach (ConstantBuffer constantBuffer in ConstantBuffers)
-        {
-            List<ConstantBufferParameter> regeneratedParameters = constantBuffer.AllNumericParams
-                .Select(ToCompatibilityParameter)
-                .OrderBy(static parameter => parameter.ByteOffset)
-                .ToList();
-
-            if (regeneratedParameters.Count > 0)
-            {
-                constantBuffer.CBParams = regeneratedParameters;
-            }
-            else if (constantBuffer.CBParams.Count > 1)
-            {
-                constantBuffer.CBParams = constantBuffer.CBParams
-                    .OrderBy(static parameter => parameter.ByteOffset)
-                    .ToList();
-            }
-
-            foreach (StructParameter structParameter in constantBuffer.StructParams)
-            {
-                List<ConstantBufferParameter> regeneratedStructParameters = structParameter.AllNumericMembers
-                    .Select(ToCompatibilityParameter)
-                    .OrderBy(static parameter => parameter.ByteOffset)
-                    .ToList();
-
-                if (regeneratedStructParameters.Count > 0)
-                {
-                    structParameter.CBParams = regeneratedStructParameters;
-                }
-                else if (structParameter.CBParams.Count > 1)
-                {
-                    structParameter.CBParams = structParameter.CBParams
-                        .OrderBy(static parameter => parameter.ByteOffset)
-                        .ToList();
-                }
-            }
-        }
-    }
-
-    private static ConstantBufferParameter ToCompatibilityParameter(NumericShaderParameter parameter)
-    {
-        return new ConstantBufferParameter
-        {
-            ParamName = parameter.Name ?? string.Empty,
-            ParamType = parameter.Type,
-            Rows = parameter.RowCount,
-            Columns = parameter.ColumnCount,
-            IsMatrix = parameter.IsMatrix,
-            ArraySize = parameter.ArraySize,
-            ByteOffset = parameter.ByteOffset,
-        };
-    }
-
     private static ConstantBuffer BuildMergedConstantBuffer(List<ConstantBuffer> matches)
     {
         ConstantBuffer first = matches[0];
-        var merged = new ConstantBuffer
+        return new ConstantBuffer
         {
             Name = first.Name,
             NameIndex = matches.Select(static cb => cb.NameIndex).FirstOrDefault(static index => index >= 0),
@@ -135,10 +80,7 @@ public class ShaderSymbolData
             MatrixParams = MergeNumericParameters(matches.SelectMany(static cb => cb.MatrixParams)),
             VectorParams = MergeNumericParameters(matches.SelectMany(static cb => cb.VectorParams)),
             StructParams = MergeStructParameters(matches.SelectMany(static cb => cb.StructParams)),
-            CBParams = MergeCompatibilityParameters(matches.SelectMany(static cb => cb.CBParams))
         };
-
-        return merged;
     }
 
     private static T[] MergeNumericParameters<T>(IEnumerable<T> parameters) where T : NumericShaderParameter
@@ -178,7 +120,6 @@ public class ShaderSymbolData
                     StructSize = group.Max(static parameter => parameter.StructSize),
                     VectorMembers = MergeNumericParameters(group.SelectMany(static parameter => parameter.VectorMembers)),
                     MatrixMembers = MergeNumericParameters(group.SelectMany(static parameter => parameter.MatrixMembers)),
-                    CBParams = MergeCompatibilityParameters(group.SelectMany(static parameter => parameter.CBParams))
                 };
             })
             .OrderBy(static parameter => parameter.Index)
@@ -186,24 +127,6 @@ public class ShaderSymbolData
             .ToArray();
     }
 
-    private static List<ConstantBufferParameter> MergeCompatibilityParameters(IEnumerable<ConstantBufferParameter> parameters)
-    {
-        return parameters
-            .GroupBy(static parameter => new ConstantBufferParameterKey(
-                parameter.ParamName,
-                parameter.ByteOffset,
-                parameter.ArraySize,
-                parameter.ParamType,
-                parameter.Rows,
-                parameter.Columns,
-                parameter.IsMatrix))
-            .Select(static group => group.First())
-            .OrderBy(static parameter => parameter.ByteOffset)
-            .ThenBy(static parameter => parameter.ParamName, StringComparer.Ordinal)
-            .ToList();
-    }
-
     private readonly record struct NumericParameterKey(string Name, int ByteOffset, int ArraySize, ShaderParamType Type, byte Rows, byte Columns, bool IsMatrix);
     private readonly record struct StructParameterKey(string Name, int Index, int ArraySize, int StructSize);
-    private readonly record struct ConstantBufferParameterKey(string Name, int ByteOffset, int ArraySize, ShaderParamType Type, int Rows, int Columns, bool IsMatrix);
 }

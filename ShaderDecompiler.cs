@@ -150,7 +150,6 @@ public sealed class ShaderDecompiler : IDisposable
             MergeMissingBindings(merged.UAVs, runtimeSymbols.UAVs, static (a, b) => a.Set == b.Set && a.Index == b.Index);
         }
 
-        merged.RefreshCompatibilityViews();
         return new(nativeCode, Detect(format == ShaderArchitecture.Unknown ? parsedArchitecture : format, nativeCode), merged, unrealMetadata);
     }
 
@@ -244,22 +243,22 @@ public sealed class ShaderDecompiler : IDisposable
 
     private static IEnumerable<(uint TypeId, uint MemberIndex, string Name)> MemberPatches(SpirvBindingInfo binding, ConstantBuffer cb)
     {
-        List<ConstantBufferParameter> all = Params(cb);
-        if (binding.StructMemberCount == 1 && all.Count > 0 && all.All(static p => p.IsMatrix && p.Rows == 4 && p.Columns == 4))
-            return new[] { (binding.StructTypeId!.Value, 0u, string.Join("_", all.Select(static p => p.ParamName))) };
+        List<NumericShaderParameter> all = AllNumericParams(cb);
+        if (binding.StructMemberCount == 1 && all.Count > 0 && all.All(static p => p.IsMatrix && p.RowCount == 4 && p.ColumnCount == 4))
+            return new[] { (binding.StructTypeId!.Value, 0u, string.Join("_", all.Select(static p => p.Name ?? string.Empty))) };
 
         List<(uint TypeId, uint MemberIndex, string Name)> result = new();
         foreach (StructParameter p in cb.StructParams.Where(static p => !string.IsNullOrWhiteSpace(p.Name)))
             if (Member(binding, p.Index) is int i) result.Add((binding.StructTypeId!.Value, (uint)i, p.Name));
-        foreach (ConstantBufferParameter p in cb.CBParams.Where(static p => !string.IsNullOrWhiteSpace(p.ParamName)))
-            if (Member(binding, p.ByteOffset) is int i) result.Add((binding.StructTypeId!.Value, (uint)i, p.ParamName));
+        foreach (NumericShaderParameter p in cb.AllNumericParams.Where(static p => !string.IsNullOrWhiteSpace(p.Name)))
+            if (Member(binding, p.ByteOffset) is int i) result.Add((binding.StructTypeId!.Value, (uint)i, p.Name!));
         return result;
     }
 
-    private static List<ConstantBufferParameter> Params(ConstantBuffer cb)
+    private static List<NumericShaderParameter> AllNumericParams(ConstantBuffer cb)
     {
-        List<ConstantBufferParameter> result = new(cb.CBParams);
-        foreach (StructParameter s in cb.StructParams) result.AddRange(s.CBParams);
+        List<NumericShaderParameter> result = new(cb.AllNumericParams);
+        foreach (StructParameter s in cb.StructParams) result.AddRange(s.AllNumericMembers);
         return result;
     }
 
@@ -345,7 +344,6 @@ public sealed class ShaderDecompiler : IDisposable
 
     private static ShaderSymbolData FinalizeMetadata(string sourceText, byte[] spirv, ShaderSymbolData metadata)
     {
-        metadata.RefreshCompatibilityViews();
         return metadata;
     }
 

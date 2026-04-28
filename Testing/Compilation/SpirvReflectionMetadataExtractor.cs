@@ -109,7 +109,6 @@ internal static class SpirvReflectionMetadataExtractor
                 Name = resourceName,
                 Size = ReadIntProperty(ubo, "block_size"),
                 IsPartialCB = false,
-                CBParams = new List<ConstantBufferParameter>(),
             };
 
             int binding = ReadIntProperty(ubo, "binding");
@@ -121,6 +120,12 @@ internal static class SpirvReflectionMetadataExtractor
                 ArraySize = 0,
             });
 
+            // Reflected members go straight into the typed views. Scalars and
+            // vectors land in VectorParams (IsMatrix=false), matrices in
+            // MatrixParams. No flat compatibility list — the rewriter reads
+            // these directly.
+            var vectorMembers = new List<VectorParameter>();
+            var matrixMembers = new List<MatrixParameter>();
             if (types.TryGetValue(typeId, out JsonElement typeInfo) && typeInfo.TryGetProperty("members", out JsonElement members) && members.ValueKind == JsonValueKind.Array)
             {
                 int index = 0;
@@ -129,20 +134,42 @@ internal static class SpirvReflectionMetadataExtractor
                     int offset = ReadIntProperty(member, "offset");
                     string typeName = NormalizeMemberTypeName(member.TryGetProperty("type", out JsonElement memberType) ? memberType.GetString() ?? string.Empty : string.Empty);
                     ParseUscLayout(typeName, out ShaderParamType paramType, out int rows, out int columns, out bool isMatrix, out int arraySize);
-                    cbuffer.CBParams.Add(new ConstantBufferParameter
+                    string paramName = member.TryGetProperty("name", out JsonElement memberName) ? memberName.GetString() ?? $"Member{index}" : $"Member{index}";
+
+                    if (isMatrix)
                     {
-                        ParamName = member.TryGetProperty("name", out JsonElement memberName) ? memberName.GetString() ?? $"Member{index}" : $"Member{index}",
-                        ByteOffset = offset,
-                        ParamType = paramType,
-                        Rows = rows,
-                        Columns = columns,
-                        IsMatrix = isMatrix,
-                        ArraySize = arraySize,
-                    });
+                        matrixMembers.Add(new MatrixParameter
+                        {
+                            Name = paramName,
+                            NameIndex = -1,
+                            ByteOffset = offset,
+                            Type = paramType,
+                            RowCount = (byte)rows,
+                            ColumnCount = (byte)columns,
+                            IsMatrix = true,
+                            ArraySize = arraySize,
+                        });
+                    }
+                    else
+                    {
+                        vectorMembers.Add(new VectorParameter
+                        {
+                            Name = paramName,
+                            NameIndex = -1,
+                            ByteOffset = offset,
+                            Type = paramType,
+                            RowCount = (byte)rows,
+                            ColumnCount = (byte)columns,
+                            IsMatrix = false,
+                            ArraySize = arraySize,
+                        });
+                    }
                     index++;
                 }
             }
 
+            cbuffer.VectorParams = vectorMembers.ToArray();
+            cbuffer.MatrixParams = matrixMembers.ToArray();
             metadata.ConstantBuffers.Add(cbuffer);
         }
     }

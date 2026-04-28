@@ -1,5 +1,12 @@
+using Newtonsoft.Json;
+
 namespace Ruri.ShaderTools;
 
+// Mirrors the Unity intermediate (AssetRipper ShaderBlob.Parameters.ConstantBuffer)
+// — typed-only structure. There is intentionally no flat compatibility list:
+// readers fill VectorParams / MatrixParams / StructParams once, the SPIR-V
+// rewriter and patcher consume those views directly. AllNumericParams is a
+// read-only iteration helper, never a separate storage.
 public sealed class ConstantBuffer
 {
     public ConstantBuffer() { }
@@ -22,8 +29,8 @@ public sealed class ConstantBuffer
     public StructParameter[] StructParams { get; set; } = Array.Empty<StructParameter>();
     public int Size { get; set; }
     public bool IsPartialCB { get; set; }
-    public List<ConstantBufferParameter> CBParams { get; set; } = new();
 
+    [JsonIgnore]
     public IEnumerable<NumericShaderParameter> AllNumericParams
     {
         get
