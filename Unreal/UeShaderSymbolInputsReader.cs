@@ -168,7 +168,20 @@ internal static class UeShaderSymbolInputsReader
             Size = checked((int)constantBufferSize)
         };
 
+        // Walk every preshader. Each is a `Material` CB slot writer:
+        //   field[FieldIndex] = evaluate(opcode stream)
+        // The field record carries the authoritative (BufferOffset, Type) of
+        // the slot; we honour that even when the opcode stream is too complex
+        // to fully simulate. Naming is best-effort from the opcode stream:
+        //   `Parameter(N)`  -> parameters[N].Name
+        //   `Parameter(N) + ComponentSwizzle(...)` -> ParamName_<swizzle>
+        //   `Parameter(N) + Saturate/Rcp/...` -> ParamName_<op>
+        //   anything else -> ParamName_expr_<byteOffset> or `f_<byteOffset>`
+        // Rationale: rewriter only needs (byteOffset, type) per slot to
+        // expand cbuffer struct correctly; missing slots collapse the whole
+        // CB to a single anonymous float4 array (the M_Bamboo_tree bug).
         HashSet<int> seenOffsets = new();
+        HashSet<string> seenNames = new(StringComparer.Ordinal);
         List<VectorParameter> vectorParams = new();
         foreach (JsonElement preshader in uniformPreshaders.EnumerateArray())
         {
@@ -177,25 +190,21 @@ internal static class UeShaderSymbolInputsReader
             uint fieldIndex = ReadUInt32(preshader, "FieldIndex");
             uint numFields = ReadUInt32(preshader, "NumFields");
 
-            if (!IsSingleParameterWrite(opcodeData, opcodeOffset, opcodeSize, numFields))
+            // Only single-field-output preshaders for now. Multi-field writes
+            // emerge for struct outputs and are uncommon for Material CBs;
+            // adding them later requires walking each field's ComponentIndex
+            // and Type independently.
+            if (numFields != 1)
             {
                 continue;
             }
-
-            ushort parameterIndex = BitConverter.ToUInt16(opcodeData, checked((int)opcodeOffset + 1));
-            if (parameterIndex >= uniformNumericParameters.GetArrayLength() || fieldIndex >= uniformPreshaderFields.GetArrayLength())
-            {
-                continue;
-            }
-
-            FMaterialParameterInfo? parameterInfo = ParseMaterialParameterInfo(uniformNumericParameters[parameterIndex]);
-            if (parameterInfo == null)
+            if (fieldIndex >= uniformPreshaderFields.GetArrayLength())
             {
                 continue;
             }
 
             JsonElement field = uniformPreshaderFields[checked((int)fieldIndex)];
-            if (!TryMapFieldType(ReadString(field, "Type"), out int rows, out int columns))
+            if (!TryMapFieldType(ReadString(field, "Type"), out int rows, out _))
             {
                 continue;
             }
@@ -206,16 +215,16 @@ internal static class UeShaderSymbolInputsReader
                 continue;
             }
 
-            // Populate VectorParams (which the SPIR-V structured-CB rewriter
-            // and ShaderSymbolData.RefreshCompatibilityViews both consume)
-            // rather than CBParams directly. RefreshCompatibilityViews
-            // regenerates CBParams from VectorParams+MatrixParams; CBParams
-            // populated alone are kept only when the typed arrays are empty,
-            // which means the rewriter sees no struct members and emits a
-            // single collapsed float4 array instead of named members.
+            string name = DerivePreshaderName(opcodeData, opcodeOffset, opcodeSize, uniformNumericParameters, byteOffset);
+            if (!seenNames.Add(name))
+            {
+                name = $"{name}_at_{byteOffset}";
+                seenNames.Add(name);
+            }
+
             vectorParams.Add(new VectorParameter
             {
-                Name = parameterInfo.Name,
+                Name = name,
                 NameIndex = -1,
                 Type = ShaderParamType.Float,
                 ByteOffset = byteOffset,
@@ -235,6 +244,149 @@ internal static class UeShaderSymbolInputsReader
             .OrderBy(static p => p.ByteOffset)
             .ToArray();
         return materialBuffer;
+    }
+
+    private static string SwizzleSuffix(byte numE, byte r, byte g, byte b, byte a)
+    {
+        if (numE == 0 || numE > 4)
+        {
+            return string.Empty;
+        }
+
+        Span<byte> indices = stackalloc byte[4] { r, g, b, a };
+        Span<char> chars = stackalloc char[4];
+        for (int i = 0; i < numE; i++)
+        {
+            byte v = indices[i];
+            char c = v switch
+            {
+                0 => 'x',
+                1 => 'y',
+                2 => 'z',
+                3 => 'w',
+                _ => '\0',
+            };
+            if (c == '\0')
+            {
+                return string.Empty;
+            }
+            chars[i] = c;
+        }
+        return new string(chars[..numE]);
+    }
+
+    // Name the cbuffer slot from the preshader opcode stream.
+    //
+    // Honesty rule: name the slot only if we can decode *every* byte of the
+    // opcode stream into a closed-form description of what the runtime VM
+    // writes into the slot. If any byte is unaccounted for (unrecognized
+    // opcode, partial read, multi-Parameter expression we don't model), fall
+    // back to anonymous `f_<byteOffset>`. This guarantees that any printed
+    // name describes a value whose runtime byte content we can reproduce
+    // exactly from public UE 5.1 source semantics — no guessing.
+    //
+    // Decoded forms:
+    //   Parameter(N)                          -> parameters[N].Name
+    //   Parameter(N) + ComponentSwizzle(..)   -> ParamName_<xyzw...>
+    //   Parameter(N) + UnaryOp                -> ParamName_<op>
+    //
+    // EPreshaderOpcode reference: Engine/Source/Runtime/Engine/Public/Shader/Preshader.h:19-75
+    // (Parameter=3, Rcp=22, Saturate=25, Abs=26, Floor=27, Ceil=28, Round=29,
+    //  Trunc=30, Sign=31, Frac=32, Fractional=33, ComponentSwizzle=36, Neg=45).
+    // ComponentSwizzle payload: Engine/Source/Runtime/Engine/Private/Shader/Preshader.cpp:649-655
+    // (uint8 NumElements, IndexR, IndexG, IndexB, IndexA).
+    private static string DerivePreshaderName(
+        byte[] data,
+        uint offset,
+        uint size,
+        JsonElement parameters,
+        int byteOffset)
+    {
+        string anonymous = $"f_{byteOffset}";
+
+        // Must start with Parameter(N): exactly 1 + 2 = 3 bytes.
+        if (size < 3 || offset >= (uint)data.Length || offset + 3 > (uint)data.Length)
+        {
+            return anonymous;
+        }
+        if (data[offset] != 3)
+        {
+            return anonymous;
+        }
+
+        ushort paramIdx = BitConverter.ToUInt16(data, checked((int)offset + 1));
+        if (paramIdx >= parameters.GetArrayLength())
+        {
+            return anonymous;
+        }
+
+        FMaterialParameterInfo? info = ParseMaterialParameterInfo(parameters[paramIdx]);
+        if (info == null)
+        {
+            return anonymous;
+        }
+        string baseName = info.Name;
+
+        // Pure Parameter(N) — slot is byte-equal to the parameter.
+        if (size == 3)
+        {
+            return baseName;
+        }
+
+        // Parameter(N) + one trailing op that fully consumes the rest of the
+        // opcode stream.
+        int rest = checked((int)offset + 3);
+        int restSize = checked((int)size) - 3;
+        if (rest >= data.Length || restSize <= 0)
+        {
+            return anonymous;
+        }
+        byte tailOp = data[rest];
+
+        // ComponentSwizzle: 1 op byte + 5 payload bytes (NumE, R, G, B, A).
+        if (tailOp == 36 && restSize == 6 && rest + 6 <= data.Length)
+        {
+            byte numE = data[rest + 1];
+            byte r = data[rest + 2];
+            byte g = data[rest + 3];
+            byte b = data[rest + 4];
+            byte a = data[rest + 5];
+            string swizzle = SwizzleSuffix(numE, r, g, b, a);
+            if (!string.IsNullOrEmpty(swizzle))
+            {
+                return $"{baseName}_{swizzle}";
+            }
+            return anonymous;
+        }
+
+        // Unary in-place ops: 1 op byte and nothing else.
+        if (restSize == 1)
+        {
+            string? unary = tailOp switch
+            {
+                22 => "rcp",
+                25 => "sat",
+                26 => "abs",
+                27 => "floor",
+                28 => "ceil",
+                29 => "round",
+                30 => "trunc",
+                31 => "sign",
+                32 => "frac",
+                33 => "fractional",
+                45 => "neg",
+                _ => null,
+            };
+            if (unary != null)
+            {
+                return $"{baseName}_{unary}";
+            }
+        }
+
+        // Anything else is a multi-step expression (Constants, Clamp, Append,
+        // arithmetic, second Parameter pulls). We can't describe the slot's
+        // runtime value in closed form -> anonymous.
+        return anonymous;
     }
 
     private static UeMaterialUniformBufferLayout.MaterialResourceCounts? ReadMaterialResourceCounts(JsonElement uniformExpressionSet)
@@ -327,11 +479,6 @@ internal static class UeShaderSymbolInputsReader
                 destination.Add(parameterInfo);
             }
         }
-    }
-
-    private static bool IsSingleParameterWrite(byte[] opcodeData, uint opcodeOffset, uint opcodeSize, uint numFields)
-    {
-        return numFields == 1 && opcodeSize == 3 && opcodeOffset + opcodeSize <= opcodeData.Length && opcodeData[opcodeOffset] == 3;
     }
 
     private static bool TryMapFieldType(string? fieldType, out int rows, out int columns)

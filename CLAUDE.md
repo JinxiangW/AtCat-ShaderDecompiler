@@ -586,7 +586,8 @@ Unity 回归保证:
 | 2 | unchanged | typed names ready(gated on `.json`) | 引擎 UB 成员名硬编码方案被禁,降级 placeholder | n/a |
 | 3 (research) | 锁定 §4 矩阵 | typed flat 名仅由材质 `.uasset` 重建 | 永远不可从 cooked 恢复 | n/a |
 | 6 (`MI_Cliff_Parent_PS_3500`) | 同上 | 12 个数值参数命名进入 metadata,但 HLSL 仍 `Material_1_m0[N]`(rewriter 不拆) | placeholder | 0 |
-| **当前 (`M_Bamboo_tree_PS_1904`)** | ✅ View/LocalVF/MaterialCollection0/Material 全部命名 | metadata 12 命名进 `Material`,**HLSL 仍 `float4 Material_1_Tree_sway_softness[16]`** | `View_SRV45` / `View_SRV46` / `LocalVF_SRV*` 等 placeholder 已就位 | **0** / 4121 ✅ |
+| 11 (`M_Bamboo_tree_PS_1904`) | ✅ View/LocalVF/MaterialCollection0/Material 全部命名 | metadata 12 命名进 `Material`,HLSL 仍 `float4 Material_1_Tree_sway_softness[16]`(rewriter 因 byte 32 metadata 无成员退化) | placeholder | **0** / 4121 ✅ |
+| **当前 12 (`M_Bamboo_tree_PS_1904`)** | 同上 | **22 命名成员**全部 packoffset 正确,`SelectionColor_xyz @ c2` 等 swizzled-view 槽位全部到位 ✅ | placeholder | **0** / 4121 ✅ |
 
 ### 9.3 已落地的迭代(摘录)
 
@@ -920,22 +921,145 @@ TessCoord / 双 entry point / patch-constant function 等)。GLSL backend
   打印 stderr。
 - 非 tess/geom stage 不受影响,HLSL 失败仍然 loud。
 
-### 9.9 当前轮遗留(open in v12)
+### 9.9 It. 12 — UE Material CB 缺失 swizzled-view 槽位
 
-1. **UE 端 reader byte offset 错位** — `M_Bamboo_tree_PS_1904.Material`
-   shader 在 register 2 (byte 32) 实际有访问,但 metadata 里 byte 32 没成
-   员;`10.Normal intensity` 名字带"`10.`"前缀本身可疑。需要看
-   `UeShaderSymbolInputsReader` 怎么从材质 `UniformExpressionSet` 计算
-   byte offsets,确认是否漏映射或类型推断错误。
-2. **EndField blob1 `ShaderVariablesGlobal` 6 → 5 layout 缩水** —
-   metadata `CBParams` 有 6 个,但 `BuildStructuredLayout` 只产出 5 个。
-   blob2 同 metadata 是 6 个,差异在 SPIR-V access。需要确认是不是
-   `BuildStructuredLayout` 看了 `flatBuffer.ArrayLength`,而 vertex shader
-   的 SPIR-V flat 数组比 fragment 的短(只覆盖访问到的范围),导致
+§1.3 / §9.9.1 的 `M_Bamboo_tree_PS_1904.Material` 反面 fixture 闭合。
+
+#### 根因
+
+`UeShaderSymbolInputsReader.ReadMaterialConstantBuffer` 旧版只接受
+`IsSingleParameterWrite(opcodeSize == 3, opcode == 0x03)` 这种**裸**
+`Parameter(N)` 形式的 preshader,把任何更长 opcode 流(swizzle / unary /
+clamp / append)都跳掉。
+
+实际数据(本 fixture):24 个 preshaders,12 个是裸 `030N00`,12 个是带
+swizzle / Saturate / Rcp / Clamp 的复合表达式。被丢掉的那 12 个里包含
+**field[4] BufferOffset=8(byte 32)Float3 = `Parameter(0) +
+ComponentSwizzle(.xyz)`**,而 shader 的 `slotConst=2` 访问就在这里 → 没成
+员 → rewriter 整 CB 退化为 `float4 Material_1_Tree_sway_softness[16]` 单数组。
+
+UE 5.1.1 源码确认(`Engine/Source/Runtime/Engine/Public/Shader/Preshader.h:19-75` 与
+`Engine/Source/Runtime/Engine/Private/Shader/Preshader.cpp:649-655`):
+- `EPreshaderOpcode::Parameter`(=3) 后面跟 `uint16 ParameterIndex`,共
+  3 字节。
+- `EPreshaderOpcode::ComponentSwizzle`(=36 / `0x24`) 后面跟
+  `uint8 NumElements, IndexR, IndexG, IndexB, IndexA`,共 6 字节。
+- 所以 `Parameter(N) + ComponentSwizzle(.xyz)` = 3 + 6 = 9 字节(`030N00 24 03 00 01 02 ff`)。
+- 一元 `Saturate`(=25 / `0x19`)、`Rcp`(=22 / `0x16`)等 1 字节,所以
+  `Parameter(N) + Saturate` = 3 + 1 = 4 字节。
+
+#### 修法
+
+`ReadMaterialConstantBuffer` 改为:
+1. **总是**用 `field[FieldIndex].BufferOffset * 4` 与 `field[FieldIndex].Type`
+   作为槽位的权威 `(byteOffset, type)` — 这两个数无论 preshader 多复杂都
+   一定正确(它们是 GPU 端实际写入的位置和宽度,UE 在 cook 时已固定)。
+2. 命名**只在能闭合解码时**用参数名,否则匿名 — **诚实规则**: 一个 slot
+   的名字必须能由 opcode 流的**每一个 byte**解释成"runtime VM 写到这个
+   字节偏移的精确表达式",才允许写出来。任何 byte 没账(未识别 opcode、
+   多步表达式、二元算术、多 Parameter 拉取),整槽**降级为 `f_<byteOffset>`
+   匿名**。这样任何打印出来的名字所描述的 runtime 字节内容都可以由 UE 5.1
+   公开源码的语义**逐字节复现** — 不靠猜。
+   - **`Parameter(N)` 裸 (size 3)** → `parameters[N].Name`。slot 字节 ==
+     参数值。
+   - **`Parameter(N) + ComponentSwizzle(NumE,R,G,B,A)` (size 3+6=9)** →
+     `<paramName>_<xyzw...>` (e.g. `SelectionColor_xyz`、`SelectionColor_w`)。
+     按 `Preshader.cpp:649-655` 的 swizzle 语义,slot 的 4 个 component
+     位置上是 `Param.[indices[i]]` 的对应分量值,共 NumE 个。
+   - **`Parameter(N) + UnaryOpInPlace` (size 3+1=4)** → `<paramName>_<op>`
+     (e.g. `Roughness_dullness_sat`、`Sway_resistance_rcp`)。覆盖
+     `Rcp/Saturate/Abs/Floor/Ceil/Round/Trunc/Sign/Frac/Fractional/Neg`。
+   - **任何其它形态**(Constants 入栈、Clamp、Append、Add/Sub/Mul/Div、
+     Less/Greater 等 binary 比较、Cross、Dot、TextureSize、Min/Max 等等) →
+     `f_<byteOffset>` 完全匿名。这些是材质 HLSL translator 在该 byte 处
+     物化的**派生值**,我们不在材质参数表里能找到对应符号,所以不命名。
+3. byte offset + type 来自 `UniformPreshaderFields[i].BufferOffset/Type`
+   绝对真理 — 无论 opcode 多复杂,GPU 实际写入位置和宽度都是这两个数。
+
+`IsSingleParameterWrite` 被删除(已无调用方)。`DerivePreshaderName()` +
+`SwizzleSuffix()` helper 只用 `Preshader.h` 公开的 opcode 编号
+(Parameter=3, Rcp=22, Saturate=25, Abs=26, Floor=27, Ceil=28, Round=29,
+Trunc=30, Sign=31, Frac=32, Fractional=33, ComponentSwizzle=36, Neg=45),
+不依赖任何引擎特定值或硬编码。
+
+#### 验证
+
+| Fixture | Before | After |
+| --- | --- | --- |
+| **`M_Bamboo_tree_PS_1904.Material`** | `float4 Material_1_SelectionColor[16]`(rewriter 退化为单数组,因为 byte 32 metadata 缺成员) | **22 成员**全部 packoffset 正确(21 个由 opcode 流闭合解码命名:11 裸 Parameter + swizzled `_xyz`/`_w` 视图 + unary `_sat`/`_rcp` 视图 + 1 匿名 `f_20`(Clamp 表达式不闭合))✅ |
+| `M_Bamboo_tree_PS_1904.rewrite.txt` | `[Material] rewrite validation failed: unsupported access translation for resultId=273 slotConst=2 ...` | `[Material] rewrite planned with 22 members` ✅ |
+| EndField blob1 / blob2 (Unity) | 5 / 6 + 5 名字 | 5 / 6 + 5 不退化 ✅ |
+| Deferred Clustered blob27 (Unity) | 10 + 4 + 1 + 1 + 10 名字 | 10 + 4 + 1 + 1 + 10 不退化 ✅ |
+
+`M_Bamboo_tree_PS_1904.hlsl` Material CB 实际产物(每名字都可由 opcode 流
+逐字节复现):
+
+```hlsl
+cbuffer Material : register(b3)
+{
+    float4 Material_1_SelectionColor             : packoffset(c0);    // Parameter(0)
+    float  Material_1_0_Normal_intensity         : packoffset(c1);    // Parameter(1)
+    float  Material_1_f_20                       : packoffset(c1.y);  // Parameter(1) + Const0 + Const4 + Clamp -- 不闭合
+    float  Material_1_SelectionColor_w           : packoffset(c1.z);  // Parameter(0) + ComponentSwizzle(NumE=1, R=3)
+    float3 Material_1_SelectionColor_xyz         : packoffset(c2);    // Parameter(0) + ComponentSwizzle(NumE=3, R=0,G=1,B=2)
+    float4 Material_1_Bamboo_base_dark_tones     : packoffset(c3);    // Parameter(2)
+    float4 Material_1_Bamboo_base_mid_tones      : packoffset(c4);    // Parameter(3)
+    float3 Material_1_Bamboo_base_mid_tones_xyz  : packoffset(c5);    // Parameter(3) + ComponentSwizzle(.xyz)
+    float3 Material_1_Bamboo_base_dark_tones_xyz : packoffset(c6);    // Parameter(2) + ComponentSwizzle(.xyz)
+    float4 Material_1_Bamboo_base_light_tones    : packoffset(c7);    // Parameter(4)
+    float3 Material_1_Bamboo_base_light_tones_xyz: packoffset(c8);    // Parameter(4) + ComponentSwizzle(.xyz)
+    float4 Material_1_Bamboo_dark_tones          : packoffset(c9);    // Parameter(5)
+    float4 Material_1_Bamboo_mid_tones           : packoffset(c10);   // Parameter(6)
+    float3 Material_1_Bamboo_mid_tones_xyz       : packoffset(c11);   // Parameter(6) + ComponentSwizzle(.xyz)
+    float3 Material_1_Bamboo_dark_tones_xyz      : packoffset(c12);   // Parameter(5) + ComponentSwizzle(.xyz)
+    float4 Material_1_Bamboo_light_tones         : packoffset(c13);   // Parameter(7)
+    float3 Material_1_Bamboo_light_tones_xyz     : packoffset(c14);   // Parameter(7) + ComponentSwizzle(.xyz)
+    float  Material_1_Roughness_dullness         : packoffset(c14.w); // Parameter(8)
+    float  Material_1_Roughness_dullness_sat     : packoffset(c15);   // Parameter(8) + Saturate
+    float  Material_1_Sway_resistance            : packoffset(c15.y); // Parameter(9)
+    float  Material_1_Sway_resistance_rcp        : packoffset(c15.z); // Parameter(9) + Rcp
+    float  Material_1_Tree_sway_offset           : packoffset(c15.w); // Parameter(10)
+};
+```
+
+每个名字都对应一段**完全闭合**的 opcode 流:opcode bytes 加 payload bytes
+等于 preshader 的 OpcodeSize,无残余 byte。`Material_1_f_20` 是唯一不闭合
+案例 — 那段 16 byte preshader 是 `Parameter(1) + Const(Float1=0) +
+Const(Float1=4) + Clamp`,Clamp 是 ternary,我们不在 reader 里实现表达式
+闭合,所以名字降级匿名。
+
+byte offset + type 全部从 `UniformPreshaderFields[i].BufferOffset/Type` 来,
+不靠任何硬编码。
+
+`Tree_sway_softness`(param 11,byte 256, c16)未出现是因为该 shader 的
+SPV flat 数组覆盖范围是 16 个 float4(到 byte 256),不会读到 c16 —
+是 SPV reflection 的正确表现,不是 reader bug。
+
+#### 已闭合的旧遗留
+
+- §1.1 / §1.3 / §9.9.1 — `M_Bamboo_tree_PS_1904.Material` 在 byte 32 缺
+  成员的根因找到并修复。`10.Normal intensity` 的 "`10.`" 前缀确认是
+  材质设计师起的真实名字(在 `M_Bamboo_tree.json` 里就是这样存的),不是
+  reader 污染,无需"修"。
+
+### 9.10 当前轮遗留(open in v13)
+
+1. **EndField blob1 `ShaderVariablesGlobal` 6 → 5 layout 缩水** — §9.9 的
+   旧 §2 项;blob2 同 metadata 是 6 个,差异在 SPIR-V access。需要确认是
+   不是 `BuildStructuredLayout` 看了 `flatBuffer.ArrayLength`,而 vertex
+   shader 的 SPIR-V flat 数组比 fragment 的短(只覆盖访问到的范围),导致
    `maxAvailableByteOffset = ArrayLength * 16` 把 byte 1728 排除。
-3. **rewriter 末段空洞警示** — 现在 layout 末尾有空洞(M_Bamboo_tree
-   Size=320 但命名最高到 byte 256)是 OK 的(已确认 SPV 容忍),但 1.
-   提到的中间访问空洞是另一回事,需要 reader 端修。
+2. **EndField blob1 `UnityInstancing_SRP_UnityPerDraw` 仍然 rewrite
+   validation failed** — `unsupported access translation for resultId=255
+   slotConst=1 slotDynamic=248 stride=16 op=65`。CLAUDE.md §2.2 称该 fixture
+   "已正确演示 [256u] 数组上的动态索引",但当前 rewrite log 显示失败 —
+   需要核对是不是历史 baseline 从来就没真正成功(只是 HLSL 退化为
+   `UnityPerDrawArray ... [256u]` 单数组的形态被认为是"对",而 rewrite
+   plan 实际上失败了)。本轮**不**因这条改 SPIR-V 阶段任何东西(否则就是
+   refactor),先记录。
+3. **Multi-field preshader 暂未支持** — UE preshader 可以 `NumFields > 1`
+   写到多个 field 槽(struct 输出)。当前 reader 仍跳过这类。Material CB
+   罕见使用,但其它 UB 可能有。先记录。
 
 ---
 
