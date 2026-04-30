@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.Text;
 using Newtonsoft.Json;
 using Ruri.ShaderTools.Spirv;
-using Ruri.ShaderTools.Unreal;
 
 namespace Ruri.ShaderTools;
 
@@ -14,23 +13,33 @@ public enum ShaderArchitecture
     SpirV,
 }
 
-// Knobs for one Decompile call. Lets callers opt into per-shader debug
-// dumps without mutating decompiler state. The default-constructed
-// instance reproduces the legacy `Decompile(byte[], format, metadata,
-// shaderModel)` behaviour exactly.
+// Engine-agnostic decompile knobs. The decompiler does NOT know about
+// UE / Unity / any specific engine — callers (e.g. the FModel UE hook
+// or the AssetRipper Unity exporter) pre-build a complete `Metadata`
+// and pass it in. The decompiler then runs the universal pipeline:
+//   format conversion → SPIR-V rewrite → symbol injection → spirv-cross
 public sealed class DecompileOptions
 {
     public ShaderArchitecture Format { get; init; } = ShaderArchitecture.Unknown;
     public ShaderSymbolData? Metadata { get; init; }
     public uint ShaderModel { get; init; } = 51;
 
+    // Optional escape hatch. Invoked after the structured-cbuffer rewrite
+    // and BEFORE universal SpirvPatcher symbol injection. Receives the
+    // rewritten SPIR-V (read-only) and the metadata (mutate-in-place to
+    // add bindings). The actual symbol-name injection still runs inside
+    // the decompiler — this is purely for metadata accumulation that
+    // requires SPIR-V context (e.g. UE's Material UB texture-name
+    // inference from OpSampledImage pairs, where you can only name a
+    // texture once you've matched it to an already-named sampler in a
+    // sampled-image pair). Unity's caller doesn't need this.
+    public Action<byte[], ShaderSymbolData>? MetadataEnricher { get; init; }
+
     // When set, a failed Decompile call writes every intermediate
     // artifact (input binary, pre-rewrite SPIR-V, post-rewrite SPIR-V,
-    // post-patch SPIR-V, metadata, structured-rewrite summary,
-    // captured tool stderr, error stack trace) under this directory
-    // using `DebugDumpStem` as the file-name prefix. Caller controls
-    // the directory so per-shader subfolders can be carved out for
-    // batch runs.
+    // post-patch SPIR-V, metadata, structured-rewrite summary, captured
+    // tool stderr, error stack trace) under this directory using
+    // `DebugDumpStem` as the file-name prefix.
     public string? DebugDumpDirectory { get; init; }
     public string? DebugDumpStem { get; init; }
 }
@@ -43,13 +52,12 @@ public sealed class DecompileResult
     public string SourceFileExtension { get; set; } = ".hlsl";
     public string? ErrorMessage { get; set; }
     public byte[]? IntermediateSpirv { get; set; }
-    // Intermediate stages — populated on both success and failure for
-    // diff-style debugging. PreRewriteSpirv is the SPIR-V immediately
-    // after format conversion (DXBC/DXIL → SPV); PostRewriteSpirv is
-    // after StructuredCBufferRewriter; PostPatchSpirv is after symbol
-    // injection via SpirvPatcher. On failure, whichever stages were
-    // reached are still attached so callers can see exactly where the
-    // pipeline broke.
+
+    // Per-stage SPIR-V — populated for both success and failure so callers
+    // can diff stages offline. PreRewriteSpirv: format conversion output.
+    // PostRewriteSpirv: after StructuredCBufferRewriter (this is what the
+    // MetadataEnricher callback sees). PostPatchSpirv: after SpirvPatcher
+    // symbol-name injection.
     public byte[]? PreRewriteSpirv { get; set; }
     public byte[]? PostRewriteSpirv { get; set; }
     public byte[]? PostPatchSpirv { get; set; }
@@ -58,17 +66,8 @@ public sealed class DecompileResult
     public string? PatchPlanDescription { get; set; }
     public string? BuiltInDecorationsDescription { get; set; }
     public string? DebugDumpDirectory { get; set; }
-    public string? ShaderName { get; set; }
     public string? StructuredRewriteSummary { get; set; }
     public ShaderSymbolData? FinalMetadata { get; set; }
-    public IReadOnlyList<string>? UnrealOptionalDataKeys { get; set; }
-    public IReadOnlyList<string>? UnrealUniformBufferNames { get; set; }
-    public string? UnrealShaderCodePackedResourceCounts { get; set; }
-    public string? UnrealShaderCodeResourceMasks { get; set; }
-    public string? UnrealShaderCodeFeatures { get; set; }
-    public string? UnrealShaderCodeName { get; set; }
-    public string? UnrealShaderCodeVendorExtension { get; set; }
-    public string? UnrealSm6Flag { get; set; }
 }
 
 public sealed class ShaderDecompiler : IDisposable
@@ -90,7 +89,6 @@ public sealed class ShaderDecompiler : IDisposable
 
     private enum SpirvStage { Unknown = 0, Vertex, TessControl, TessEvaluation, Geometry, Fragment, Compute }
     private readonly record struct TempFiles(string Dxbc, string Dxil, string Spirv, string Hlsl, string Glsl);
-    private readonly record struct Pipeline(byte[] Code, ShaderArchitecture Format, ShaderSymbolData Metadata, UnrealShaderParser.UnrealMetadata? Unreal);
     private readonly record struct Source(string Text, string Language, string Extension);
 
     public ShaderDecompiler(string? tempDir = null, string? toolsDir = null)
@@ -109,27 +107,25 @@ public sealed class ShaderDecompiler : IDisposable
         if (string.IsNullOrWhiteSpace(_toolsDir)) return Fail("Decompiler tools not found. Expected dxbc2dxil.exe, dxil-spirv.exe, and spirv-cross.exe.");
 
         _lastToolFailureLog = null;
+        ShaderSymbolData metadata = options.Metadata ?? new ShaderSymbolData();
+        ShaderArchitecture format = Detect(options.Format, binary);
+
         TempFiles temp = Temps();
         byte[]? preRewrite = null;
         byte[]? postRewrite = null;
         byte[]? postPatch = null;
-        ShaderSymbolData? mergedMetadata = null;
         string failedStage = "init";
         try
         {
-            failedStage = "parse-and-merge";
-            Pipeline p = Pipe(binary, options.Format, options.Metadata);
-            mergedMetadata = p.Metadata;
-
             failedStage = "format-to-spirv";
-            byte[] spv = Spv(p.Format, p.Code, temp);
+            byte[] spv = ConvertToSpirv(format, binary, temp);
             preRewrite = spv;
 
             byte[] rewritten;
             try
             {
                 failedStage = "structured-cbuffer-rewrite";
-                rewritten = _rewriter.Rewrite(spv, p.Metadata);
+                rewritten = _rewriter.Rewrite(spv, metadata);
                 postRewrite = rewritten;
             }
             catch (Exception ex)
@@ -137,46 +133,52 @@ public sealed class ShaderDecompiler : IDisposable
                 throw new InvalidOperationException($"Structured CBuffer rewrite failed.{Environment.NewLine}{DescribeBuiltInDecorations(spv)}", ex);
             }
 
-            // Recover Material UB texture names by analysing OpSampledImage
-            // (texture, sampler) pairs. UE's HLSL material translator emits
-            // `Texture.Sample(TextureSampler, ...)` as a mechanically paired
-            // call (HLSLMaterialTranslator.cpp:6110). Whenever the sampler in
-            // a SampledImage pair has been resolved to `Material_<TexName>Sampler`
-            // via SRT + CreateBufferStruct() replay, the texture in that pair
-            // is `Material_<TexName>` by source-truth construction. This adds
-            // matching TextureParameter entries to the metadata so the next
-            // patch step injects OpName for the texture. No-op when there are
-            // no Material samplers or no OpSampledImage pairs.
-            UeMaterialTextureNameInferrer.InferAndAppend(rewritten, p.Metadata);
+            try
+            {
+                failedStage = "metadata-enricher";
+                options.MetadataEnricher?.Invoke(rewritten, metadata);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"MetadataEnricher threw: {ex.Message}", ex);
+            }
 
             byte[] patched;
             try
             {
                 failedStage = "spirv-symbol-patch";
-                patched = Patch(rewritten, p.Metadata);
+                patched = Patch(rewritten, metadata);
                 postPatch = patched;
             }
             catch (Exception ex)
             {
-                throw new InvalidOperationException($"SPIR-V patch failed.{Environment.NewLine}{DescribePatchPlan(rewritten, p.Metadata)}{Environment.NewLine}{DescribeBuiltInDecorations(rewritten)}", ex);
+                throw new InvalidOperationException($"SPIR-V patch failed.{Environment.NewLine}{DescribePatchPlan(rewritten, metadata)}{Environment.NewLine}{DescribeBuiltInDecorations(rewritten)}", ex);
             }
 
             Source src;
             try
             {
                 failedStage = "spirv-cross-emit";
-                src = Emit(patched, p.Metadata.EntryPoint, options.ShaderModel, temp);
+                src = Emit(patched, metadata.EntryPoint, options.ShaderModel, temp);
             }
             catch (Exception ex)
             {
-                throw new InvalidOperationException($"SPIR-V emission failed after patch.{Environment.NewLine}{DescribePatchPlan(patched, p.Metadata)}{Environment.NewLine}{DescribeBuiltInDecorations(patched)}", ex);
+                throw new InvalidOperationException($"SPIR-V emission failed after patch.{Environment.NewLine}{DescribePatchPlan(patched, metadata)}{Environment.NewLine}{DescribeBuiltInDecorations(patched)}", ex);
             }
 
-            DecompileResult okResult = Result(src, patched, p.Metadata, p.Unreal);
-            okResult.PreRewriteSpirv = preRewrite;
-            okResult.PostRewriteSpirv = postRewrite;
-            okResult.PostPatchSpirv = postPatch;
-            return okResult;
+            return new DecompileResult
+            {
+                Success = true,
+                SourceCode = src.Text,
+                SourceLanguage = src.Language,
+                SourceFileExtension = src.Extension,
+                IntermediateSpirv = patched,
+                PreRewriteSpirv = preRewrite,
+                PostRewriteSpirv = postRewrite,
+                PostPatchSpirv = postPatch,
+                StructuredRewriteSummary = _rewriter.LastRewriteSummary,
+                FinalMetadata = metadata,
+            };
         }
         catch (Exception ex)
         {
@@ -185,15 +187,14 @@ public sealed class ShaderDecompiler : IDisposable
             fail.PreRewriteSpirv = preRewrite;
             fail.PostRewriteSpirv = postRewrite;
             fail.PostPatchSpirv = postPatch;
-            // Latest SPIR-V we managed to produce — kept for backwards compat
-            // with callers that still read IntermediateSpirv.
             fail.IntermediateSpirv = postPatch ?? postRewrite ?? preRewrite;
             fail.StructuredRewriteSummary = _rewriter.LastRewriteSummary;
             fail.LastToolStderr = _lastToolFailureLog;
+
             byte[]? planSpirv = postPatch ?? postRewrite ?? preRewrite;
-            if (planSpirv != null && mergedMetadata != null)
+            if (planSpirv != null)
             {
-                fail.PatchPlanDescription = DescribePatchPlan(planSpirv, mergedMetadata);
+                fail.PatchPlanDescription = DescribePatchPlan(planSpirv, metadata);
                 fail.BuiltInDecorationsDescription = DescribeBuiltInDecorations(planSpirv);
             }
 
@@ -201,7 +202,7 @@ public sealed class ShaderDecompiler : IDisposable
             {
                 try
                 {
-                    fail.DebugDumpDirectory = WriteFailureDump(options, binary, fail, mergedMetadata);
+                    fail.DebugDumpDirectory = WriteFailureDump(options, binary, fail, metadata);
                 }
                 catch (Exception dumpEx)
                 {
@@ -217,7 +218,7 @@ public sealed class ShaderDecompiler : IDisposable
         }
     }
 
-    private string WriteFailureDump(DecompileOptions options, byte[] inputBinary, DecompileResult fail, ShaderSymbolData? mergedMetadata)
+    private string WriteFailureDump(DecompileOptions options, byte[] inputBinary, DecompileResult fail, ShaderSymbolData metadata)
     {
         string dir = options.DebugDumpDirectory!;
         Directory.CreateDirectory(dir);
@@ -225,9 +226,9 @@ public sealed class ShaderDecompiler : IDisposable
         string basePath = Path.Combine(dir, stem);
 
         File.WriteAllBytes(basePath + ".input.bin", inputBinary);
-        if (fail.PreRewriteSpirv is { Length: > 0 } a)  File.WriteAllBytes(basePath + ".01.pre-rewrite.spv", a);
+        if (fail.PreRewriteSpirv is { Length: > 0 } a) File.WriteAllBytes(basePath + ".01.pre-rewrite.spv", a);
         if (fail.PostRewriteSpirv is { Length: > 0 } b) File.WriteAllBytes(basePath + ".02.post-rewrite.spv", b);
-        if (fail.PostPatchSpirv is { Length: > 0 } c)   File.WriteAllBytes(basePath + ".03.post-patch.spv", c);
+        if (fail.PostPatchSpirv is { Length: > 0 } c) File.WriteAllBytes(basePath + ".03.post-patch.spv", c);
 
         StringBuilder error = new();
         error.AppendLine($"Failed stage: {fail.FailedStage ?? "<unknown>"}");
@@ -243,28 +244,19 @@ public sealed class ShaderDecompiler : IDisposable
         File.WriteAllText(basePath + ".error.txt", error.ToString(), new UTF8Encoding(false));
 
         if (!string.IsNullOrWhiteSpace(fail.PatchPlanDescription))
-        {
             File.WriteAllText(basePath + ".patch-plan.txt", fail.PatchPlanDescription!, new UTF8Encoding(false));
-        }
         if (!string.IsNullOrWhiteSpace(fail.BuiltInDecorationsDescription))
-        {
             File.WriteAllText(basePath + ".builtin-decorations.txt", fail.BuiltInDecorationsDescription!, new UTF8Encoding(false));
-        }
         if (!string.IsNullOrWhiteSpace(fail.StructuredRewriteSummary))
-        {
             File.WriteAllText(basePath + ".rewrite-summary.txt", fail.StructuredRewriteSummary!, new UTF8Encoding(false));
-        }
-        if (mergedMetadata != null)
+
+        try
         {
-            try
-            {
-                File.WriteAllText(basePath + ".metadata.json", JsonConvert.SerializeObject(mergedMetadata, Formatting.Indented), new UTF8Encoding(false));
-            }
-            catch
-            {
-                // Metadata might contain types Newtonsoft can't safely serialise (e.g. cycles).
-                // Don't let that bury the rest of the dump.
-            }
+            File.WriteAllText(basePath + ".metadata.json", JsonConvert.SerializeObject(metadata, Formatting.Indented), new UTF8Encoding(false));
+        }
+        catch
+        {
+            // Metadata might contain non-serialisable types; don't bury the rest of the dump.
         }
 
         return basePath;
@@ -296,53 +288,30 @@ public sealed class ShaderDecompiler : IDisposable
         return new(Path.Combine(TempDir, id + ".dxbc"), Path.Combine(TempDir, id + ".dxil"), Path.Combine(TempDir, id + ".spv"), Path.Combine(TempDir, id + ".hlsl"), Path.Combine(TempDir, id + ".glsl"));
     }
 
-    private Pipeline Pipe(byte[] binary, ShaderArchitecture format, ShaderSymbolData? metadata)
-    {
-        byte[] nativeCode = UnrealShaderParser.Parse(binary, out ShaderArchitecture parsedArchitecture, out UnrealShaderParser.UnrealMetadata? unrealMetadata);
-        ShaderSymbolData runtimeSymbols = UeRuntimeShaderSymbolReader.Read(unrealMetadata);
-        ShaderSymbolData merged = metadata ?? runtimeSymbols;
-
-        if (metadata != null)
-        {
-            MergeMissingBindings(merged.ConstantBufferBindings, runtimeSymbols.ConstantBufferBindings, static (a, b) => a.Set == b.Set && a.Index == b.Index);
-            MergeMissingBindings(merged.TextureParameters, runtimeSymbols.TextureParameters, static (a, b) => a.Set == b.Set && a.Index == b.Index);
-            MergeMissingBindings(merged.Samplers, runtimeSymbols.Samplers, static (a, b) => a.Set == b.Set && a.Index == b.Index);
-            MergeMissingBindings(merged.UAVs, runtimeSymbols.UAVs, static (a, b) => a.Set == b.Set && a.Index == b.Index);
-        }
-
-        return new(nativeCode, Detect(format == ShaderArchitecture.Unknown ? parsedArchitecture : format, nativeCode), merged, unrealMetadata);
-    }
-
-    private static void MergeMissingBindings<T>(List<T> target, IEnumerable<T> source, Func<T, T, bool> match)
-    {
-        foreach (T item in source)
-            if (!target.Any(existing => match(existing, item)))
-                target.Add(item);
-    }
-
     private static ShaderArchitecture Detect(ShaderArchitecture format, byte[] code)
         => format switch
         {
-            ShaderArchitecture.Dxbc when Dxil(code) => ShaderArchitecture.Dxil,
+            // DXBC magic + DXIL chunk → DXIL takes precedence over DXBC.
+            ShaderArchitecture.Dxbc when IsDxil(code) => ShaderArchitecture.Dxil,
             ShaderArchitecture.Dxbc or ShaderArchitecture.Dxil or ShaderArchitecture.SpirV => format,
-            _ when Dxil(code) => ShaderArchitecture.Dxil,
-            _ when Dxbc(code) => ShaderArchitecture.Dxbc,
-            _ when Spirv(code) => ShaderArchitecture.SpirV,
+            _ when IsDxil(code) => ShaderArchitecture.Dxil,
+            _ when IsDxbc(code) => ShaderArchitecture.Dxbc,
+            _ when IsSpirv(code) => ShaderArchitecture.SpirV,
             _ => ShaderArchitecture.Unknown,
         };
 
-    private byte[] Spv(ShaderArchitecture format, byte[] code, TempFiles temp)
+    private byte[] ConvertToSpirv(ShaderArchitecture format, byte[] code, TempFiles temp)
         => format switch
         {
             ShaderArchitecture.Dxbc => DxbcToSpv(code, temp),
             ShaderArchitecture.Dxil => DxilToSpv(code, temp.Dxil, temp.Spirv, false),
             ShaderArchitecture.SpirV => code,
-            _ => throw new InvalidOperationException($"Unsupported shader format: {format}")
+            _ => throw new InvalidOperationException($"Unsupported shader format: {format}"),
         };
 
     private byte[] DxbcToSpv(byte[] dxbc, TempFiles temp)
     {
-        if (!Dxbc(dxbc)) throw new InvalidOperationException("Input does not contain a valid DXBC payload.");
+        if (!IsDxbc(dxbc)) throw new InvalidOperationException("Input does not contain a valid DXBC payload.");
         File.WriteAllBytes(temp.Dxbc, dxbc);
         if (Run(new[] { Tool("dxbc2dxil.exe"), temp.Dxbc, "-o", temp.Dxil, "-emit-bc" }, "dxbc2dxil") && File.Exists(temp.Dxil))
             return DxilToSpv(File.ReadAllBytes(temp.Dxil), temp.Dxil, temp.Spirv, true);
@@ -356,7 +325,8 @@ public sealed class ShaderDecompiler : IDisposable
         File.WriteAllBytes(tempDxil, dxil);
         List<string> args = new() { Tool("dxil-spirv.exe"), tempDxil, "--output", tempSpv };
         if (rawLlvm) args.Add("--raw-llvm");
-        if (!Run(args.ToArray(), "dxil-spirv") || !File.Exists(tempSpv)) throw new InvalidOperationException("dxil-spirv did not produce a SPIR-V file.");
+        if (!Run(args.ToArray(), "dxil-spirv") || !File.Exists(tempSpv))
+            throw new InvalidOperationException("dxil-spirv did not produce a SPIR-V file.");
         return File.ReadAllBytes(tempSpv);
     }
 
@@ -364,41 +334,41 @@ public sealed class ShaderDecompiler : IDisposable
     {
         if (metadata.GetResourceBindingCount() == 0) return spirv;
         IReadOnlyList<SpirvBindingInfo> bindings = _patcher.AnalyzeBindingsDetailed(spirv);
-        List<(uint Id, string Name)> names = Names(bindings, metadata);
-        List<(uint TypeId, uint MemberIndex, string Name)> members = Members(bindings, metadata);
+        List<(uint Id, string Name)> names = BuildNamePatches(bindings, metadata);
+        List<(uint TypeId, uint MemberIndex, string Name)> members = BuildMemberPatches(bindings, metadata);
         return names.Count == 0 && members.Count == 0 ? spirv : _patcher.PatchByIds(spirv, names, members);
     }
 
-    private List<(uint Id, string Name)> Names(IReadOnlyList<SpirvBindingInfo> bindings, ShaderSymbolData metadata)
+    private List<(uint Id, string Name)> BuildNamePatches(IReadOnlyList<SpirvBindingInfo> bindings, ShaderSymbolData metadata)
     {
         List<(uint Id, string Name)> result = new();
         foreach (var resource in metadata.EnumerateResourceBindings().Where(static r => !string.IsNullOrWhiteSpace(r.Name)))
-            foreach (SpirvBindingInfo binding in Match(bindings, resource))
+            foreach (SpirvBindingInfo binding in MatchBindings(bindings, resource))
             {
-                string name = Name(resource, binding);
+                string name = ResolveName(resource, binding);
                 result.Add((binding.Id, name));
                 if (binding.DescriptorType == "UniformBuffer" && binding.StructTypeId is > 0) result.Add((binding.StructTypeId.Value, name));
             }
         return result;
     }
 
-    private List<(uint TypeId, uint MemberIndex, string Name)> Members(IReadOnlyList<SpirvBindingInfo> bindings, ShaderSymbolData metadata)
+    private List<(uint TypeId, uint MemberIndex, string Name)> BuildMemberPatches(IReadOnlyList<SpirvBindingInfo> bindings, ShaderSymbolData metadata)
     {
         List<(uint TypeId, uint MemberIndex, string Name)> result = new();
         foreach (var resource in metadata.EnumerateResourceBindings().Where(static r => r.RegisterType == 'b' && !string.IsNullOrWhiteSpace(r.Name)))
-            foreach (SpirvBindingInfo binding in Match(bindings, resource).Where(static b => b.DescriptorType == "UniformBuffer" && b.StructTypeId is > 0))
+            foreach (SpirvBindingInfo binding in MatchBindings(bindings, resource).Where(static b => b.DescriptorType == "UniformBuffer" && b.StructTypeId is > 0))
             {
-                ConstantBuffer? cb = metadata.GetConstantBufferByName(Name(resource, binding));
+                ConstantBuffer? cb = metadata.GetConstantBufferByName(ResolveName(resource, binding));
                 if (cb == null) continue;
                 result.AddRange(MemberPatches(binding, cb));
             }
         return result;
     }
 
-    private IEnumerable<SpirvBindingInfo> Match(IReadOnlyList<SpirvBindingInfo> bindings, (string Name, int Binding, int Set, ShaderResourceType Type, char RegisterType) resource)
-        => bindings.Where(binding => binding.Set == resource.Set && binding.Binding == resource.Binding && Match(resource.RegisterType, binding.DescriptorType));
+    private static IEnumerable<SpirvBindingInfo> MatchBindings(IReadOnlyList<SpirvBindingInfo> bindings, (string Name, int Binding, int Set, ShaderResourceType Type, char RegisterType) resource)
+        => bindings.Where(binding => binding.Set == resource.Set && binding.Binding == resource.Binding && DescriptorMatches(resource.RegisterType, binding.DescriptorType));
 
-    private string Name((string Name, int Binding, int Set, ShaderResourceType Type, char RegisterType) resource, SpirvBindingInfo binding)
+    private string ResolveName((string Name, int Binding, int Set, ShaderResourceType Type, char RegisterType) resource, SpirvBindingInfo binding)
         => binding.DescriptorType == "UniformBuffer" ? _rewriter.GetResolvedBufferName(resource.Set, resource.Binding) ?? resource.Name : resource.Name;
 
     private static IEnumerable<(uint TypeId, uint MemberIndex, string Name)> MemberPatches(SpirvBindingInfo binding, ConstantBuffer cb)
@@ -409,9 +379,9 @@ public sealed class ShaderDecompiler : IDisposable
 
         List<(uint TypeId, uint MemberIndex, string Name)> result = new();
         foreach (StructParameter p in cb.StructParams.Where(static p => !string.IsNullOrWhiteSpace(p.Name)))
-            if (Member(binding, p.Index) is int i) result.Add((binding.StructTypeId!.Value, (uint)i, p.Name));
+            if (FindMemberIndex(binding, p.Index) is int i) result.Add((binding.StructTypeId!.Value, (uint)i, p.Name));
         foreach (NumericShaderParameter p in cb.AllNumericParams.Where(static p => !string.IsNullOrWhiteSpace(p.Name)))
-            if (Member(binding, p.ByteOffset) is int i) result.Add((binding.StructTypeId!.Value, (uint)i, p.Name!));
+            if (FindMemberIndex(binding, p.ByteOffset) is int i) result.Add((binding.StructTypeId!.Value, (uint)i, p.Name!));
         return result;
     }
 
@@ -422,7 +392,7 @@ public sealed class ShaderDecompiler : IDisposable
         return result;
     }
 
-    private static int? Member(SpirvBindingInfo binding, int byteOffset)
+    private static int? FindMemberIndex(SpirvBindingInfo binding, int byteOffset)
     {
         foreach (KeyValuePair<int, uint> pair in binding.MemberOffsets)
             if (pair.Value == (uint)byteOffset)
@@ -432,27 +402,22 @@ public sealed class ShaderDecompiler : IDisposable
 
     private Source Emit(byte[] spirv, string? preferredEntryPoint, uint shaderModel, TempFiles temp)
     {
-        (SpirvStage stage, string? entryPoint) = Entry(spirv, preferredEntryPoint);
-        // Hull / domain / geometry stages: spirv-cross HLSL backend does NOT implement the
-        // stage-specific builtins (InvocationId / TessCoord / TessLevel*, patch-constant-function
-        // emission, two-entry-point HS layout, etc.). Failing the HLSL attempt here is the
-        // documented behavior of the upstream tool, not a defect in our pipeline — so we suppress
-        // the noisy "spirv-cross failed" stderr on the first try, print one short clarifying note,
-        // and go straight to the GLSL backend (which DOES support these stages cleanly).
+        (SpirvStage stage, string? entryPoint) = ResolveEntry(spirv, preferredEntryPoint);
+        // Hull / domain / geometry: spirv-cross HLSL backend lacks the
+        // stage-specific builtins (InvocationId / TessCoord / TessLevel*,
+        // patch-constant-function emission, two-entry-point HS layout).
+        // Falling back to GLSL is the documented behaviour, so we suppress
+        // stderr on the first try and print one short note instead.
         bool isTessOrGeom = stage is SpirvStage.TessControl or SpirvStage.TessEvaluation or SpirvStage.Geometry;
 
         if (TryEmit(spirv, temp.Spirv, temp.Hlsl, entryPoint, stage, shaderModel, hlsl: true, quiet: isTessOrGeom, out string? hlsl))
-        {
             return new(hlsl!, "hlsl", ".hlsl");
-        }
 
         if (isTessOrGeom)
         {
-            Console.Error.WriteLine($"[spirv-cross note] {stage} stage: HLSL backend lacks tessellation/geometry builtins (InvocationId / TessCoord / patch-constant emission). Falling back to GLSL output -- this is the expected path for this stage, not a regression.");
+            Console.Error.WriteLine($"[spirv-cross note] {stage} stage: HLSL backend lacks tessellation/geometry builtins. Falling back to GLSL output.");
             if (TryEmit(spirv, temp.Spirv, temp.Glsl, entryPoint, stage, shaderModel, hlsl: false, quiet: false, out string? glsl))
-            {
                 return new(glsl!, "glsl", ".glsl");
-            }
         }
 
         throw new InvalidOperationException("Failed to decompile patched SPIR-V.");
@@ -463,7 +428,7 @@ public sealed class ShaderDecompiler : IDisposable
         source = null;
         File.WriteAllBytes(tempSpv, spirv);
         List<string> args = new() { Tool("spirv-cross.exe"), tempSpv, "--output", outputPath, hlsl ? "--hlsl" : "-V" };
-        Args(args, entryPoint, stage);
+        AppendStageArgs(args, entryPoint, stage);
         if (hlsl) { args.Add("--shader-model"); args.Add(shaderModel.ToString()); args.Add("--force-zero-initialized-variables"); }
         if (!Run(args.ToArray(), "spirv-cross", quiet: quiet) || !File.Exists(outputPath)) { Delete(outputPath); return false; }
         source = File.ReadAllText(outputPath, Encoding.UTF8);
@@ -471,50 +436,14 @@ public sealed class ShaderDecompiler : IDisposable
         return true;
     }
 
-    private DecompileResult Result(Source source, byte[] spirv, ShaderSymbolData metadata, UnrealShaderParser.UnrealMetadata? unreal)
-    {
-        ShaderSymbolData finalMetadata = FinalizeMetadata(source.Text, spirv, metadata);
-        DecompileResult result = new()
-        {
-            Success = true,
-            SourceCode = source.Text,
-            SourceLanguage = source.Language,
-            SourceFileExtension = source.Extension,
-            IntermediateSpirv = spirv,
-            ShaderName = unreal?.ShaderName ?? metadata.DebugName,
-            StructuredRewriteSummary = _rewriter.LastRewriteSummary,
-            FinalMetadata = finalMetadata,
-            UnrealOptionalDataKeys = unreal?.OptionalDataKeys,
-            UnrealUniformBufferNames = unreal?.UniformBufferNames,
-            UnrealShaderCodeName = unreal?.ShaderCodeName?.Value,
-            UnrealSm6Flag = unreal?.IsSm6Shader?.ToString(),
-        };
-
-        if (unreal?.ShaderCodePackedResourceCounts is UnrealShaderParser.FShaderCodePackedResourceCounts packed)
-            result.UnrealShaderCodePackedResourceCounts = $"UsageFlags={packed.UsageFlags} NumSamplers={packed.NumSamplers} NumSRVs={packed.NumSRVs} NumCBs={packed.NumCBs} NumUAVs={packed.NumUAVs}";
-        if (unreal?.ShaderCodeResourceMasks is UnrealShaderParser.FShaderCodeResourceMasks masks)
-            result.UnrealShaderCodeResourceMasks = $"UAVMask=0x{masks.UAVMask:X8}";
-        if (unreal?.ShaderCodeFeatures is UnrealShaderParser.FShaderCodeFeatures features)
-            result.UnrealShaderCodeFeatures = $"CodeFeatures=0x{features.CodeFeatures:X2}";
-        if (unreal?.ShaderCodeVendorExtension != null)
-            result.UnrealShaderCodeVendorExtension = $"RawSize={unreal.ShaderCodeVendorExtension.RawData.Length}";
-
-        return result;
-    }
-
-    private static ShaderSymbolData FinalizeMetadata(string sourceText, byte[] spirv, ShaderSymbolData metadata)
-    {
-        return metadata;
-    }
-
-    private static (SpirvStage Stage, string? EntryPoint) Entry(byte[] spirv, string? preferred)
+    private static (SpirvStage Stage, string? EntryPoint) ResolveEntry(byte[] spirv, string? preferred)
     {
         SpirvModule module = SpirvModule.Parse(spirv);
         (SpirvStage Stage, string? EntryPoint)? first = null;
         foreach (SpirvInstruction i in module.Instructions)
         {
             if (i.OpCode != SpvOpCode.OpEntryPoint || i.Words.Length < 3) continue;
-            string entry = Str(i.Words, 3);
+            string entry = ReadString(i.Words, 3);
             SpirvStage stage = i[1] switch { 0 => SpirvStage.Vertex, 1 => SpirvStage.TessControl, 2 => SpirvStage.TessEvaluation, 3 => SpirvStage.Geometry, 4 => SpirvStage.Fragment, 5 => SpirvStage.Compute, _ => SpirvStage.Unknown };
             first ??= (stage, entry);
             if (!string.IsNullOrWhiteSpace(preferred) && string.Equals(entry, preferred, StringComparison.Ordinal)) return (stage, entry);
@@ -522,7 +451,7 @@ public sealed class ShaderDecompiler : IDisposable
         return first ?? (SpirvStage.Unknown, preferred);
     }
 
-    private static string Str(IReadOnlyList<uint> words, int start)
+    private static string ReadString(IReadOnlyList<uint> words, int start)
     {
         List<byte> bytes = new();
         for (int i = start; i < words.Count; i++)
@@ -535,7 +464,7 @@ public sealed class ShaderDecompiler : IDisposable
         return Encoding.UTF8.GetString(bytes.ToArray());
     }
 
-    private static void Args(List<string> args, string? entryPoint, SpirvStage stage)
+    private static void AppendStageArgs(List<string> args, string? entryPoint, SpirvStage stage)
     {
         if (!string.IsNullOrWhiteSpace(entryPoint)) { args.Add("--entry"); args.Add(entryPoint); }
         string? stageArg = stage switch { SpirvStage.Vertex => "vert", SpirvStage.TessControl => "tesc", SpirvStage.TessEvaluation => "tese", SpirvStage.Geometry => "geom", SpirvStage.Fragment => "frag", SpirvStage.Compute => "comp", _ => null };
@@ -544,39 +473,22 @@ public sealed class ShaderDecompiler : IDisposable
 
     private string DescribePatchPlan(byte[] spirv, ShaderSymbolData metadata)
     {
-        if (metadata.GetResourceBindingCount() == 0)
-        {
-            return "Patch plan: metadata contained no resource bindings.";
-        }
+        if (metadata.GetResourceBindingCount() == 0) return "Patch plan: metadata contained no resource bindings.";
 
         IReadOnlyList<SpirvBindingInfo> bindings = _patcher.AnalyzeBindingsDetailed(spirv);
-        List<(uint Id, string Name)> names = Names(bindings, metadata);
-        List<(uint TypeId, uint MemberIndex, string Name)> members = Members(bindings, metadata);
+        List<(uint Id, string Name)> names = BuildNamePatches(bindings, metadata);
+        List<(uint TypeId, uint MemberIndex, string Name)> members = BuildMemberPatches(bindings, metadata);
 
-        var lines = new List<string>
+        List<string> lines = new()
         {
-            $"Patch plan: resourceBindings={metadata.GetResourceBindingCount()} matchedBindings={bindings.Count} opNames={names.Count} opMemberNames={members.Count}"
+            $"Patch plan: resourceBindings={metadata.GetResourceBindingCount()} matchedBindings={bindings.Count} opNames={names.Count} opMemberNames={members.Count}",
         };
 
-        foreach ((uint id, string name) in names.Take(16))
-        {
-            lines.Add($"  OpName Id={id} Name={name}");
-        }
+        foreach ((uint id, string name) in names.Take(16)) lines.Add($"  OpName Id={id} Name={name}");
+        if (names.Count > 16) lines.Add($"  ... {names.Count - 16} more OpName patches");
 
-        if (names.Count > 16)
-        {
-            lines.Add($"  ... {names.Count - 16} more OpName patches");
-        }
-
-        foreach ((uint typeId, uint memberIndex, string name) in members.Take(16))
-        {
-            lines.Add($"  OpMemberName TypeId={typeId} MemberIndex={memberIndex} Name={name}");
-        }
-
-        if (members.Count > 16)
-        {
-            lines.Add($"  ... {members.Count - 16} more OpMemberName patches");
-        }
+        foreach ((uint typeId, uint memberIndex, string name) in members.Take(16)) lines.Add($"  OpMemberName TypeId={typeId} MemberIndex={memberIndex} Name={name}");
+        if (members.Count > 16) lines.Add($"  ... {members.Count - 16} more OpMemberName patches");
 
         return string.Join(Environment.NewLine, lines);
     }
@@ -584,18 +496,15 @@ public sealed class ShaderDecompiler : IDisposable
     private static string DescribeBuiltInDecorations(byte[] spirv)
     {
         SpirvModule module = SpirvModule.Parse(spirv);
-        var names = new Dictionary<uint, string>();
-        var lines = new List<string>();
+        Dictionary<uint, string> names = new();
+        List<string> lines = new();
 
         foreach (SpirvInstruction instruction in module.Instructions)
         {
             if (instruction.OpCode == SpvOpCode.OpName && instruction.Words.Length >= 3)
             {
-                string? name = Str(instruction.Words, 2);
-                if (!string.IsNullOrWhiteSpace(name))
-                {
-                    names[instruction[1]] = name;
-                }
+                string? name = ReadString(instruction.Words, 2);
+                if (!string.IsNullOrWhiteSpace(name)) names[instruction[1]] = name;
             }
         }
 
@@ -649,32 +558,34 @@ public sealed class ShaderDecompiler : IDisposable
             return Log($"{name} timed out after {TimeoutMs}ms.");
         }
 
-        if (process.ExitCode == 0)
-        {
-            return true;
-        }
+        if (process.ExitCode == 0) return true;
 
         string failureLog = $"{name} failed (exit={process.ExitCode}): {Trim(stderr.ToString())}{(string.IsNullOrWhiteSpace(stdout) ? string.Empty : Environment.NewLine + Trim(stdout))}";
         // Always cache the failure log even when `quiet`, so a downstream
-        // dump can include the actual upstream message (e.g. spirv-cross
-        // "Shader model 5.1 or higher is required ...") even though the
+        // dump can include the actual upstream message even though the
         // console suppression skipped logging it.
         _lastToolFailureLog = failureLog;
-
-        // `quiet` is set when the caller already knows this attempt is expected to fail and a
-        // fallback path is queued (e.g. tess/geom HLSL → GLSL). Suppressing the stderr keeps the
-        // log clean and avoids the user mistaking expected fallback for a real defect.
         return quiet || Log(failureLog);
     }
 
     private bool Log(string error) { Debug.WriteLine(error); Console.Error.WriteLine(error); return false; }
     private string Tool(string name) => Path.Combine(_toolsDir!, name);
-    private static bool Match(char registerType, string? descriptorType) => descriptorType switch { "UniformBuffer" => registerType == 'b', "Sampler" => registerType == 's', "SampledImage" => registerType == 't', "StorageBuffer" => registerType == 'u', "StorageImage" => registerType == 'u', _ => false };
-    private static bool Dxbc(byte[] data) => data.Length >= 4 && data[0] == 'D' && data[1] == 'X' && data[2] == 'B' && data[3] == 'C';
-    private static bool Spirv(byte[] data) => data.Length >= 4 && BitConverter.ToUInt32(data, 0) == SpvOpCode.MagicNumber;
-    private static bool Dxil(byte[] data)
+
+    private static bool DescriptorMatches(char registerType, string? descriptorType) => descriptorType switch
     {
-        if (!Dxbc(data) || data.Length < 32) return false;
+        "UniformBuffer" => registerType == 'b',
+        "Sampler" => registerType == 's',
+        "SampledImage" => registerType == 't',
+        "StorageBuffer" => registerType == 'u',
+        "StorageImage" => registerType == 'u',
+        _ => false,
+    };
+
+    private static bool IsDxbc(byte[] data) => data.Length >= 4 && data[0] == 'D' && data[1] == 'X' && data[2] == 'B' && data[3] == 'C';
+    private static bool IsSpirv(byte[] data) => data.Length >= 4 && BitConverter.ToUInt32(data, 0) == SpvOpCode.MagicNumber;
+    private static bool IsDxil(byte[] data)
+    {
+        if (!IsDxbc(data) || data.Length < 32) return false;
         int count = BitConverter.ToInt32(data, 28);
         if (count <= 0 || count > 256 || 32 + (count * 4) > data.Length) return false;
         for (int i = 0; i < count; i++)
@@ -684,6 +595,7 @@ public sealed class ShaderDecompiler : IDisposable
         }
         return false;
     }
+
     private static DecompileResult Fail(string message) => new() { Success = false, ErrorMessage = message };
     private static string Trim(string text) => string.IsNullOrEmpty(text) || text.Length <= 1000 ? text : text[..1000];
     private static void Delete(string path) { if (File.Exists(path)) File.Delete(path); }
