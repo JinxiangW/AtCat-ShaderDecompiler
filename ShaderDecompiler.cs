@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using Newtonsoft.Json;
 using Ruri.ShaderTools.Spirv;
 using Ruri.ShaderTools.Unreal;
 
@@ -13,6 +14,27 @@ public enum ShaderArchitecture
     SpirV,
 }
 
+// Knobs for one Decompile call. Lets callers opt into per-shader debug
+// dumps without mutating decompiler state. The default-constructed
+// instance reproduces the legacy `Decompile(byte[], format, metadata,
+// shaderModel)` behaviour exactly.
+public sealed class DecompileOptions
+{
+    public ShaderArchitecture Format { get; init; } = ShaderArchitecture.Unknown;
+    public ShaderSymbolData? Metadata { get; init; }
+    public uint ShaderModel { get; init; } = 51;
+
+    // When set, a failed Decompile call writes every intermediate
+    // artifact (input binary, pre-rewrite SPIR-V, post-rewrite SPIR-V,
+    // post-patch SPIR-V, metadata, structured-rewrite summary,
+    // captured tool stderr, error stack trace) under this directory
+    // using `DebugDumpStem` as the file-name prefix. Caller controls
+    // the directory so per-shader subfolders can be carved out for
+    // batch runs.
+    public string? DebugDumpDirectory { get; init; }
+    public string? DebugDumpStem { get; init; }
+}
+
 public sealed class DecompileResult
 {
     public bool Success { get; set; }
@@ -21,6 +43,21 @@ public sealed class DecompileResult
     public string SourceFileExtension { get; set; } = ".hlsl";
     public string? ErrorMessage { get; set; }
     public byte[]? IntermediateSpirv { get; set; }
+    // Intermediate stages — populated on both success and failure for
+    // diff-style debugging. PreRewriteSpirv is the SPIR-V immediately
+    // after format conversion (DXBC/DXIL → SPV); PostRewriteSpirv is
+    // after StructuredCBufferRewriter; PostPatchSpirv is after symbol
+    // injection via SpirvPatcher. On failure, whichever stages were
+    // reached are still attached so callers can see exactly where the
+    // pipeline broke.
+    public byte[]? PreRewriteSpirv { get; set; }
+    public byte[]? PostRewriteSpirv { get; set; }
+    public byte[]? PostPatchSpirv { get; set; }
+    public string? FailedStage { get; set; }
+    public string? LastToolStderr { get; set; }
+    public string? PatchPlanDescription { get; set; }
+    public string? BuiltInDecorationsDescription { get; set; }
+    public string? DebugDumpDirectory { get; set; }
     public string? ShaderName { get; set; }
     public string? StructuredRewriteSummary { get; set; }
     public ShaderSymbolData? FinalMetadata { get; set; }
@@ -42,6 +79,12 @@ public sealed class ShaderDecompiler : IDisposable
     private readonly StructuredCBufferRewriter _rewriter = new();
     private readonly string? _toolsDir;
     private bool _disposed;
+    // Stderr/stdout from the most recent failed external tool call
+    // (dxbc2dxil / dxil-spirv / spirv-cross). Captured so failure dumps
+    // can include the actual upstream message — e.g. spirv-cross's
+    // "Shader model 5.1 or higher is required ..." which would otherwise
+    // only land on Console.Error.
+    private string? _lastToolFailureLog;
 
     public string TempDir { get; set; }
 
@@ -57,22 +100,37 @@ public sealed class ShaderDecompiler : IDisposable
     }
 
     public DecompileResult Decompile(byte[] binary, ShaderArchitecture format = ShaderArchitecture.Unknown, ShaderSymbolData? metadata = null, uint shaderModel = 51)
+        => Decompile(binary, new DecompileOptions { Format = format, Metadata = metadata, ShaderModel = shaderModel });
+
+    public DecompileResult Decompile(byte[] binary, DecompileOptions options)
     {
+        if (options is null) throw new ArgumentNullException(nameof(options));
         if (binary == null || binary.Length == 0) return Fail("Shader binary is empty.");
         if (string.IsNullOrWhiteSpace(_toolsDir)) return Fail("Decompiler tools not found. Expected dxbc2dxil.exe, dxil-spirv.exe, and spirv-cross.exe.");
 
+        _lastToolFailureLog = null;
         TempFiles temp = Temps();
-        byte[]? lastSpirv = null;
+        byte[]? preRewrite = null;
+        byte[]? postRewrite = null;
+        byte[]? postPatch = null;
+        ShaderSymbolData? mergedMetadata = null;
+        string failedStage = "init";
         try
         {
-            Pipeline p = Pipe(binary, format, metadata);
+            failedStage = "parse-and-merge";
+            Pipeline p = Pipe(binary, options.Format, options.Metadata);
+            mergedMetadata = p.Metadata;
+
+            failedStage = "format-to-spirv";
             byte[] spv = Spv(p.Format, p.Code, temp);
-            lastSpirv = spv;
+            preRewrite = spv;
+
             byte[] rewritten;
             try
             {
+                failedStage = "structured-cbuffer-rewrite";
                 rewritten = _rewriter.Rewrite(spv, p.Metadata);
-                lastSpirv = rewritten;
+                postRewrite = rewritten;
             }
             catch (Exception ex)
             {
@@ -94,8 +152,9 @@ public sealed class ShaderDecompiler : IDisposable
             byte[] patched;
             try
             {
+                failedStage = "spirv-symbol-patch";
                 patched = Patch(rewritten, p.Metadata);
-                lastSpirv = patched;
+                postPatch = patched;
             }
             catch (Exception ex)
             {
@@ -105,29 +164,119 @@ public sealed class ShaderDecompiler : IDisposable
             Source src;
             try
             {
-                src = Emit(patched, p.Metadata.EntryPoint, shaderModel, temp);
+                failedStage = "spirv-cross-emit";
+                src = Emit(patched, p.Metadata.EntryPoint, options.ShaderModel, temp);
             }
             catch (Exception ex)
             {
                 throw new InvalidOperationException($"SPIR-V emission failed after patch.{Environment.NewLine}{DescribePatchPlan(patched, p.Metadata)}{Environment.NewLine}{DescribeBuiltInDecorations(patched)}", ex);
             }
 
-            return Result(src, patched, p.Metadata, p.Unreal);
+            DecompileResult okResult = Result(src, patched, p.Metadata, p.Unreal);
+            okResult.PreRewriteSpirv = preRewrite;
+            okResult.PostRewriteSpirv = postRewrite;
+            okResult.PostPatchSpirv = postPatch;
+            return okResult;
         }
         catch (Exception ex)
         {
             DecompileResult fail = Fail(ex.ToString());
-            // Attach the latest SPIR-V we managed to produce so callers can dump it for inspection
-            // — `unitybinary.spv` next to `unitybinary.error.txt` lets us spirv-dis the exact module
-            // that confused spirv-cross without re-running the pipeline.
-            fail.IntermediateSpirv = lastSpirv;
+            fail.FailedStage = failedStage;
+            fail.PreRewriteSpirv = preRewrite;
+            fail.PostRewriteSpirv = postRewrite;
+            fail.PostPatchSpirv = postPatch;
+            // Latest SPIR-V we managed to produce — kept for backwards compat
+            // with callers that still read IntermediateSpirv.
+            fail.IntermediateSpirv = postPatch ?? postRewrite ?? preRewrite;
             fail.StructuredRewriteSummary = _rewriter.LastRewriteSummary;
+            fail.LastToolStderr = _lastToolFailureLog;
+            byte[]? planSpirv = postPatch ?? postRewrite ?? preRewrite;
+            if (planSpirv != null && mergedMetadata != null)
+            {
+                fail.PatchPlanDescription = DescribePatchPlan(planSpirv, mergedMetadata);
+                fail.BuiltInDecorationsDescription = DescribeBuiltInDecorations(planSpirv);
+            }
+
+            if (!string.IsNullOrWhiteSpace(options.DebugDumpDirectory))
+            {
+                try
+                {
+                    fail.DebugDumpDirectory = WriteFailureDump(options, binary, fail, mergedMetadata);
+                }
+                catch (Exception dumpEx)
+                {
+                    Console.Error.WriteLine($"[ShaderDecompiler] Failed to write failure dump: {dumpEx.Message}");
+                }
+            }
+
             return fail;
         }
         finally
         {
             Delete(temp.Dxbc); Delete(temp.Dxil); Delete(temp.Spirv); Delete(temp.Hlsl); Delete(temp.Glsl);
         }
+    }
+
+    private string WriteFailureDump(DecompileOptions options, byte[] inputBinary, DecompileResult fail, ShaderSymbolData? mergedMetadata)
+    {
+        string dir = options.DebugDumpDirectory!;
+        Directory.CreateDirectory(dir);
+        string stem = SanitizeStem(options.DebugDumpStem) ?? $"shader_{DateTime.Now:yyyyMMdd_HHmmss_fff}";
+        string basePath = Path.Combine(dir, stem);
+
+        File.WriteAllBytes(basePath + ".input.bin", inputBinary);
+        if (fail.PreRewriteSpirv is { Length: > 0 } a)  File.WriteAllBytes(basePath + ".01.pre-rewrite.spv", a);
+        if (fail.PostRewriteSpirv is { Length: > 0 } b) File.WriteAllBytes(basePath + ".02.post-rewrite.spv", b);
+        if (fail.PostPatchSpirv is { Length: > 0 } c)   File.WriteAllBytes(basePath + ".03.post-patch.spv", c);
+
+        StringBuilder error = new();
+        error.AppendLine($"Failed stage: {fail.FailedStage ?? "<unknown>"}");
+        error.AppendLine();
+        error.AppendLine("Error:");
+        error.AppendLine(fail.ErrorMessage ?? "<no message>");
+        if (!string.IsNullOrWhiteSpace(fail.LastToolStderr))
+        {
+            error.AppendLine();
+            error.AppendLine("Last tool stderr/stdout:");
+            error.AppendLine(fail.LastToolStderr);
+        }
+        File.WriteAllText(basePath + ".error.txt", error.ToString(), new UTF8Encoding(false));
+
+        if (!string.IsNullOrWhiteSpace(fail.PatchPlanDescription))
+        {
+            File.WriteAllText(basePath + ".patch-plan.txt", fail.PatchPlanDescription!, new UTF8Encoding(false));
+        }
+        if (!string.IsNullOrWhiteSpace(fail.BuiltInDecorationsDescription))
+        {
+            File.WriteAllText(basePath + ".builtin-decorations.txt", fail.BuiltInDecorationsDescription!, new UTF8Encoding(false));
+        }
+        if (!string.IsNullOrWhiteSpace(fail.StructuredRewriteSummary))
+        {
+            File.WriteAllText(basePath + ".rewrite-summary.txt", fail.StructuredRewriteSummary!, new UTF8Encoding(false));
+        }
+        if (mergedMetadata != null)
+        {
+            try
+            {
+                File.WriteAllText(basePath + ".metadata.json", JsonConvert.SerializeObject(mergedMetadata, Formatting.Indented), new UTF8Encoding(false));
+            }
+            catch
+            {
+                // Metadata might contain types Newtonsoft can't safely serialise (e.g. cycles).
+                // Don't let that bury the rest of the dump.
+            }
+        }
+
+        return basePath;
+    }
+
+    private static string? SanitizeStem(string? stem)
+    {
+        if (string.IsNullOrWhiteSpace(stem)) return null;
+        char[] invalid = Path.GetInvalidFileNameChars();
+        StringBuilder sb = new(stem.Length);
+        foreach (char c in stem) sb.Append(invalid.Contains(c) ? '_' : c);
+        return sb.ToString();
     }
 
     public static string? FindToolsDirectory(string? overridePath = null)
@@ -505,10 +654,17 @@ public sealed class ShaderDecompiler : IDisposable
             return true;
         }
 
+        string failureLog = $"{name} failed (exit={process.ExitCode}): {Trim(stderr.ToString())}{(string.IsNullOrWhiteSpace(stdout) ? string.Empty : Environment.NewLine + Trim(stdout))}";
+        // Always cache the failure log even when `quiet`, so a downstream
+        // dump can include the actual upstream message (e.g. spirv-cross
+        // "Shader model 5.1 or higher is required ...") even though the
+        // console suppression skipped logging it.
+        _lastToolFailureLog = failureLog;
+
         // `quiet` is set when the caller already knows this attempt is expected to fail and a
         // fallback path is queued (e.g. tess/geom HLSL → GLSL). Suppressing the stderr keeps the
         // log clean and avoids the user mistaking expected fallback for a real defect.
-        return quiet || Log($"{name} failed: {Trim(stderr.ToString())}{(string.IsNullOrWhiteSpace(stdout) ? string.Empty : Environment.NewLine + Trim(stdout))}");
+        return quiet || Log(failureLog);
     }
 
     private bool Log(string error) { Debug.WriteLine(error); Console.Error.WriteLine(error); return false; }

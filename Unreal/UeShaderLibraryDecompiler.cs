@@ -22,10 +22,15 @@ public static class UeShaderLibraryDecompiler
         public string? UnifiedMetadataPath { get; init; }
         public string? MaterialFilter { get; init; }
         public IReadOnlyCollection<int>? ShaderIndexFilter { get; init; }
-        public uint ShaderModel { get; init; } = 50;
+        public uint ShaderModel { get; init; } = 51;
         // false → keep an existing output dir (incremental runs from FModelHook
         // dispatching one library at a time); true → wipe & recreate (CLI batch).
         public bool RecreateOutputDirectory { get; init; } = true;
+        // Default-on: every per-shader Decompile failure dumps its inputs/
+        // intermediates/error under `<OutputDirectory>/_failures/<stem>/`,
+        // letting users diff pre-rewrite vs post-rewrite vs post-patch
+        // SPIR-V offline.
+        public bool DumpFailures { get; init; } = true;
         public Action<string>? Log { get; init; }
         public Action<string>? LogError { get; init; }
     }
@@ -90,6 +95,8 @@ public static class UeShaderLibraryDecompiler
         int decompiled = 0;
         int skipped = 0;
         int failed = 0;
+        int unknownNameCounter = 0;
+        string failuresRoot = Path.Combine(outputDir, "_failures");
 
         for (int i = 0; i < lib.ShaderEntries.Length; i++)
         {
@@ -119,23 +126,72 @@ public static class UeShaderLibraryDecompiler
             UnrealShaderLibraryReader.FShaderCodeEntry entry = lib.ShaderEntries[i];
             string typeSuffix = GetShaderFreqString(entry.Frequency);
 
+            // Provisional dump stem — used only for the failure folder so we
+            // don't burn a duplicate `UnrealShaderParser.Parse` call up front
+            // just to look up the embedded name. The real output filename is
+            // computed AFTER the first decompile from `res.ShaderName`,
+            // matching the original (single-parse) flow.
+            string provisionalStem = nameMap.TryGetValue(i, out string? preMapped) && !string.IsNullOrWhiteSpace(preMapped)
+                ? string.Join("_", preMapped.Split(Path.GetInvalidFileNameChars())) + $"_{typeSuffix}_{i}"
+                : $"shader_{typeSuffix}_{i:D6}";
+            string failureDumpDir = Path.Combine(failuresRoot, provisionalStem);
+
+            DecompileOptions BuildOptions(ShaderSymbolData? meta, string stage)
+                => new()
+                {
+                    Format = ShaderArchitecture.Unknown,
+                    Metadata = meta,
+                    ShaderModel = options.ShaderModel,
+                    DebugDumpDirectory = options.DumpFailures ? failureDumpDir : null,
+                    DebugDumpStem = options.DumpFailures ? stage : null,
+                };
+
             try
             {
-                DecompileResult res = decompiler.Decompile(code, ShaderArchitecture.Unknown, null, options.ShaderModel);
+                DecompileResult res = decompiler.Decompile(code, BuildOptions(null, "01-no-symbols"));
                 if (!res.Success)
                 {
                     failed++;
-                    logError($"Shader {i}: decompilation failed: {res.ErrorMessage}");
+                    LogFailure(logError, i, provisionalStem, res, "no-symbols");
                     continue;
                 }
 
-                string finalName = nameMap.TryGetValue(i, out string? mapped) && !string.IsNullOrWhiteSpace(mapped)
-                    ? mapped
-                    : !string.IsNullOrWhiteSpace(res.ShaderName) ? res.ShaderName! : "UnknownShader";
+                // Resolve the on-disk name. UE strips per-shader names, so
+                // the only useful name source is "which material(s) use this
+                // shader" — pulled from the unified metadata or the per-
+                // library sidecar:
+                //   1. nameMap[i] — display name pre-derived from unified
+                //      metadata (first-material's filename component).
+                //   2. First entry in usageMap[i] — material path resolved
+                //      via sidecar resolution; pick the first one.
+                //   3. res.ShaderName — almost always missing for cooked UE
+                //      shaders, but cheap to check and occasionally set.
+                //   4. UnknownShader{counter} — last resort, per-run counter
+                //      to keep dump folders / listings visually distinct.
+                string finalName;
+                if (nameMap.TryGetValue(i, out string? mapped) && !string.IsNullOrWhiteSpace(mapped))
+                {
+                    finalName = mapped;
+                }
+                else if (usageMap.TryGetValue(i, out HashSet<string>? materials) && materials.Count > 0)
+                {
+                    string firstMaterial = materials.OrderBy(static m => m, StringComparer.OrdinalIgnoreCase).First();
+                    string materialName = Path.GetFileNameWithoutExtension(firstMaterial);
+                    finalName = !string.IsNullOrWhiteSpace(materialName) ? materialName : $"UnknownShader{unknownNameCounter++:D6}";
+                }
+                else if (!string.IsNullOrWhiteSpace(res.ShaderName))
+                {
+                    finalName = res.ShaderName!;
+                }
+                else
+                {
+                    finalName = $"UnknownShader{unknownNameCounter++:D6}";
+                }
                 finalName = string.Join("_", finalName.Split(Path.GetInvalidFileNameChars()));
+                string outNameStemNoExt = $"{finalName}_{typeSuffix}_{i}";
 
                 string sourceExtension = string.IsNullOrWhiteSpace(res.SourceFileExtension) ? ".hlsl" : res.SourceFileExtension;
-                string outName = $"{finalName}_{typeSuffix}_{i}{sourceExtension}";
+                string outName = outNameStemNoExt + sourceExtension;
 
                 if (usageMap.TryGetValue(i, out HashSet<string>? usedBy))
                 {
@@ -176,21 +232,25 @@ public static class UeShaderLibraryDecompiler
                             }
                             catch (Exception ex)
                             {
-                                logError($"Shader {i}: SRT enrichment failed: {ex.Message}");
+                                logError($"Shader {i} ({outNameStemNoExt}): SRT enrichment failed: {ex.Message}");
                             }
                         }
 
                         try
                         {
-                            DecompileResult resWithSymbols = decompiler.Decompile(code, ShaderArchitecture.Unknown, injectionSymbols, options.ShaderModel);
+                            DecompileResult resWithSymbols = decompiler.Decompile(code, BuildOptions(injectionSymbols, "02-with-symbols"));
                             if (resWithSymbols.Success)
                             {
                                 res = resWithSymbols;
                             }
+                            else
+                            {
+                                LogFailure(logError, i, outNameStemNoExt, resWithSymbols, "with-symbols");
+                            }
                         }
                         catch (Exception ex)
                         {
-                            logError($"Shader {i}: symbol-injected re-decompile failed: {ex.Message}");
+                            logError($"Shader {i} ({outNameStemNoExt}): symbol-injected re-decompile failed: {ex.Message}");
                         }
                     }
 
@@ -203,7 +263,7 @@ public static class UeShaderLibraryDecompiler
                 }
 
                 string outputFilePath = Path.Combine(outputDir, outName);
-                string basePath = Path.Combine(outputDir, Path.GetFileNameWithoutExtension(outName));
+                string basePath = Path.Combine(outputDir, outNameStemNoExt);
                 File.WriteAllText(outputFilePath, res.SourceCode ?? string.Empty);
 
                 if (res.FinalMetadata != null)
@@ -216,12 +276,21 @@ public static class UeShaderLibraryDecompiler
             catch (Exception ex)
             {
                 failed++;
-                logError($"Shader {i}: exception: {ex.Message}");
+                logError($"Shader {i} ({provisionalStem}): exception: {ex.Message}");
             }
         }
 
         log($"Library {Path.GetFileName(options.LibraryPath)}: total={lib.ShaderEntries.Length} decompiled={decompiled} skipped={skipped} failed={failed}.");
         return new Summary(lib.ShaderEntries.Length, decompiled, skipped, failed);
+    }
+
+    private static void LogFailure(Action<string> logError, int shaderIndex, string stem, DecompileResult res, string label)
+    {
+        string firstLine = res.ErrorMessage?.Split('\n', 2, StringSplitOptions.None)[0]?.Trim() ?? "<no message>";
+        string dumpHint = string.IsNullOrEmpty(res.DebugDumpDirectory)
+            ? string.Empty
+            : $" (dumped: {res.DebugDumpDirectory})";
+        logError($"Shader {shaderIndex} ({stem}) [{label}, stage={res.FailedStage ?? "unknown"}]: {firstLine}{dumpHint}");
     }
 
     private static ShaderSymbolData CloneShaderSymbolData(ShaderSymbolData source)
