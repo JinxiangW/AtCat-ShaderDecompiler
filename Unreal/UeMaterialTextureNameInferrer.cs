@@ -163,8 +163,16 @@ internal static class UeMaterialTextureNameInferrer
             }
         }
 
-        int appended = 0;
-        HashSet<int> alreadyInferred = new();
+        // Dedupe pairs and group by sampler binding -- the SSM_FromTextureAsset
+        // tight pair is a 1:1 invariant on the UE side
+        // (HLSLMaterialTranslator.cpp:6110 emits one TexName + one
+        // TexNameSampler for the call site). When a single sampler is paired
+        // with MULTIPLE distinct textures inside the same shader, that
+        // sampler is NOT SSM_FromTextureAsset's per-texture sampler -- it's
+        // a shared sampler being used for several textures, and we cannot
+        // derive any one texture's name from it. Drop those samplers.
+        Dictionary<int, HashSet<int>> texturesPerSamplerBinding = new();
+        Dictionary<(int, int), bool> resolvedPairs = new();
         foreach ((uint imageLoadId, uint samplerLoadId) in sampledImagePairs)
         {
             if (!loadToVar.TryGetValue(imageLoadId, out uint imageVarId)
@@ -182,13 +190,35 @@ internal static class UeMaterialTextureNameInferrer
                 continue;
             }
 
-            if (existingTextureBindings.Contains(imageBinding.Value)
-                || alreadyInferred.Contains(imageBinding.Value))
+            int sb = samplerBinding.Value;
+            int ib = imageBinding.Value;
+            if (!texturesPerSamplerBinding.TryGetValue(sb, out HashSet<int>? texSet))
+            {
+                texSet = new HashSet<int>();
+                texturesPerSamplerBinding[sb] = texSet;
+            }
+            texSet.Add(ib);
+            resolvedPairs[(sb, ib)] = true;
+        }
+
+        int appended = 0;
+        HashSet<int> alreadyInferred = new();
+        foreach (var kvp in resolvedPairs)
+        {
+            int samplerBinding = kvp.Key.Item1;
+            int imageBinding = kvp.Key.Item2;
+
+            // 1:1 invariant: skip samplers paired with multiple distinct
+            // textures (shared-sampler pattern, not SSM_FromTextureAsset).
+            if (texturesPerSamplerBinding[samplerBinding].Count != 1)
             {
                 continue;
             }
-
-            if (!samplerNameByBinding.TryGetValue(samplerBinding.Value, out string? samplerName))
+            if (existingTextureBindings.Contains(imageBinding) || alreadyInferred.Contains(imageBinding))
+            {
+                continue;
+            }
+            if (!samplerNameByBinding.TryGetValue(samplerBinding, out string? samplerName))
             {
                 continue;
             }
@@ -203,13 +233,13 @@ internal static class UeMaterialTextureNameInferrer
             {
                 Name = textureName,
                 NameIndex = -1,
-                Index = imageBinding.Value,
+                Index = imageBinding,
                 Set = 0,
-                SamplerIndex = samplerBinding.Value,
+                SamplerIndex = samplerBinding,
                 MultiSampled = false,
                 Dim = 2,
             });
-            alreadyInferred.Add(imageBinding.Value);
+            alreadyInferred.Add(imageBinding);
             appended++;
         }
 
