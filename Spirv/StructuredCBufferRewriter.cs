@@ -7,6 +7,7 @@ internal sealed class StructuredCBufferRewriter
     private const ushort OpIMul = 132;
     private const ushort OpConstantNull = 46;
     private const ushort OpShiftLeftLogical = 196;
+    private const ushort OpBitwiseOr = 197;
     private readonly Dictionary<(int Set, int Binding), string> _resolvedBufferNames = new();
 
     public bool LastRewriteApplied { get; private set; }
@@ -947,6 +948,22 @@ internal sealed class StructuredCBufferRewriter
             }
 
             child.ResolvedTypeId = childTypeId;
+            // Mirror the top-level Rewrite() loop's pre-resolution of scalar/column
+            // vector ids for vec/matrix/scalar children. Without this, a matrix
+            // member nested inside a struct (e.g. UnityPerDrawArray.unity_ObjectToWorld)
+            // hits TranslateMemberAccess's matrix branch with ColumnVectorTypeId == 0
+            // and bails out — which is what was causing struct-of-struct-array
+            // cbuffers like UnityInstancing_SRP_UnityPerDraw to fail rewrite.
+            child.ScalarTypeId = child.LogicalType.Kind switch
+            {
+                LogicalTypeKind.Scalar => childTypeId,
+                LogicalTypeKind.Vector or LogicalTypeKind.Matrix => EnsureScalarType(module, types, child.LogicalType.ScalarKind),
+                _ => 0
+            };
+            if (child.LogicalType.Kind == LogicalTypeKind.Matrix)
+            {
+                child.ColumnVectorTypeId = EnsureVectorType(module, types, child.LogicalType.ScalarKind, child.LogicalType.Rows);
+            }
             childTypeIds.Add(childTypeId);
         }
 
@@ -2043,17 +2060,22 @@ internal sealed class StructuredCBufferRewriter
             return false;
         }
 
-        if ((definition.OpCode == OpIAdd || definition.OpCode == OpISub) && definition.Words.Length >= 5)
+        if ((definition.OpCode == OpIAdd || definition.OpCode == OpISub || definition.OpCode == OpBitwiseOr) && definition.Words.Length >= 5)
         {
             uint left = definition[3];
             uint right = definition[4];
+            // OpBitwiseOr behaves identically to OpIAdd when the right-hand constant is
+            // smaller than the alignment of the left-hand expression — DXC frequently
+            // emits `(i << k) | c` (where c < 2^k) for `i * stride + c` because the
+            // bits don't overlap, so `|` is equivalent to `+`. Required to recognise
+            // Unity instancing access patterns of the form `cb[(instanceId << 4) | n]`.
             if (constants.TryGetValue(right, out uint rightConst) && TryDecomposeLinearIndexExpression(definitions, constants, left, out dynamicIndexId, out dynamicStride, out constantOffset))
             {
                 constantOffset += definition.OpCode == OpISub ? -checked((int)rightConst) : checked((int)rightConst);
                 return true;
             }
 
-            if (definition.OpCode == OpIAdd && constants.TryGetValue(left, out uint leftConst) && TryDecomposeLinearIndexExpression(definitions, constants, right, out dynamicIndexId, out dynamicStride, out constantOffset))
+            if ((definition.OpCode == OpIAdd || definition.OpCode == OpBitwiseOr) && constants.TryGetValue(left, out uint leftConst) && TryDecomposeLinearIndexExpression(definitions, constants, right, out dynamicIndexId, out dynamicStride, out constantOffset))
             {
                 constantOffset += checked((int)leftConst);
                 return true;

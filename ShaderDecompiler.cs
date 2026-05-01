@@ -341,11 +341,16 @@ public sealed class ShaderDecompiler : IDisposable
 
     private List<(uint Id, string Name)> BuildNamePatches(IReadOnlyList<SpirvBindingInfo> bindings, ShaderSymbolData metadata)
     {
-        // Variables get the metadata name. We deliberately do NOT re-alias the cbuffer
-        // struct type here — StructuredCBufferRewriter has already aliased it as
-        // `<Name>_t` so the spirv-cross HLSL backend emits `cbuffer <Name>_t { ... }`
-        // without a name collision against the variable. Aliasing both to the same
-        // string is what produced the `<Name>_1_<member>` artefact previously.
+        // Variables get the metadata name verbatim. The cbuffer struct type gets the
+        // DXC-style `type.<Name>` alias — spirv-cross sanitises the dot to `_` so the
+        // emitted block keyword reads `cbuffer type_<Name>`. The two strings differ,
+        // which is what prevents spirv-cross's name-uniquify pass from injecting the
+        // `_1` suffix that used to bleed into member names (`UnityPerMaterial_1_X`).
+        // We always patch the struct type — for rewritten cbuffers, rewriter has
+        // already set the same `type.<Name>` alias so this is idempotent; for the
+        // skipped cbuffers (layout-fit fails — e.g. `UnityInstancing_SRP_UnityPerDraw`
+        // with its 65536-byte instancing array), this is the only chance to give the
+        // block a real name instead of spirv-cross's synthetic `CBNUBO` fallback.
         List<(uint Id, string Name)> result = new();
         HashSet<uint> patchedIds = new();
         foreach (var resource in metadata.EnumerateResourceBindings().Where(static r => !string.IsNullOrWhiteSpace(r.Name)))
@@ -354,6 +359,11 @@ public sealed class ShaderDecompiler : IDisposable
                 string name = ResolveName(resource, binding);
                 result.Add((binding.Id, name));
                 patchedIds.Add(binding.Id);
+                if (binding.DescriptorType == "UniformBuffer" && binding.StructTypeId is > 0)
+                {
+                    result.Add((binding.StructTypeId.Value, "type." + name));
+                    patchedIds.Add(binding.StructTypeId.Value);
+                }
             }
 
         // Sampler synthesis: Unity's metadata typically leaves Samplers empty and
