@@ -1,4 +1,4 @@
-#include "../../Common/SelfTestShared.hlsli"
+#include "SelfTestShared.hlsli"
 
 cbuffer DomainGlobals : register(b0)
 {

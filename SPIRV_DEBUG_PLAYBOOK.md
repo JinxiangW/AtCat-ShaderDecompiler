@@ -87,10 +87,10 @@ unity-binary session 会把这些写到输出目录:
 
 | Fixture | 关键考点 |
 | --- | --- |
-| `Testing/Assets/Shaders/UnityBinary/EndField/litpoly.shader.sub0.pass0.blob1.HGBuffer.dxbc.bin` (vertex) | 部分命名 + 动态索引 `cb[tmp+5]` 数组 |
+| `Test/UnityBinary/EndField/litpoly.shader.sub0.pass0.blob1.HGBuffer.dxbc.bin` (vertex) | 部分命名 + 动态索引 `cb[tmp+5]` 数组 |
 | `…blob2.HGBuffer.dxbc.bin` (fragment) | `UnityPerMaterial` 带 `c0.z`/`c0.w`/`c8` 等空洞 packoffset |
-| `Testing/Assets/Shaders/UnityBinary/Ruri/Hidden_Ruri Render Pipeline_ClusterDeferred…blob27.dxbc.bin` | `AdditionalLights` 4 个并列 256-长 float4 数组,动态索引 + `+const` 偏移 |
-| `Testing/Assets/Shaders/UnityBinary/Ruri/TextMeshPro_Distance Field.shader.sub0.pass0.blob1..dxbc.bin` | `$Globals` 23 命名成员混 scalar/vec4/matrix/int + 多处空洞 |
+| `Test/UnityBinary/Ruri/Hidden_Ruri Render Pipeline_ClusterDeferred…blob27.dxbc.bin` | `AdditionalLights` 4 个并列 256-长 float4 数组,动态索引 + `+const` 偏移 |
+| `Test/UnityBinary/Ruri/TextMeshPro_Distance Field.shader.sub0.pass0.blob1..dxbc.bin` | `$Globals` 23 命名成员混 scalar/vec4/matrix/int + 多处空洞 |
 
 ---
 

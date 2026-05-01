@@ -1,4 +1,4 @@
-#include "../../Common/SelfTestShared.hlsli"
+#include "SelfTestShared.hlsli"
 
 cbuffer VertexMatrices : register(b0)
 {
@@ -70,33 +70,23 @@ VSOutput VSMain(VSInput input)
     float3 centered = input.Position - 0.5 * (VertexBoundsMin.xyz + VertexBoundsMax.xyz);
     float2 rotatedUv = Rotate90(localData.Uv);
     float4 tangentWeights = float4(input.Tangent.xyz, 1.0);
-    float scalarMix = 0.0f;
-    float2 matrix2Uv = localData.Uv;
-    float3 matrix3Normal = input.Normal;
-    float intAdjust = 0.0f;
-    float uintAdjust = 0.0f;
-    float3 offset = matrix3Normal * (noise + dot(VertexMorphWeights, tangentWeights) * 0.05 + scalarMix + intAdjust + uintAdjust);
+    float3 offset = input.Normal * (noise + dot(VertexMorphWeights, tangentWeights) * 0.05);
     float3 worldPos = input.Position + offset + centered * VertexTint_Roughness.www * 0.01;
-
     float4 clipPos = mul(float4(worldPos, 1.0), VertexObjectToClip);
     float4 prevClip = mul(float4(worldPos, 1.0), VertexPrevObjectToClip);
     float3 tintDelta = auxData.UseTint ? VertexTint_Roughness.xyz : 0.0.xxx;
     float scalarAdjust = (auxData.Selector == 0) ? auxData.Weights.x : auxData.Weights.y;
     scalarAdjust += ((auxData.PackedMask & 8u) != 0u) ? 0.125f : 0.0f;
-    scalarAdjust += matrix2Uv.x * 0.0f;
     [unroll]
     for (int basisIndex = 0; basisIndex < 2; basisIndex++)
     {
         scalarAdjust += localData.Basis[basisIndex].x * 0.001f;
     }
 
-    float2 adjustedUv = localData.Uv + rotatedUv * 0.01f * scalarAdjust;
-    float3 normal = SafeNormalize(input.Normal + tintDelta * 0.05 + scalarAdjust.xxx * 0.001f);
-
     output.Position = clipPos;
-    output.Normal = normal;
-    output.Color = lerp(packedColor, packedColor * VertexColorScale_Time, saturate(noise + VertexColorScale_Time.w + scalarMix));
-    output.TexCoord = adjustedUv;
+    output.Normal = SafeNormalize(input.Normal + tintDelta * 0.05 + scalarAdjust.xxx * 0.001f);
+    output.Color = lerp(packedColor, packedColor * VertexColorScale_Time, saturate(noise + VertexColorScale_Time.w));
+    output.TexCoord = localData.Uv + rotatedUv * 0.01f * scalarAdjust;
     output.MotionVector = clipPos.xy - prevClip.xy;
     return output;
 }

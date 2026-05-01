@@ -4,7 +4,6 @@ packages/
 **/packages.config
 obj
 0Bins/
-Test/
 bin
 *.user
 .idea
@@ -16,6 +15,6 @@ Source/Ruri.RipperHook/PyTools/TypeTreeDump
 Source/Ruri.RipperHook/PyTools/TypeTreeOutput
 Source/Ruri.SourceGenerated/*
 !Source/Ruri.SourceGenerated/Ruri.SourceGenerated.csproj
-Testing/Session
-Testing/Assets/Shaders/Cache
-Testing/Assets/Shaders/Output
+Test/Session/
+Test/Cache/
+Test/Output/

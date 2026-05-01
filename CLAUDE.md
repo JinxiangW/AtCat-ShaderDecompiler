@@ -85,7 +85,7 @@ offset 拆成独立成员。`View` / `LocalVF` / `MaterialCollection0` 同样问
 
 正面证据(EndField fixture):
 
-`Testing/Assets/Shaders/Output/EndField/litpoly.shader.sub0.pass0.blob2.HGBuffer/unitybinary.hlsl`:
+`Test/Output/EndField/litpoly.shader.sub0.pass0.blob2.HGBuffer/unitybinary.hlsl`:
 
 ```hlsl
 cbuffer UnityPerMaterial : register(b1)
@@ -98,7 +98,7 @@ cbuffer UnityPerMaterial : register(b1)
 };
 ```
 
-`Testing/Assets/Shaders/Output/EndField/litpoly.shader.sub0.pass0.blob1.HGBuffer/unitybinary.hlsl`:
+`Test/Output/EndField/litpoly.shader.sub0.pass0.blob1.HGBuffer/unitybinary.hlsl`:
 
 ```hlsl
 cbuffer UnityInstancing_SRP_UnityPerDraw : register(b1)
@@ -198,8 +198,8 @@ struct layout**(目前是从 `CBParams` 单源读取,没问题)。reader 端不
 
 **EndField LitPoly**(本轮**正面 fixture**,不要让任何修改让它退化):
 
-- `Testing/Assets/Shaders/UnityBinary/EndField/litpoly.shader.sub0.pass0.blob1.HGBuffer.dxbc.bin` + `.metadata.json` (vertex)
-- `Testing/Assets/Shaders/UnityBinary/EndField/litpoly.shader.sub0.pass0.blob2.HGBuffer.dxbc.bin` + `.metadata.json` (fragment)
+- `Test/UnityBinary/EndField/litpoly.shader.sub0.pass0.blob1.HGBuffer.dxbc.bin` + `.metadata.json` (vertex)
+- `Test/UnityBinary/EndField/litpoly.shader.sub0.pass0.blob2.HGBuffer.dxbc.bin` + `.metadata.json` (fragment)
 - 现产物分别在 `…Output/EndField/<name>/unitybinary.hlsl`
 - blob2 的 ShaderVariablesGlobal 已是 6 命名成员,完全正确(c32/c44/c57/c81/c101/c108)
 - blob2 的 UnityPerMaterial 已正确演示 c0.z / c0.w / c1 / c8 这种带空洞的 packoffset
@@ -212,7 +212,7 @@ struct layout**(目前是从 `CBParams` 单源读取,没问题)。reader 端不
   线索。)
 
 **Unity Deferred Clustered Lights**(辅助 fixture):
-- `Testing/Assets/Shaders/UnityBinary/Ruri/Hidden_Ruri Render Pipeline_ClusterDeferred.shader.sub0.pass0.blob27 ...`
+- `Test/UnityBinary/Ruri/Hidden_Ruri Render Pipeline_ClusterDeferred.shader.sub0.pass0.blob27 ...`
 - 产物 `…Output/Ruri/.../unitybinary.hlsl`
 - `$Globals`、`LightShadows`、`urp_ZBinBuffer`、`urp_TileBuffer` 都
   正确;`AdditionalLights` 因 4 个并列 256-长 float4 数组在
@@ -554,7 +554,7 @@ grep -l "OpaqueBasePass_" "$DIR"/*.hlsl 2>/dev/null | wc -l       # ↑ better
 ```
 
 Unity 回归保证:
-- `Source/Ruri.ShaderDecompiler/Testing/Assets/Shaders/UnityBinary/EndField/litpoly.shader.sub0.pass0.blob1.HGBuffer.dxbc.bin` (+ `.metadata.json`)
+- `Source/Ruri.ShaderDecompiler/Test/UnityBinary/EndField/litpoly.shader.sub0.pass0.blob1.HGBuffer.dxbc.bin` (+ `.metadata.json`)
 - `…/blob2.HGBuffer.dxbc.bin` (+ `.metadata.json`)
 - 这两个动态索引样例(`cb[tmp+5]` 等)必须保持原行为,任何 rewriter 修改不许让它们退化。
 - Unity Deferred Clustered Lights 是当前 partial-CB 测试 fixture(§2.1)。
@@ -683,8 +683,8 @@ Ruri.ShaderDecompiler.exe <lib.ushaderlib> <outDir> --mapping <UnifiedShaderMeta
 
 新 fixture(Unity 端,直接报 `SPIRV-Cross threw an exception: Cannot
 subdivide a scalar value!`):
-- `Testing/Assets/Shaders/UnityBinary/Ruri/TextMeshPro_Distance Field.shader.sub0.pass0.blob1..dxbc.bin`(vertex)
-- `Testing/Assets/Shaders/UnityBinary/Ruri/Ruri_Scene_Lit.shader.sub0.pass0.blob5.GBuffer.dxbc.bin`(HS,既报 subdivide 又报 InvocationId)
+- `Test/UnityBinary/Ruri/TextMeshPro_Distance Field.shader.sub0.pass0.blob1..dxbc.bin`(vertex)
+- `Test/UnityBinary/Ruri/Ruri_Scene_Lit.shader.sub0.pass0.blob5.GBuffer.dxbc.bin`(HS,既报 subdivide 又报 InvocationId)
 
 之前 AI 走 GLSL fallback 绕过,但根因在 SPIR-V rewriter 的多个类型/标记
 错位。本轮一次性修通:
