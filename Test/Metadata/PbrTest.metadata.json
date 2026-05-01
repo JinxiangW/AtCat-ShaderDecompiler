@@ -1,0 +1,74 @@
+{
+  "ConstantBuffers": [
+    {
+      "Name": "UnityPerFrame",
+      "NameIndex": 0,
+      "MatrixParams": [],
+      "VectorParams": [
+        { "Dim": 4, "Name": "_Time",                "NameIndex": 1, "ByteOffset": 0,  "ArraySize": 0, "Type": "Float", "RowCount": 4, "ColumnCount": 1, "IsMatrix": false },
+        { "Dim": 3, "Name": "_WorldSpaceCameraPos", "NameIndex": 2, "ByteOffset": 16, "ArraySize": 0, "Type": "Float", "RowCount": 3, "ColumnCount": 1, "IsMatrix": false },
+        { "Dim": 1, "Name": "_Exposure",            "NameIndex": 3, "ByteOffset": 28, "ArraySize": 0, "Type": "Float", "RowCount": 1, "ColumnCount": 1, "IsMatrix": false }
+      ],
+      "StructParams": [],
+      "Size": 32,
+      "IsPartialCB": true
+    },
+    {
+      "Name": "UnityPerDraw",
+      "NameIndex": 4,
+      "MatrixParams": [
+        { "Name": "unity_ObjectToWorld", "NameIndex": 5, "ByteOffset": 0,  "ArraySize": 0, "Type": "Float", "RowCount": 4, "ColumnCount": 4, "IsMatrix": true },
+        { "Name": "unity_WorldToObject", "NameIndex": 6, "ByteOffset": 64, "ArraySize": 0, "Type": "Float", "RowCount": 4, "ColumnCount": 4, "IsMatrix": true }
+      ],
+      "VectorParams": [],
+      "StructParams": [],
+      "Size": 128,
+      "IsPartialCB": true
+    },
+    {
+      "Name": "UnityPerMaterial",
+      "NameIndex": 7,
+      "MatrixParams": [],
+      "VectorParams": [
+        { "Dim": 4, "Name": "_MainTex_ST",          "NameIndex": 8,  "ByteOffset": 0,   "ArraySize": 0, "Type": "Float", "RowCount": 4, "ColumnCount": 1, "IsMatrix": false },
+        { "Dim": 4, "Name": "_BumpMap_ST",          "NameIndex": 9,  "ByteOffset": 16,  "ArraySize": 0, "Type": "Float", "RowCount": 4, "ColumnCount": 1, "IsMatrix": false },
+        { "Dim": 4, "Name": "_MetallicGlossMap_ST", "NameIndex": 10, "ByteOffset": 32,  "ArraySize": 0, "Type": "Float", "RowCount": 4, "ColumnCount": 1, "IsMatrix": false },
+        { "Dim": 4, "Name": "_BaseColor",           "NameIndex": 11, "ByteOffset": 48,  "ArraySize": 0, "Type": "Float", "RowCount": 4, "ColumnCount": 1, "IsMatrix": false },
+        { "Dim": 4, "Name": "_EmissionColor",       "NameIndex": 12, "ByteOffset": 64,  "ArraySize": 0, "Type": "Float", "RowCount": 4, "ColumnCount": 1, "IsMatrix": false },
+        { "Dim": 1, "Name": "_Metallic",            "NameIndex": 13, "ByteOffset": 80,  "ArraySize": 0, "Type": "Float", "RowCount": 1, "ColumnCount": 1, "IsMatrix": false },
+        { "Dim": 1, "Name": "_Smoothness",          "NameIndex": 14, "ByteOffset": 84,  "ArraySize": 0, "Type": "Float", "RowCount": 1, "ColumnCount": 1, "IsMatrix": false },
+        { "Dim": 1, "Name": "_OcclusionStrength",   "NameIndex": 15, "ByteOffset": 88,  "ArraySize": 0, "Type": "Float", "RowCount": 1, "ColumnCount": 1, "IsMatrix": false },
+        { "Dim": 1, "Name": "_BumpScale",           "NameIndex": 16, "ByteOffset": 92,  "ArraySize": 0, "Type": "Float", "RowCount": 1, "ColumnCount": 1, "IsMatrix": false },
+        { "Dim": 1, "Name": "_Cutoff",              "NameIndex": 17, "ByteOffset": 96,  "ArraySize": 0, "Type": "Float", "RowCount": 1, "ColumnCount": 1, "IsMatrix": false },
+        { "Dim": 1, "Name": "_ClearCoat",           "NameIndex": 18, "ByteOffset": 100, "ArraySize": 0, "Type": "Float", "RowCount": 1, "ColumnCount": 1, "IsMatrix": false },
+        { "Dim": 1, "Name": "_ClearCoatRoughness",  "NameIndex": 19, "ByteOffset": 104, "ArraySize": 0, "Type": "Float", "RowCount": 1, "ColumnCount": 1, "IsMatrix": false },
+        { "Dim": 1, "Name": "_SpecularIntensity",   "NameIndex": 20, "ByteOffset": 108, "ArraySize": 0, "Type": "Float", "RowCount": 1, "ColumnCount": 1, "IsMatrix": false },
+        { "Dim": 3, "Name": "_SubsurfaceColor",     "NameIndex": 21, "ByteOffset": 112, "ArraySize": 0, "Type": "Float", "RowCount": 3, "ColumnCount": 1, "IsMatrix": false },
+        { "Dim": 1, "Name": "_SubsurfaceRadius",    "NameIndex": 22, "ByteOffset": 124, "ArraySize": 0, "Type": "Float", "RowCount": 1, "ColumnCount": 1, "IsMatrix": false }
+      ],
+      "StructParams": [],
+      "Size": 128,
+      "IsPartialCB": true
+    },
+    { "Name": "UnityPerFrame",    "NameIndex": -1, "MatrixParams": [], "VectorParams": [], "StructParams": [], "Size": 32,  "IsPartialCB": false },
+    { "Name": "UnityPerDraw",     "NameIndex": -1, "MatrixParams": [], "VectorParams": [], "StructParams": [], "Size": 128, "IsPartialCB": false },
+    { "Name": "UnityPerMaterial", "NameIndex": -1, "MatrixParams": [], "VectorParams": [], "StructParams": [], "Size": 128, "IsPartialCB": false }
+  ],
+  "ConstantBufferBindings": [
+    { "Name": "UnityPerFrame",    "NameIndex": 0, "Index": 0, "Set": 0, "ArraySize": 1 },
+    { "Name": "UnityPerDraw",     "NameIndex": 4, "Index": 1, "Set": 0, "ArraySize": 1 },
+    { "Name": "UnityPerMaterial", "NameIndex": 7, "Index": 2, "Set": 0, "ArraySize": 1 }
+  ],
+  "TextureParameters": [
+    { "Name": "_MainTex",          "NameIndex": 23, "Index": 0, "Set": 0, "SamplerIndex": 0, "MultiSampled": false, "Dim": 2 },
+    { "Name": "_BumpMap",          "NameIndex": 24, "Index": 1, "Set": 0, "SamplerIndex": 1, "MultiSampled": false, "Dim": 2 },
+    { "Name": "_MetallicGlossMap", "NameIndex": 25, "Index": 2, "Set": 0, "SamplerIndex": 2, "MultiSampled": false, "Dim": 2 },
+    { "Name": "_OcclusionMap",     "NameIndex": 26, "Index": 3, "Set": 0, "SamplerIndex": 3, "MultiSampled": false, "Dim": 2 },
+    { "Name": "_EmissionMap",      "NameIndex": 27, "Index": 4, "Set": 0, "SamplerIndex": 4, "MultiSampled": false, "Dim": 2 }
+  ],
+  "Samplers": [],
+  "UAVs": [],
+  "EntryPoint": "main",
+  "DebugName": "Ruri Test PBR / Pixel SM5 / metadata-injection probe",
+  "UsedMaterials": []
+}

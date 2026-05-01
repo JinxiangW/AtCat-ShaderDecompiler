@@ -1129,7 +1129,15 @@ internal sealed class StructuredCBufferRewriter
 
     private static void InsertStructuredNames(SpirvModule module, BufferRewritePlan rewrite)
     {
-        module.InsertDebugName(rewrite.NewStructTypeId, rewrite.Info.Metadata.Name);
+        // Struct type and variable need DIFFERENT alias strings — when spirv-cross HLSL
+        // backend flattens a uniform block, both names go through one shared name cache,
+        // and any collision triggers a `_1` suffix that bleeds into the member-name prefix
+        // (e.g. `UnityPerMaterial_1_MainTex_ST`). We use DXC's `type.<BufferName>` form;
+        // spirv-cross sanitises the dot to `_` for HLSL, so the emitted block keyword
+        // reads `cbuffer type_UnityPerMaterial` while the variable keeps the unadorned
+        // `UnityPerMaterial` (set later by SpirvPatcher) and members come out as
+        // `UnityPerMaterial_<member>`.
+        module.InsertDebugName(rewrite.NewStructTypeId, "type." + rewrite.Info.Metadata.Name);
         module.InsertDebugName(rewrite.Info.VariableId, $"__ruri_{rewrite.Info.Metadata.Name}_var");
         for (int memberIndex = 0; memberIndex < rewrite.Layout.Members.Count; memberIndex++)
         {

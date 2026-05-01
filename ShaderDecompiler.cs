@@ -341,15 +341,52 @@ public sealed class ShaderDecompiler : IDisposable
 
     private List<(uint Id, string Name)> BuildNamePatches(IReadOnlyList<SpirvBindingInfo> bindings, ShaderSymbolData metadata)
     {
+        // Variables get the metadata name. We deliberately do NOT re-alias the cbuffer
+        // struct type here — StructuredCBufferRewriter has already aliased it as
+        // `<Name>_t` so the spirv-cross HLSL backend emits `cbuffer <Name>_t { ... }`
+        // without a name collision against the variable. Aliasing both to the same
+        // string is what produced the `<Name>_1_<member>` artefact previously.
         List<(uint Id, string Name)> result = new();
+        HashSet<uint> patchedIds = new();
         foreach (var resource in metadata.EnumerateResourceBindings().Where(static r => !string.IsNullOrWhiteSpace(r.Name)))
             foreach (SpirvBindingInfo binding in MatchBindings(bindings, resource))
             {
                 string name = ResolveName(resource, binding);
                 result.Add((binding.Id, name));
-                if (binding.DescriptorType == "UniformBuffer" && binding.StructTypeId is > 0) result.Add((binding.StructTypeId.Value, name));
+                patchedIds.Add(binding.Id);
             }
+
+        // Sampler synthesis: Unity's metadata typically leaves Samplers empty and
+        // expresses the link via TextureParameters[i].SamplerIndex. For each sampler
+        // variable in the SPIR-V that has not been named yet, we use:
+        //   * `sampler<TextureName>` when exactly one texture targets this slot
+        //     (e.g. `_MainTex` ⇒ `sampler_MainTex`, the prevailing Unity convention)
+        //   * `sampler_<slot>` when multiple textures share the slot — there's no
+        //     unambiguous texture to borrow a name from, so we fall back to the
+        //     register index (matches `sN` register naming).
+        foreach (SpirvBindingInfo binding in bindings.Where(b => b.DescriptorType == "Sampler"))
+        {
+            if (patchedIds.Contains(binding.Id)) continue;
+            string? name = DeriveSamplerName(binding.Set, binding.Binding, metadata);
+            if (name is null) continue;
+            result.Add((binding.Id, name));
+            patchedIds.Add(binding.Id);
+        }
+
         return result;
+    }
+
+    private static string? DeriveSamplerName(int set, int binding, ShaderSymbolData metadata)
+    {
+        List<TextureParameter> linked = metadata.TextureParameters
+            .Where(t => t.Set == set && t.SamplerIndex == binding && !string.IsNullOrWhiteSpace(t.Name))
+            .ToList();
+        if (linked.Count == 1)
+        {
+            string texName = linked[0].Name;
+            return texName.StartsWith('_') ? "sampler" + texName : "sampler_" + texName;
+        }
+        return $"sampler_{binding}";
     }
 
     private List<(uint TypeId, uint MemberIndex, string Name)> BuildMemberPatches(IReadOnlyList<SpirvBindingInfo> bindings, ShaderSymbolData metadata)

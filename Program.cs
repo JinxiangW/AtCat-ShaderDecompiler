@@ -42,6 +42,7 @@ internal static class Program
 
         string? outputPath = null;
         string? metadataPath = null;
+        string? debugDumpDir = null;
         ShaderArchitecture format = ShaderArchitecture.Unknown;
         uint shaderModel = 50;
 
@@ -60,6 +61,9 @@ internal static class Program
                         break;
                     case "--shader-model" when i + 1 < args.Length && uint.TryParse(args[++i], out uint sm):
                         shaderModel = sm;
+                        break;
+                    case "--debug-dump" when i + 1 < args.Length:
+                        debugDumpDir = args[++i];
                         break;
                     default:
                         Console.Error.WriteLine($"Error: unknown option: {arg}");
@@ -85,7 +89,17 @@ internal static class Program
         {
             byte[] binary = File.ReadAllBytes(inputPath);
             using var decompiler = new ShaderDecompiler();
-            DecompileResult result = decompiler.Decompile(binary, format, symbols, shaderModel);
+            DecompileOptions options = new()
+            {
+                Format = format,
+                Metadata = symbols,
+                ShaderModel = shaderModel,
+                DebugDumpDirectory = debugDumpDir,
+                DebugDumpStem = debugDumpDir is null ? null : Path.GetFileNameWithoutExtension(inputPath),
+            };
+            DecompileResult result = decompiler.Decompile(binary, options);
+
+            if (debugDumpDir is not null) DumpIntermediates(debugDumpDir, inputPath, result, symbols);
 
             if (!result.Success)
             {
@@ -117,6 +131,21 @@ internal static class Program
             Console.Error.WriteLine($"Fatal error: {ex.Message}");
             return 1;
         }
+    }
+
+    private static void DumpIntermediates(string dir, string inputPath, DecompileResult result, ShaderSymbolData? symbols)
+    {
+        Directory.CreateDirectory(dir);
+        string stem = Path.GetFileNameWithoutExtension(inputPath);
+        string Path1(string suffix) => Path.Combine(dir, stem + suffix);
+        if (result.PreRewriteSpirv  is { Length: > 0 } a) File.WriteAllBytes(Path1(".01.pre-rewrite.spv"),  a);
+        if (result.PostRewriteSpirv is { Length: > 0 } b) File.WriteAllBytes(Path1(".02.post-rewrite.spv"), b);
+        if (result.PostPatchSpirv   is { Length: > 0 } c) File.WriteAllBytes(Path1(".03.post-patch.spv"),   c);
+        if (!string.IsNullOrWhiteSpace(result.StructuredRewriteSummary))
+            File.WriteAllText(Path1(".rewrite-summary.txt"), result.StructuredRewriteSummary, new System.Text.UTF8Encoding(false));
+        if (symbols is not null)
+            File.WriteAllText(Path1(".metadata.input.json"), JsonConvert.SerializeObject(symbols, Formatting.Indented), new System.Text.UTF8Encoding(false));
+        Console.WriteLine($"Debug-dump → {dir}");
     }
 
     private static ShaderSymbolData? LoadSymbols(string inputPath, string? explicitMetadataPath)
@@ -159,13 +188,14 @@ internal static class Program
         Console.WriteLine("Ruri.ShaderDecompiler — single-binary CLI");
         Console.WriteLine();
         Console.WriteLine("Usage:");
-        Console.WriteLine("  ShaderDecompiler.exe <input> [output] [--metadata <path>] [--format dxbc|dxil|spv|auto] [--shader-model 50]");
+        Console.WriteLine("  ShaderDecompiler.exe <input> [output] [--metadata <path>] [--format dxbc|dxil|spv|auto] [--shader-model 50] [--debug-dump <dir>]");
         Console.WriteLine();
         Console.WriteLine("  <input>          shader binary (DXBC, DXIL, or SPIR-V).");
         Console.WriteLine("  [output]         output path. Defaults to <input>.hlsl/.glsl. Use '-' for stdout.");
         Console.WriteLine("  --metadata       optional ShaderSymbolData JSON. Auto-loaded from '<input>.metadata.json' if present.");
         Console.WriteLine("  --format         override format detection (default: auto-detect from magic bytes).");
         Console.WriteLine("  --shader-model   spirv-cross HLSL shader model (default: 50).");
+        Console.WriteLine("  --debug-dump     directory to dump pre-rewrite / post-rewrite / post-patch SPIR-V plus metadata.");
         Console.WriteLine();
         Console.WriteLine("UE .ushaderlib batch decompile is now done in-process by Ruri.FModelHook.");
         Console.WriteLine("Unity shader decompile is done in-process by Ruri.RipperHook (AssetRipper).");
