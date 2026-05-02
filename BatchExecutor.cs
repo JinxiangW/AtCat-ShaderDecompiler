@@ -141,14 +141,16 @@ internal static class BatchExecutor
             return;
         }
 
-        TimeSpan interval = TimeSpan.FromMilliseconds(750);
+        // Sleep on the cancellation token's wait handle instead of `Task.Delay(...).Wait()`
+        // — the latter raises a first-chance OperationCanceledException when the batch
+        // finishes (caller cancels us as part of normal teardown), which shows up as
+        // debugger noise even though we handle it. WaitHandle.WaitOne signals via return
+        // value: true → token fired (we exit), false → interval elapsed (continue).
+        int intervalMs = 750;
+        WaitHandle cancelHandle = cancellationToken.WaitHandle;
         while (!cancellationToken.IsCancellationRequested)
         {
-            try
-            {
-                Task.Delay(interval, cancellationToken).Wait(cancellationToken);
-            }
-            catch (OperationCanceledException)
+            if (cancelHandle.WaitOne(intervalMs))
             {
                 return;
             }
