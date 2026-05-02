@@ -77,21 +77,31 @@ internal static class MemberTypeResolver
 
             child.ResolvedTypeId = childTypeId;
 
-            // Mirror the top-level pre-resolution of scalar/column-vector ids for vec/matrix
-            // children. Without this, a matrix nested inside a struct array (e.g.
-            // UnityPerDrawArray.unity_ObjectToWorld) hits the matrix branch with
+            // Mirror the top-level pre-resolution of scalar/column-vector/array-element ids
+            // for vec/matrix/array children. Without this, a matrix nested inside a struct
+            // array (e.g. UnityPerDrawArray.unity_ObjectToWorld) hits the matrix branch with
             // ColumnVectorTypeId == 0 and bails out — which is what was causing
             // struct-of-struct-array cbuffers like UnityInstancing_SRP_UnityPerDraw to fail
-            // rewrite.
-            child.ScalarTypeId = child.LogicalType.Kind switch
-            {
-                LogicalTypeKind.Scalar => childTypeId,
-                LogicalTypeKind.Vector or LogicalTypeKind.Matrix => TypeFactory.EnsureScalarType(module, types, child.LogicalType.ScalarKind),
-                _ => 0,
-            };
+            // rewrite. Same idea for ArrayElementTypeId on nested array fields.
+            uint childScalarId = child.LogicalType.Kind == LogicalTypeKind.Scalar
+                || child.LogicalType.Kind == LogicalTypeKind.Vector
+                || child.LogicalType.Kind == LogicalTypeKind.Matrix
+                    ? TypeFactory.EnsureScalarType(module, types, child.LogicalType.ScalarKind)
+                    : 0;
+            child.ScalarTypeId = childScalarId;
             if (child.LogicalType.Kind == LogicalTypeKind.Matrix)
             {
                 child.ColumnVectorTypeId = TypeFactory.EnsureVectorType(module, types, child.LogicalType.ScalarKind, child.LogicalType.Rows);
+            }
+            if (child.LogicalType.ArrayLength > 1)
+            {
+                child.ArrayElementTypeId = child.LogicalType.Kind switch
+                {
+                    LogicalTypeKind.Scalar => childScalarId,
+                    LogicalTypeKind.Vector => TypeFactory.EnsureVectorType(module, types, child.LogicalType.ScalarKind, child.LogicalType.Rows),
+                    LogicalTypeKind.Matrix => TypeFactory.EnsureMatrixType(module, types, child.LogicalType.Rows, child.LogicalType.Columns),
+                    _ => 0,
+                };
             }
             childTypeIds.Add(childTypeId);
         }

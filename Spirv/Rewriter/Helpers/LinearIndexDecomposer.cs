@@ -29,19 +29,43 @@ internal static class LinearIndexDecomposer
         expression = null!;
         if (constants.IdToValue.TryGetValue(operandId, out uint constantValue))
         {
-            expression = new SlotExpression { ConstantRegisterOffset = checked((int)constantValue) };
+            // Constants whose magnitude doesn't fit in int (>= 2^31) cannot be a literal
+            // register offset for any practical SPIR-V CB shape — a non-array uniform's
+            // register count is at most a few thousand. Treat the slot as opaque-dynamic
+            // so the rest of the pipeline can fall through to its composite-extract path
+            // instead of throwing OverflowException out of the rewriter and losing the
+            // entire shader.
+            if (constantValue > int.MaxValue)
+            {
+                expression = new SlotExpression { DynamicIndexId = operandId, DynamicIndexStride = 1 };
+                return true;
+            }
+
+            expression = new SlotExpression { ConstantRegisterOffset = (int)constantValue };
             return true;
         }
 
-        if (TryDecompose(constants.Definitions, constants.IdToValue, operandId,
-                out uint dynamicIndexId, out int dynamicStride, out int constantOffset))
+        // The decompose helper does its own checked arithmetic in a few places; on overflow
+        // we again treat the whole expression as opaque-dynamic instead of bubbling out.
+        // The concrete shape is recoverable later via composite-extract fallback even when
+        // the register algebra doesn't fit our canonical `idx*stride+offset` form.
+        try
         {
-            expression = new SlotExpression
+            if (TryDecompose(constants.Definitions, constants.IdToValue, operandId,
+                    out uint dynamicIndexId, out int dynamicStride, out int constantOffset))
             {
-                DynamicIndexId = dynamicIndexId,
-                DynamicIndexStride = dynamicStride,
-                ConstantRegisterOffset = constantOffset,
-            };
+                expression = new SlotExpression
+                {
+                    DynamicIndexId = dynamicIndexId,
+                    DynamicIndexStride = dynamicStride,
+                    ConstantRegisterOffset = constantOffset,
+                };
+                return true;
+            }
+        }
+        catch (OverflowException)
+        {
+            expression = new SlotExpression { DynamicIndexId = operandId, DynamicIndexStride = 1 };
             return true;
         }
 

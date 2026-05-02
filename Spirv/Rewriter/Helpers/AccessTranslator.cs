@@ -246,6 +246,37 @@ internal static class AccessTranslator
             return null;
         }
 
+        // Multi-register fall-through: arrays of scalar / vector / matrix. The result type
+        // depends on how deep the chain walks, NOT on the member's full type id (which
+        // includes the array wrapper). Using `ResolvedTypeId` here produces a chain like
+        // `ptr-arrayOfV4 → arrIdx → component` whose result type still claims the whole
+        // array — spirv-cross then tries to subdivide a scalar and dies.
+        if (member.LogicalType.ArrayLength > 1 && member.ArrayElementTypeId != 0)
+        {
+            // 1 array index → element type (scalar / vec / matrix), no further indices.
+            if (extraIndices.Count == 0)
+            {
+                return CreateTranslation(constants, member.ArrayElementTypeId, localRegister);
+            }
+
+            // Per-component access into the element. Only meaningful when the element is a
+            // vector — array of scalars cannot be subdivided further, array of matrices
+            // would need an additional column index and is not on the hot path.
+            if (member.LogicalType.Kind == LogicalTypeKind.Vector && member.ScalarTypeId != 0)
+            {
+                int relativeComponentIndex = componentIndex - memberComponentOffset;
+                if (relativeComponentIndex < 0 || relativeComponentIndex >= member.LogicalType.Rows)
+                {
+                    return null;
+                }
+
+                return CreateTranslation(constants, member.ScalarTypeId, localRegister, relativeComponentIndex);
+            }
+
+            // Scalar array with trailing component (or matrix array): can't translate here.
+            return null;
+        }
+
         return extraIndices.Count > 0
             ? CreateTranslation(constants, member.ResolvedTypeId, localRegister, componentIndex)
             : CreateTranslation(constants, member.ResolvedTypeId, localRegister);
@@ -523,14 +554,19 @@ internal static class AccessTranslator
             return null;
         }
 
+        // For dynamic-array members the result type after walking one array index is the
+        // array's *element* type (vec4 / scalar), NOT the array's resolved type. The latter
+        // is the wrapped array, and a `ptr-arrayOfX → arrIdx → component` chain inherits
+        // the array claim and crashes spirv-cross with "Cannot subdivide a scalar value".
         if (member.LogicalType.Kind == LogicalTypeKind.Scalar)
         {
             int memberComponentOffset = (member.ByteOffset % 16) / 4;
+            uint elementType = member.ArrayElementTypeId != 0 ? member.ArrayElementTypeId : member.ResolvedTypeId;
             return componentIndex == memberComponentOffset
                 ? new StructuredAccessTranslation
                 {
                     Indices = [dynamicIndexId],
-                    MemberTypeId = member.ResolvedTypeId,
+                    MemberTypeId = elementType,
                 }
                 : null;
         }
@@ -544,11 +580,12 @@ internal static class AccessTranslator
                 // Bare access into a dynamic-array vec4 member: ptr-vec4 result, only the
                 // array index. Adding a component index here would invalidate the access
                 // chain (see static-vec4 fix in TranslateMemberAccess).
+                uint elementType = member.ArrayElementTypeId != 0 ? member.ArrayElementTypeId : member.ResolvedTypeId;
                 return componentIndex == memberComponentOffset
                     ? new StructuredAccessTranslation
                     {
                         Indices = [dynamicIndexId],
-                        MemberTypeId = member.ResolvedTypeId,
+                        MemberTypeId = elementType,
                     }
                     : null;
             }

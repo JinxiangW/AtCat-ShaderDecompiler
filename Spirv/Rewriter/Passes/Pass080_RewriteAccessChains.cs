@@ -34,9 +34,28 @@ internal static class Pass080_RewriteAccessChains
         {
             foreach (uint memberTypeId in plan.MemberTypeIds)
             {
-                if (!pointerTypeByMemberTypeId.ContainsKey(memberTypeId))
+                EnsurePointerType(state.Module, pointerTypeByMemberTypeId, memberTypeId);
+            }
+
+            // The access translator's result type can be any of the member's deeper-walked
+            // types (scalar component / matrix column / array element), not just the top-
+            // level `ResolvedTypeId`. Pre-register pointer types for every one of them so
+            // the rewrite path doesn't skip an otherwise-translatable access chain just
+            // because the corresponding ptr-X type wasn't in the cache.
+            foreach (var member in plan.Layout.Members)
+            {
+                EnsurePointerType(state.Module, pointerTypeByMemberTypeId, member.ScalarTypeId);
+                EnsurePointerType(state.Module, pointerTypeByMemberTypeId, member.ColumnVectorTypeId);
+                EnsurePointerType(state.Module, pointerTypeByMemberTypeId, member.ArrayElementTypeId);
+                if (member.LogicalType.StructMembers != null)
                 {
-                    pointerTypeByMemberTypeId[memberTypeId] = TypeFactory.FindOrCreateUniformPointerType(state.Module, memberTypeId);
+                    foreach (var child in member.LogicalType.StructMembers)
+                    {
+                        EnsurePointerType(state.Module, pointerTypeByMemberTypeId, child.ResolvedTypeId);
+                        EnsurePointerType(state.Module, pointerTypeByMemberTypeId, child.ScalarTypeId);
+                        EnsurePointerType(state.Module, pointerTypeByMemberTypeId, child.ColumnVectorTypeId);
+                        EnsurePointerType(state.Module, pointerTypeByMemberTypeId, child.ArrayElementTypeId);
+                    }
                 }
             }
         }
@@ -109,5 +128,15 @@ internal static class Pass080_RewriteAccessChains
 
         state.RewrittenChains = rewrittenChains;
         state.UniformPointerTypes = pointerTypeByMemberTypeId;
+    }
+
+    private static void EnsurePointerType(SpirvModule module, Dictionary<uint, uint> cache, uint typeId)
+    {
+        if (typeId == 0 || cache.ContainsKey(typeId))
+        {
+            return;
+        }
+
+        cache[typeId] = TypeFactory.FindOrCreateUniformPointerType(module, typeId);
     }
 }

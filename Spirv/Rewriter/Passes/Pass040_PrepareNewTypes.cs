@@ -52,19 +52,41 @@ internal static class Pass040_PrepareNewTypes
             }
 
             member.ResolvedTypeId = memberTypeId;
-            // Pre-resolve a scalar / column-vector type for vec / matrix members so the
-            // per-component / per-column access translator can produce ptr-scalar /
-            // ptr-vec results without re-creating types.
-            member.ScalarTypeId = member.LogicalType.Kind switch
-            {
-                LogicalTypeKind.Scalar => memberTypeId,
-                LogicalTypeKind.Vector or LogicalTypeKind.Matrix => TypeFactory.EnsureScalarType(state.Module, state.Types, member.LogicalType.ScalarKind),
-                _ => 0,
-            };
+            // Pre-resolve scalar / column-vector / array-element types so the access
+            // translator can produce ptr-scalar / ptr-vec / ptr-element results without
+            // re-creating types.
+            //
+            // ScalarTypeId is the deepest scalar (component-level): identical to the member
+            // type when the member itself is scalar, or the vec/matrix component scalar
+            // otherwise. Note the array case: the member type may be `arr_float`, but the
+            // component scalar is `float`, NOT the array — using `memberTypeId` for a scalar
+            // *array* would inherit the array type and break per-element access translation
+            // downstream.
+            uint scalarKindId = member.LogicalType.Kind == LogicalTypeKind.Scalar
+                || member.LogicalType.Kind == LogicalTypeKind.Vector
+                || member.LogicalType.Kind == LogicalTypeKind.Matrix
+                    ? TypeFactory.EnsureScalarType(state.Module, state.Types, member.LogicalType.ScalarKind)
+                    : 0;
+            member.ScalarTypeId = scalarKindId;
             if (member.LogicalType.Kind == LogicalTypeKind.Matrix)
             {
                 member.ColumnVectorTypeId = TypeFactory.EnsureVectorType(state.Module, state.Types, member.LogicalType.ScalarKind, member.LogicalType.Rows);
             }
+
+            // ArrayElementTypeId — the type after walking one array index step. Set only for
+            // array members; for non-array members the existing single-step access path uses
+            // ResolvedTypeId / ScalarTypeId / ColumnVectorTypeId as before.
+            if (member.LogicalType.ArrayLength > 1)
+            {
+                member.ArrayElementTypeId = member.LogicalType.Kind switch
+                {
+                    LogicalTypeKind.Scalar => scalarKindId,
+                    LogicalTypeKind.Vector => TypeFactory.EnsureVectorType(state.Module, state.Types, member.LogicalType.ScalarKind, member.LogicalType.Rows),
+                    LogicalTypeKind.Matrix => TypeFactory.EnsureMatrixType(state.Module, state.Types, member.LogicalType.Rows, member.LogicalType.Columns),
+                    _ => 0,
+                };
+            }
+
             memberTypeIds.Add(memberTypeId);
         }
 
