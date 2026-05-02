@@ -14,7 +14,7 @@
 *   **对于 Unreal Engine：**
     操作体验与 FModel 一致，需在工具中开启 `ShaderDecompilerHook` 。
     1. 首先需要 Dump 游戏的 Mapings 类型树，并在 FModel 设置中加载。
-    2. 找到并选择 `[GameName]/Contents` 文件夹下的 `ShaderArchive`。
+    2. 找到并选择 `[GameName]/Contents` 文件夹下的 `ShaderArchive-*`名字的Shader二进制。
     3. 右键点击并选择 Export Raw Data (.ushaderbytecode)。
     4. 工具会自动抓取所有材质球和 Shader 符号的 JSON 数据，随后自动执行反编译。 (如果没有加载Mapings将会丢失所有材质球提供的符号)
 
