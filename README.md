@@ -6,6 +6,20 @@
 
 ---
 
+## 🚀 使用方法（Usage）
+
+*   **对于 Unity：**
+    操作体验与 AssetRipper 一致，只需在工具中开启 `ShaderDecompilerHook` 即可完成导出和反编译。
+
+*   **对于 Unreal Engine (通过 FModel)：**
+    操作体验与 FModel 一致，需在工具中开启 `ShaderDecompilerHook` 。
+    1. 首先需要 Dump 游戏的 Mapings 类型树，并在 FModel 设置中加载。
+    2. 找到并选择 `[GameName]/Contents` 文件夹下的 `ShaderArchive`。
+    3. 右键点击并选择 Export Raw Data (.ushaderbytecode)。
+    4. 工具会自动抓取所有材质球和 Shader 符号的 JSON 数据，随后自动执行反编译。 (如果没有加载Mapings将会丢失所有材质球提供的符号)
+
+---
+
 ## ✅ 待办事项（Roadmap）
 
 * [ ] **验证UE5.1以外版本为什么有错误 因为Fmodel是用类型树加载的 除非符号信息在类型树以外**
