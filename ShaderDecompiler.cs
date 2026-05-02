@@ -117,6 +117,47 @@ public sealed class ShaderDecompiler : IDisposable
     public DecompileResult Decompile(byte[] binary, ShaderArchitecture format = ShaderArchitecture.Unknown, ShaderSymbolData? metadata = null, uint shaderModel = 51)
         => Decompile(binary, new DecompileOptions { Format = format, Metadata = metadata, ShaderModel = shaderModel });
 
+    /// <summary>
+    /// Batch entry point: decompile any number of shaders. A single request takes the
+    /// fast serial path on this instance; multiple requests fan out across an internal
+    /// worker pool whose concurrency scales against system CPU usage (capped at 80% by
+    /// default, configurable via <paramref name="cpuUsageCapPercent"/>). Each worker
+    /// owns its own <see cref="ShaderDecompiler"/>, so callers don't need to think about
+    /// instance reuse or thread safety.
+    /// </summary>
+    /// <param name="requests">(binary, options) pairs to decompile. Result array index
+    /// matches request array index.</param>
+    /// <param name="onProgress">Optional per-completion callback. Fires on a worker
+    /// thread; serialise external state yourself.</param>
+    /// <param name="maxConcurrency">Hard cap on concurrent jobs. ≤ 0 → ProcessorCount × 2.</param>
+    /// <param name="cpuUsageCapPercent">Stop spawning new jobs when total system CPU
+    /// usage rises above this threshold. Defaults to 80.</param>
+    public DecompileResult[] Decompile(
+        IReadOnlyList<(byte[] Binary, DecompileOptions Options)> requests,
+        Action<int, DecompileResult>? onProgress = null,
+        int maxConcurrency = 0,
+        int cpuUsageCapPercent = 80,
+        CancellationToken cancellationToken = default)
+    {
+        if (requests is null) throw new ArgumentNullException(nameof(requests));
+        if (requests.Count == 0) return Array.Empty<DecompileResult>();
+
+        DecompileResult[] results = new DecompileResult[requests.Count];
+
+        // Single-request fast path: reuse the calling instance, skip the pool plumbing.
+        if (requests.Count == 1)
+        {
+            var (binary, opts) = requests[0];
+            DecompileResult r = Decompile(binary, opts);
+            results[0] = r;
+            onProgress?.Invoke(0, r);
+            return results;
+        }
+
+        BatchExecutor.Run(this, requests, results, onProgress, maxConcurrency, cpuUsageCapPercent, cancellationToken);
+        return results;
+    }
+
     public DecompileResult Decompile(byte[] binary, DecompileOptions options)
     {
         if (options is null) throw new ArgumentNullException(nameof(options));

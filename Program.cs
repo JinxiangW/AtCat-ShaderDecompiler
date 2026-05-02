@@ -33,6 +33,15 @@ internal static class Program
             return args.Length == 0 ? 1 : 0;
         }
 
+        // Batch mode: `--batch <dir>` scans <dir>/*/with-symbols.input.bin (the layout the
+        // failure-dumper uses) and decompiles them all through the parallel pool in one
+        // shot. Useful for re-running an entire failure set after a fix without scripting
+        // a per-blob loop. Optional `--max-concurrency N` overrides the default cap.
+        if (args[0] == "--batch")
+        {
+            return RunBatch(args);
+        }
+
         string inputPath = Path.GetFullPath(args[0]);
         if (!File.Exists(inputPath))
         {
@@ -131,6 +140,101 @@ internal static class Program
             Console.Error.WriteLine($"Fatal error: {ex.Message}");
             return 1;
         }
+    }
+
+    private static int RunBatch(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("Usage: --batch <dir> [--max-concurrency N]");
+            return 1;
+        }
+
+        string root = Path.GetFullPath(args[1]);
+        if (!Directory.Exists(root))
+        {
+            Console.Error.WriteLine($"Error: directory not found: {root}");
+            return 1;
+        }
+
+        int maxConcurrency = 0;
+        for (int i = 2; i < args.Length; i++)
+        {
+            if (args[i] == "--max-concurrency" && i + 1 < args.Length && int.TryParse(args[++i], out int mc))
+            {
+                maxConcurrency = mc;
+            }
+        }
+
+        // Discover (binary, metadata) pairs. Two layouts are accepted:
+        //   1. Failure-dump format: <root>/<subdir>/with-symbols.input.bin + with-symbols.metadata.json
+        //   2. Flat format: <root>/*.bin (+ optional <name>.bin.metadata.json or <name>.metadata.json)
+        // Mode 1 is what `--debug-dump` produces; mode 2 is what the user gets from a custom export.
+        var inputs = new List<(string Stem, string BinPath, string? MetaPath)>();
+        foreach (string subdir in Directory.GetDirectories(root))
+        {
+            string bin = Path.Combine(subdir, "with-symbols.input.bin");
+            string meta = Path.Combine(subdir, "with-symbols.metadata.json");
+            if (File.Exists(bin))
+            {
+                inputs.Add((Path.GetFileName(subdir), bin, File.Exists(meta) ? meta : null));
+            }
+        }
+        if (inputs.Count == 0)
+        {
+            foreach (string bin in Directory.GetFiles(root, "*.bin"))
+            {
+                string? meta = bin + ".metadata.json";
+                if (!File.Exists(meta)) meta = Path.ChangeExtension(bin, ".metadata.json");
+                inputs.Add((Path.GetFileNameWithoutExtension(bin), bin, File.Exists(meta) ? meta : null));
+            }
+        }
+
+        if (inputs.Count == 0)
+        {
+            Console.Error.WriteLine($"No inputs found under {root}.");
+            return 1;
+        }
+
+        // Build the request list. Keep the loaded metadata alongside so worker callbacks
+        // can still write per-job outputs without reloading.
+        var requests = new (byte[] Binary, DecompileOptions Options)[inputs.Count];
+        for (int i = 0; i < inputs.Count; i++)
+        {
+            var (stem, binPath, metaPath) = inputs[i];
+            ShaderSymbolData? symbols = metaPath is null ? null : LoadSymbols(binPath, metaPath);
+            requests[i] = (File.ReadAllBytes(binPath), new DecompileOptions
+            {
+                Format = ShaderArchitecture.Unknown,
+                Metadata = symbols,
+                ShaderModel = 51,
+            });
+        }
+
+        Console.WriteLine($"Batch: {inputs.Count} jobs (max concurrency = {(maxConcurrency > 0 ? maxConcurrency : "auto")})");
+
+        int ok = 0, fail = 0;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        using ShaderDecompiler decompiler = new();
+        DecompileResult[] results = decompiler.Decompile(requests, (idx, r) =>
+        {
+            if (r.Success) System.Threading.Interlocked.Increment(ref ok);
+            else System.Threading.Interlocked.Increment(ref fail);
+        }, maxConcurrency: maxConcurrency);
+        sw.Stop();
+
+        // Write outputs next to the input bin files. The HLSL/GLSL extension comes back in
+        // the result; default to .hlsl when the result didn't carry one (failure case).
+        for (int i = 0; i < requests.Length; i++)
+        {
+            DecompileResult r = results[i];
+            if (!r.Success || string.IsNullOrEmpty(r.SourceCode)) continue;
+            string ext = string.IsNullOrEmpty(r.SourceFileExtension) ? ".hlsl" : r.SourceFileExtension;
+            File.WriteAllText(inputs[i].BinPath + ext, r.SourceCode);
+        }
+
+        Console.WriteLine($"Batch done: {ok} ok / {fail} fail in {sw.Elapsed.TotalSeconds:F1}s");
+        return fail == 0 ? 0 : 2;
     }
 
     private static void DumpIntermediates(string dir, string inputPath, DecompileResult result, ShaderSymbolData? symbols)
