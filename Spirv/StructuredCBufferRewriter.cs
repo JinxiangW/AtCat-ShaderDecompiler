@@ -1263,9 +1263,18 @@ internal sealed class StructuredCBufferRewriter
         }
 
         var loadInfos = new Dictionary<uint, RewrittenLoadInfo>();
-        var compositeExtractUseCounts = new Dictionary<uint, int>();
-        var rewrittenCompositeExtractUseCounts = new Dictionary<uint, int>();
-        Dictionary<uint, int> totalUseCounts = CountResultUses(module);
+        // Maps OpBitcast result id → underlying tracked Load. Populated below as we walk the
+        // module; lets a downstream OpCompositeExtract whose composite is the *bitcast* (not
+        // the load itself) still resolve back to the load's structured-access metadata. The
+        // canonical pattern is `Load v4float → Bitcast v4uint → CompositeExtract uint .y`
+        // (HLSL `asuint(cb._m0[N]).y`, used to read bool members stored as uint or to sign-
+        // pun a float).
+        var bitcastToLoad = new Dictionary<uint, RewrittenLoadInfo>();
+        // Bitcasts that participated in at least one rewrite. After the main pass any of
+        // these whose result is no longer consumed by anyone live is itself dead and gets
+        // NOPed in the structural cleanup; that in turn lets the underlying Load and
+        // AccessChain be NOPed too.
+        var processedBitcasts = new Dictionary<uint, SpirvInstruction>();
 
         for (int index = 0; index < module.Instructions.Count; index++)
         {
@@ -1283,10 +1292,48 @@ internal sealed class StructuredCBufferRewriter
                 continue;
             }
 
-            if (instruction.OpCode == SpvOpCode.OpCompositeExtract && instruction.Words.Length >= 5 && loadInfos.TryGetValue(instruction[3], out RewrittenLoadInfo? loadInfo))
+            // Map Bitcasts that source from a tracked Load. The Bitcast must come AFTER its
+            // source Load in module order (SSA), so this single-pass build is sound.
+            if (instruction.OpCode == SpvOpCode.OpBitcast && instruction.Words.Length >= 4
+                && loadInfos.TryGetValue(instruction[3], out RewrittenLoadInfo? bitcastSource))
             {
+                bitcastToLoad[instruction[2]] = bitcastSource;
+                continue;
+            }
+
+            if (instruction.OpCode == SpvOpCode.OpCompositeExtract && instruction.Words.Length >= 5)
+            {
+                // The composite operand might be either a tracked Load directly or a Bitcast
+                // sitting between the Load and the extract. Both resolve to the same
+                // structured-access plan; the extract's literal indices then narrow it to a
+                // specific scalar member.
+                RewrittenLoadInfo? loadInfo = null;
+                if (loadInfos.TryGetValue(instruction[3], out RewrittenLoadInfo? directLoad))
+                {
+                    loadInfo = directLoad;
+                }
+                else if (bitcastToLoad.TryGetValue(instruction[3], out RewrittenLoadInfo? viaBitcast))
+                {
+                    loadInfo = viaBitcast;
+                    // Track the Bitcast instruction itself so the cleanup pass can NOP it
+                    // once all its consumers are gone. We re-find it by id; cheap because
+                    // there's at most one Bitcast per result id.
+                    foreach (SpirvInstruction maybeBitcast in module.Instructions)
+                    {
+                        if (maybeBitcast.OpCode == SpvOpCode.OpBitcast && maybeBitcast.Words.Length >= 3 && maybeBitcast[2] == instruction[3])
+                        {
+                            processedBitcasts[instruction[3]] = maybeBitcast;
+                            break;
+                        }
+                    }
+                }
+
+                if (loadInfo == null)
+                {
+                    continue;
+                }
+
                 loadInfo.HasCompositeExtractUsers = true;
-                compositeExtractUseCounts[loadInfo.ResultId] = compositeExtractUseCounts.TryGetValue(loadInfo.ResultId, out int count) ? count + 1 : 1;
 
                 FlatAccessPath directAccessPath = loadInfo.AccessChain.OriginalAccessPath.Clone();
                 directAccessPath.ExtraIndices.AddRange(instruction.Words.Skip(4).Select(static value => checked((int)value)));
@@ -1296,10 +1343,6 @@ internal sealed class StructuredCBufferRewriter
                 {
                     continue;
                 }
-
-                rewrittenCompositeExtractUseCounts[loadInfo.ResultId] = rewrittenCompositeExtractUseCounts.TryGetValue(loadInfo.ResultId, out int rewrittenCount)
-                    ? rewrittenCount + 1
-                    : 1;
 
                 uint pointerResultId = module.AllocateId();
                 module.Instructions.Insert(index, new SpirvInstruction
@@ -1331,6 +1374,11 @@ internal sealed class StructuredCBufferRewriter
             }
         }
 
+        // Loads whose only "consumer" was a CompositeExtract that read the whole vector (no
+        // sub-component index — the access path is byte-exact for the vector-shaped member)
+        // skip the inner-loop rewrite branch; they re-type the load in place. The legacy
+        // logic guarded this with a use-count check; we now do it structurally inside the
+        // dead-code pass below.
         foreach (RewrittenLoadInfo loadInfo in loadInfos.Values)
         {
             SpirvInstruction loadInstruction = loadInfo.Instruction;
@@ -1339,53 +1387,62 @@ internal sealed class StructuredCBufferRewriter
                 continue;
             }
 
-            if (!loadInfo.HasCompositeExtractUsers)
+            if (!loadInfo.HasCompositeExtractUsers && loadInfo.AccessChain.Translation != null)
             {
-                if (loadInfo.AccessChain.Translation != null)
-                {
-                    loadInstruction[1] = loadInfo.AccessChain.Translation.MemberTypeId;
-                }
+                loadInstruction[1] = loadInfo.AccessChain.Translation.MemberTypeId;
+            }
+        }
 
+        // Structural dead-code cleanup. Three cascades — Bitcasts that we routed through,
+        // Loads we tracked, and the AccessChains feeding those Loads — each NOPed only when
+        // the module no longer references the result id from any non-NOP id-bearing slot.
+        // Use-count-based decisions break here for two reasons:
+        //   1) Literal-bearing slots (OpConstant value words, OpExtInst's instruction enum,
+        //      OpCompositeExtract's component indices, …) numerically alias real SSA ids.
+        //   2) Counts go stale as we mutate the module; recomputing on every cascade is more
+        //      expensive than the structural scan.
+        // The IsLiteralBearingMetadataOp / IsLiteralValueConstantOp helpers cover (1).
+        foreach (KeyValuePair<uint, SpirvInstruction> kvp in processedBitcasts)
+        {
+            SpirvInstruction bitcastInstr = kvp.Value;
+            if (bitcastInstr.OpCode != SpvOpCode.OpBitcast)
+            {
                 continue;
             }
 
-            int compositeUsers = compositeExtractUseCounts.TryGetValue(loadInfo.ResultId, out int compositeCount) ? compositeCount : 0;
-            int rewrittenCompositeUsers = rewrittenCompositeExtractUseCounts.TryGetValue(loadInfo.ResultId, out int rewrittenCompositeCount) ? rewrittenCompositeCount : 0;
-            int totalUsers = totalUseCounts.TryGetValue(loadInfo.ResultId, out int totalCount) ? totalCount : 0;
-            if (rewrittenCompositeUsers == compositeUsers && compositeUsers == totalUsers)
+            if (!HasLiveIdConsumer(module, kvp.Key))
+            {
+                bitcastInstr.OpCode = SpvOpCode.OpNop;
+                bitcastInstr.Words = [SpvOpCode.MakeInstructionWord(SpvOpCode.OpNop, 1)];
+            }
+        }
+
+        foreach (RewrittenLoadInfo loadInfo in loadInfos.Values)
+        {
+            SpirvInstruction loadInstruction = loadInfo.Instruction;
+            if (loadInstruction.OpCode != SpvOpCode.OpLoad || loadInstruction.Words.Length < 4)
+            {
+                continue;
+            }
+
+            if (!HasLiveIdConsumer(module, loadInfo.ResultId))
             {
                 loadInstruction.OpCode = SpvOpCode.OpNop;
                 loadInstruction.Words = [SpvOpCode.MakeInstructionWord(SpvOpCode.OpNop, 1)];
             }
         }
 
-        // Final cleanup: any rewritten access chain whose only consumer was a NOP'd load is now
-        // dead. Leaving it in place is unsafe — the variable's pointer type was changed to the new
-        // struct, so an unrewritten old-style `OpAccessChain ptr-vec4 var %0 %register` walks a
-        // type tree that no longer exists, and spirv-cross fails validation with "Cannot subdivide
-        // a scalar value" (or similar). NOP every access chain in `rewrittenAccessChains` with
-        // zero remaining users.
-        // Build the set of access chain ids that still have at least one live (non-NOP) OpLoad
-        // consuming them. We can't rely on a generic use-count because several SPIR-V ops carry
-        // literal values in operand slots — OpExtInst's instruction enum, OpCompositeExtract's
-        // literal indices, OpVectorShuffle component indices, etc. — and when those literals
-        // happen to coincide numerically with a real SSA id, the generic counter inflates the
-        // id's use count and a dead access chain stays alive. Looking at actual OpLoads dodges
-        // that without needing to encode every SPIR-V op's literal/id operand layout.
-        var aliveAccessChainConsumers = new HashSet<uint>();
-        foreach (SpirvInstruction inst in module.Instructions)
-        {
-            if (inst.OpCode != SpvOpCode.OpLoad || inst.Words.Length < 4)
-            {
-                continue;
-            }
-
-            aliveAccessChainConsumers.Add(inst[3]);
-        }
-
+        // Final cleanup: any rewritten access chain whose Load (and Bitcast, if any) is now
+        // NOP-d has no live consumer. Leaving it in place is unsafe — the variable's pointer
+        // type was changed to the new struct, so an unrewritten old-style
+        // `OpAccessChain ptr-vec4 var %0 %register` walks a type tree that no longer exists,
+        // and spirv-cross fails validation with "Cannot subdivide a scalar value" (or
+        // similar). The Bitcast and Load passes above already removed the chains that fed
+        // these access chains, so a structural "no live consumer" check here finishes the
+        // cascade.
         foreach (uint accessChainId in rewrittenAccessChains.Keys)
         {
-            if (aliveAccessChainConsumers.Contains(accessChainId))
+            if (HasLiveIdConsumer(module, accessChainId))
             {
                 continue;
             }
@@ -1404,27 +1461,25 @@ internal sealed class StructuredCBufferRewriter
         }
     }
 
-    private static Dictionary<uint, int> CountResultUses(SpirvModule module)
+    // Structural "is `targetId` consumed by any live (non-NOP) instruction in a real
+    // id-bearing operand slot?" check. Used by the dead-code cascade in
+    // RewriteLoadsAndCompositeExtracts to NOP Bitcasts → Loads → AccessChains in order.
+    //
+    // Skip the result-type / result-id slots of the consumer (those describe the consumer
+    // itself, not consumption of `targetId`). Skip the whole instruction for ops whose
+    // post-result words are pure literals (metadata + constant-definition ops) so
+    // e.g. `%uint_<targetId> = OpConstant %uint <targetId>` doesn't read as a use of
+    // `targetId`. Without these skips the literal value `<targetId>` numerically aliases
+    // a real SSA id and a dead access chain stays alive forever.
+    private static bool HasLiveIdConsumer(SpirvModule module, uint targetId)
     {
-        var uses = new Dictionary<uint, int>();
         foreach (SpirvInstruction instruction in module.Instructions)
         {
-            // Skip ops whose operand slots beyond the result id/type id are pure literals.
-            // Counting them inflates use counts whenever a literal happens to coincide with
-            // a real SSA id — which then breaks the NOP decision in
-            // RewriteLoadsAndCompositeExtracts (a load whose extracts were all rewritten gets
-            // kept alive because a literal with the same numeric value as the load's result id
-            // is misread as a "real" extra user).
-            //
-            // Two categories qualify:
-            //   * Metadata / decoration / debug ops (OpName, OpDecorate, OpExecutionMode, …)
-            //   * Constant-definition ops whose post-result words are pure literals
-            //     (OpConstant value words, OpConstantSampler mode literals, OpConstantTrue/
-            //     False/Null with no operands at all, plus the SpecConstant variants).
-            // OpConstantComposite / OpSpecConstantComposite are NOT skipped — their
-            // post-result words are id references to constituent constants, so they carry
-            // real data-flow edges. Same for OpSpecConstantOp (one literal then ids — a
-            // future refinement could skip just that single slot).
+            if (instruction.OpCode == SpvOpCode.OpNop)
+            {
+                continue;
+            }
+
             if (IsLiteralBearingMetadataOp(instruction.OpCode) || IsLiteralValueConstantOp(instruction.OpCode))
             {
                 continue;
@@ -1439,12 +1494,14 @@ internal sealed class StructuredCBufferRewriter
                     continue;
                 }
 
-                uint operand = instruction[operandIndex];
-                uses[operand] = uses.TryGetValue(operand, out int count) ? count + 1 : 1;
+                if (instruction[operandIndex] == targetId)
+                {
+                    return true;
+                }
             }
         }
 
-        return uses;
+        return false;
     }
 
     private static bool IsLiteralBearingMetadataOp(ushort opCode)
@@ -1783,10 +1840,30 @@ internal sealed class StructuredCBufferRewriter
 
             foundLoad = true;
             uint loadResultId = instruction[2];
+
+            // Build the set of "composite-extract-source ids" that resolve back to this Load.
+            // The trivial case is the Load result itself. We also accept one hop through
+            // OpBitcast — a common HLSL→SPIR-V pattern is `asuint(float4)` / `asfloat(uint4)`
+            // which compiles to OpLoad → OpBitcast (preserves vector width, only changes the
+            // scalar element type) → OpCompositeExtract. Without following the Bitcast we
+            // misclassify the Load as having "no CompositeExtract users" and the entire CB
+            // gets rejected, which the user sees as `UnityPerMaterial_m0[5]` instead of named
+            // members.
+            var compositeExtractSources = new HashSet<uint> { loadResultId };
+            foreach (SpirvInstruction maybeBitcast in module.Instructions)
+            {
+                if (maybeBitcast.OpCode == SpvOpCode.OpBitcast
+                    && maybeBitcast.Words.Length >= 4
+                    && maybeBitcast[3] == loadResultId)
+                {
+                    compositeExtractSources.Add(maybeBitcast[2]);
+                }
+            }
+
             bool hasCompositeExtractUsers = false;
             foreach (SpirvInstruction user in module.Instructions)
             {
-                if (user.OpCode != SpvOpCode.OpCompositeExtract || user.Words.Length < 5 || user[3] != loadResultId)
+                if (user.OpCode != SpvOpCode.OpCompositeExtract || user.Words.Length < 5 || !compositeExtractSources.Contains(user[3]))
                 {
                     continue;
                 }

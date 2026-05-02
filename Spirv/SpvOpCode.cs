@@ -42,6 +42,7 @@ public static class SpvOpCode
     public const ushort OpVariable = 59;
     public const ushort OpDecorate = 71;
     public const ushort OpMemberDecorate = 72;
+    public const ushort OpBitcast = 124;
 
     // Decoration values
     public const uint DecorationBinding = 33;
