@@ -1,302 +1,75 @@
-using System.Text;
+using Ruri.ShaderTools.Spirv.Patcher.Analysis;
+using Ruri.ShaderTools.Spirv.Patcher.Patch;
 
 namespace Ruri.ShaderTools.Spirv;
 
-/// <summary>
-/// Detailed binding information for a SPIR-V variable.
-/// </summary>
-public class SpirvBindingInfo
-{
-    public uint Id { get; set; }
-    public int Set { get; set; }
-    public int Binding { get; set; }
-    public string? DescriptorType { get; set; }
-    public uint? StructTypeId { get; set; }
-    public int StructMemberCount { get; set; }
-    public Dictionary<int, uint> MemberOffsets { get; set; } = new();
-    public string? CurrentName { get; set; }
-}
-
-/// <summary>
-/// Patches SPIR-V binaries to inject symbol names.
-/// </summary>
+// Top-level orchestrator for SPIR-V symbol patching. Two independent sub-pipelines:
+//
+//   Analysis  (Patcher/Analysis):
+//     Pass010 — scan SPV words, fill (set, binding) / type / name maps
+//     Pass020 — turn the maps into a List<SpirvBindingInfo> sorted by (set, binding)
+//     Used by callers (ShaderDecompiler.BuildNamePatches / BuildMemberPatches) to decide
+//     which OpName / OpMemberName to inject.
+//
+//   Patch     (Patcher/Patch):
+//     Pass010 — copy the input SPV, dropping any OpName / OpMemberName whose target is
+//               about to be replaced (avoids dxil-spirv's machine names winning the name-
+//               uniquify race in spirv-cross)
+//     Pass020 — encode the (id, name) and (typeId, memberIndex, name) overrides as
+//               ready-to-splice instruction word arrays
+//     Pass030 — splice them into the debug section of the filtered SPV, return new bytes
+//
+// External callers see the same surface as before: AnalyzeBindingsDetailed / AnalyzeBindings
+// for read-only queries, and PatchByIds for symbol injection. The legacy `Patch(spirv,
+// symbols)` shim still works (matches existing test fixtures) and just orchestrates the
+// pipelines internally.
 public class SpirvPatcher
 {
-    /// <summary>
-    /// Analyzes a SPIR-V binary and returns detailed binding information.
-    /// </summary>
     public List<SpirvBindingInfo> AnalyzeBindingsDetailed(byte[] spirvBytes)
     {
-        uint[] words = BytesToWords(spirvBytes);
-        
-        var idToSetBinding = new Dictionary<uint, (int? Set, int? Binding)>();
-        var typePointerMap = new Dictionary<uint, (uint StorageClass, uint PointedType)>();
-        var variableTypeMap = new Dictionary<uint, uint>();
-        var structTypeIds = new HashSet<uint>();
-        var structMemberCounts = new Dictionary<uint, int>();
-        var structMemberOffsets = new Dictionary<uint, Dictionary<int, uint>>();
-        var imageTypeIds = new HashSet<uint>();
-        var samplerTypeIds = new HashSet<uint>();
-        var sampledImageTypeIds = new HashSet<uint>();
-        var idToName = new Dictionary<uint, string>();
-
-        int offset = SpvOpCode.HeaderWordCount;
-        while (offset < words.Length)
-        {
-            uint instrWord = words[offset];
-            ushort opCode = SpvOpCode.GetOpCode(instrWord);
-            ushort wordCount = SpvOpCode.GetWordCount(instrWord);
-            if (wordCount == 0) break;
-
-            switch (opCode)
-            {
-                case SpvOpCode.OpDecorate when wordCount >= 4:
-                    {
-                        uint targetId = words[offset + 1];
-                        uint decoration = words[offset + 2];
-                        if (decoration == SpvOpCode.DecorationDescriptorSet)
-                        {
-                            int set = (int)words[offset + 3];
-                            if (!idToSetBinding.ContainsKey(targetId))
-                                idToSetBinding[targetId] = (set, null);
-                            else
-                                idToSetBinding[targetId] = (set, idToSetBinding[targetId].Binding);
-                        }
-                        else if (decoration == SpvOpCode.DecorationBinding)
-                        {
-                            int binding = (int)words[offset + 3];
-                            if (!idToSetBinding.ContainsKey(targetId))
-                                idToSetBinding[targetId] = (null, binding);
-                            else
-                                idToSetBinding[targetId] = (idToSetBinding[targetId].Set, binding);
-                        }
-                        break;
-                    }
-                case SpvOpCode.OpMemberDecorate when wordCount >= 5:
-                    {
-                        uint structId = words[offset + 1];
-                        int memberIndex = (int)words[offset + 2];
-                        uint decoration = words[offset + 3];
-                        if (decoration == SpvOpCode.DecorationOffset)
-                        {
-                            if (!structMemberOffsets.TryGetValue(structId, out Dictionary<int, uint>? memberOffsets))
-                            {
-                                memberOffsets = new Dictionary<int, uint>();
-                                structMemberOffsets[structId] = memberOffsets;
-                            }
-
-                            memberOffsets[memberIndex] = words[offset + 4];
-                        }
-
-                        break;
-                    }
-                case SpvOpCode.OpTypePointer when wordCount >= 4:
-                    {
-                        uint resultId = words[offset + 1];
-                        uint storageClass = words[offset + 2];
-                        uint pointedTypeId = words[offset + 3];
-                        typePointerMap[resultId] = (storageClass, pointedTypeId);
-                        break;
-                    }
-                case SpvOpCode.OpTypeStruct:
-                    {
-                        uint structId = words[offset + 1];
-                        structTypeIds.Add(structId);
-                        structMemberCounts[structId] = wordCount >= 2 ? wordCount - 2 : 0;
-                        break;
-                    }
-                case SpvOpCode.OpTypeImage:
-                    imageTypeIds.Add(words[offset + 1]);
-                    break;
-                case SpvOpCode.OpTypeSampler:
-                    samplerTypeIds.Add(words[offset + 1]);
-                    break;
-                case SpvOpCode.OpTypeSampledImage:
-                    sampledImageTypeIds.Add(words[offset + 1]);
-                    break;
-                case SpvOpCode.OpName when wordCount >= 3:
-                    {
-                        uint targetId = words[offset + 1];
-                        string? name = ReadLiteralString(words, offset + 2, wordCount - 2);
-                        if (!string.IsNullOrWhiteSpace(name))
-                        {
-                            idToName[targetId] = name;
-                        }
-
-                        break;
-                    }
-                case SpvOpCode.OpVariable when wordCount >= 4:
-                    {
-                        uint pointerTypeId = words[offset + 1];
-                        uint resultId = words[offset + 2];
-                        variableTypeMap[resultId] = pointerTypeId;
-                        break;
-                    }
-            }
-
-            offset += wordCount;
-        }
-
-        var result = new List<SpirvBindingInfo>();
-        
-        foreach (var kvp in idToSetBinding)
-        {
-            if (!kvp.Value.Set.HasValue || !kvp.Value.Binding.HasValue)
-                continue;
-
-            var info = new SpirvBindingInfo
-            {
-                Id = kvp.Key,
-                Set = kvp.Value.Set.Value,
-                Binding = kvp.Value.Binding.Value
-            };
-
-            if (idToName.TryGetValue(kvp.Key, out string? currentName))
-            {
-                info.CurrentName = currentName;
-            }
-
-            // Determine type
-            if (variableTypeMap.TryGetValue(kvp.Key, out uint ptrTypeId))
-            {
-                if (typePointerMap.TryGetValue(ptrTypeId, out var ptrInfo))
-                {
-                    uint pointedType = ptrInfo.PointedType;
-                    
-                    if (structTypeIds.Contains(pointedType))
-                    {
-                        info.DescriptorType = ptrInfo.StorageClass == 2 ? "UniformBuffer" : "StorageBuffer";
-                        info.StructTypeId = pointedType;
-                        info.StructMemberCount = structMemberCounts.TryGetValue(pointedType, out int memberCount) ? memberCount : 0;
-                        if (structMemberOffsets.TryGetValue(pointedType, out Dictionary<int, uint>? offsets))
-                        {
-                            info.MemberOffsets = offsets;
-                        }
-                    }
-                    else if (samplerTypeIds.Contains(pointedType))
-                        info.DescriptorType = "Sampler";
-                    // IMPORTANT:
-                    // dxil-spirv frequently emits texture resources as plain OpTypeImage instead of
-                    // the shape we see from direct dxc -spirv. Treat both forms as sampled images for
-                    // symbol restoration, otherwise DXIL routes keep machine names like _8 / _14.
-                    else if (sampledImageTypeIds.Contains(pointedType) || imageTypeIds.Contains(pointedType))
-                        info.DescriptorType = "SampledImage";
-                    else
-                        info.DescriptorType = "Unknown";
-                }
-            }
-
-            result.Add(info);
-        }
-
-        return result.OrderBy(x => x.Set).ThenBy(x => x.Binding).ToList();
+        var state = new BindingAnalysisState(spirvBytes);
+        Pass010_ScanModule.DoPass(state);
+        Pass020_BuildBindingInfos.DoPass(state);
+        return state.Bindings;
     }
 
-    /// <summary>
-    /// Patches SPIR-V names using binding analysis plus typed metadata.
-    /// </summary>
-    public byte[] PatchByIds(byte[] spirvBytes, List<(uint Id, string Name)> names, List<(uint TypeId, uint MemberIndex, string Name)>? memberNames = null)
+    public Dictionary<(int Set, int Binding), uint> AnalyzeBindings(byte[] spirvBytes)
     {
-        if (spirvBytes.Length < SpvOpCode.HeaderWordCount * 4)
-            throw new ArgumentException("Invalid SPIR-V binary");
-
-        uint[] words = BytesToWords(spirvBytes);
-        if (words[0] != SpvOpCode.MagicNumber)
-            throw new ArgumentException("Invalid SPIR-V magic");
-
-        // IMPORTANT:
-        // We replace existing OpName / OpMemberName entries instead of appending duplicates.
-        // dxil-spirv often already contains machine debug names; if they are left in place,
-        // spirv-cross may keep preferring them and the HLSL output regresses even though the
-        // metadata names were injected later.
-        var replacedIds = names.Select(x => x.Id).ToHashSet();
-        var replacedMembers = memberNames?
-            .Select(x => (x.TypeId, x.MemberIndex))
-            .ToHashSet() ?? new HashSet<(uint TypeId, uint MemberIndex)>();
-
-        var filteredWords = new List<uint>(words.Length);
-        for (int i = 0; i < SpvOpCode.HeaderWordCount; i++)
+        List<SpirvBindingInfo> detailed = AnalyzeBindingsDetailed(spirvBytes);
+        var result = new Dictionary<(int Set, int Binding), uint>();
+        foreach (SpirvBindingInfo b in detailed)
         {
-            filteredWords.Add(words[i]);
-        }
-
-        int offset = SpvOpCode.HeaderWordCount;
-        while (offset < words.Length)
-        {
-            uint instrWord = words[offset];
-            ushort opCode = SpvOpCode.GetOpCode(instrWord);
-            ushort wordCount = SpvOpCode.GetWordCount(instrWord);
-            if (wordCount == 0)
+            (int Set, int Binding) key = (b.Set, b.Binding);
+            if (!result.ContainsKey(key))
             {
-                break;
-            }
-
-            bool skip = false;
-            if (opCode == SpvOpCode.OpName && wordCount >= 2)
-            {
-                skip = replacedIds.Contains(words[offset + 1]);
-            }
-            else if (opCode == SpvOpCode.OpMemberName && wordCount >= 3)
-            {
-                skip = replacedMembers.Contains((words[offset + 1], words[offset + 2]));
-            }
-
-            if (!skip)
-            {
-                for (int i = 0; i < wordCount; i++)
-                {
-                    filteredWords.Add(words[offset + i]);
-                }
-            }
-
-            offset += wordCount;
-        }
-
-        words = filteredWords.ToArray();
-
-        var instructions = new List<uint[]>();
-        foreach (var (id, name) in names)
-        {
-            instructions.Add(CreateOpName(id, name));
-        }
-
-        if (memberNames != null)
-        {
-            foreach (var (typeId, memberIndex, name) in memberNames)
-            {
-                instructions.Add(CreateOpMemberName(typeId, memberIndex, name));
+                result[key] = b.Id;
             }
         }
-
-        if (instructions.Count == 0)
-            return spirvBytes;
-
-        int insertOffset = FindDebugInsertionPoint(words);
-        int additionalWords = instructions.Sum(arr => arr.Length);
-        uint[] newWords = new uint[words.Length + additionalWords];
-
-        Array.Copy(words, 0, newWords, 0, insertOffset);
-
-        int writeOffset = insertOffset;
-        foreach (var instr in instructions)
-        {
-            Array.Copy(instr, 0, newWords, writeOffset, instr.Length);
-            writeOffset += instr.Length;
-        }
-
-        Array.Copy(words, insertOffset, newWords, writeOffset, words.Length - insertOffset);
-
-        return WordsToBytes(newWords);
+        return result;
     }
 
-    /// <summary>
-    /// Legacy compatibility entry point. The current pipeline uses AnalyzeBindingsDetailed()
-    /// plus PatchByIds(); typed metadata no longer carries direct SPIR-V ids.
-    /// </summary>
+    public byte[] PatchByIds(
+        byte[] spirvBytes,
+        List<(uint Id, string Name)> names,
+        List<(uint TypeId, uint MemberIndex, string Name)>? memberNames = null)
+    {
+        var state = new PatchPipelineState(spirvBytes, names, memberNames);
+
+        Pass010_FilterReplacedNames.DoPass(state);
+        Pass020_BuildNewInstructions.DoPass(state);
+        Pass030_InsertAndSerialize.DoPass(state);
+
+        return state.OutputSpirv ?? spirvBytes;
+    }
+
+    // Legacy convenience: combines analyse + match-by-byte-offset + patch in one call. Kept
+    // because it's still referenced by some test paths; the modern pipeline calls the two
+    // entry points above directly via the higher-level ShaderDecompiler.
     public byte[] Patch(byte[] spirvBytes, ShaderSymbolData symbols)
     {
         var memberNames = new List<(uint TypeId, uint MemberIndex, string Name)>();
-        var detailed = AnalyzeBindingsDetailed(spirvBytes);
+        List<SpirvBindingInfo> detailed = AnalyzeBindingsDetailed(spirvBytes);
+
         foreach (BufferBinding resource in symbols.ConstantBufferBindings)
         {
             ConstantBuffer? constantBuffer = symbols.GetConstantBufferByName(resource.Name);
@@ -306,162 +79,55 @@ public class SpirvPatcher
             }
 
             int resourceSet = symbols.GetSetIdFor(resource.Index, ShaderResourceType.ConstantBuffer);
-            var match = detailed.FirstOrDefault(b => b.Set == resourceSet && b.Binding == resource.Index && b.StructTypeId.HasValue);
+            SpirvBindingInfo? match = detailed.FirstOrDefault(b => b.Set == resourceSet && b.Binding == resource.Index && b.StructTypeId.HasValue);
             if (match?.StructTypeId == null)
             {
                 continue;
             }
 
-            foreach (StructParameter structParameter in constantBuffer.StructParams.Where(s => !string.IsNullOrWhiteSpace(s.Name)))
+            CollectStructMemberNames(constantBuffer, match, memberNames);
+            CollectScalarMemberNames(constantBuffer, match, memberNames);
+        }
+
+        return memberNames.Count > 0 ? PatchByIds(spirvBytes, [], memberNames) : spirvBytes;
+    }
+
+    private static void CollectStructMemberNames(ConstantBuffer constantBuffer, SpirvBindingInfo match, List<(uint, uint, string)> output)
+    {
+        foreach (StructParameter structParameter in constantBuffer.StructParams.Where(static s => !string.IsNullOrWhiteSpace(s.Name)))
+        {
+            if (TryFindMemberByByteOffset(match, structParameter.Index) is int targetIndex)
             {
-                int? structTargetIndex = null;
-
-                if (structParameter.Index >= 0 && match.MemberOffsets.Count > 0)
-                {
-                    foreach (var offsetKvp in match.MemberOffsets)
-                    {
-                        if (offsetKvp.Value == (uint)structParameter.Index)
-                        {
-                            structTargetIndex = offsetKvp.Key;
-                            break;
-                        }
-                    }
-                }
-
-                if (structTargetIndex.HasValue)
-                {
-                    memberNames.Add((match.StructTypeId.Value, (uint)structTargetIndex.Value, structParameter.Name));
-                }
-            }
-
-            foreach (NumericShaderParameter parameter in constantBuffer.AllNumericParams.Where(static p => !string.IsNullOrWhiteSpace(p.Name)))
-            {
-                int? targetIndex = null;
-
-                if (parameter.ByteOffset >= 0 && match.MemberOffsets.Count > 0)
-                {
-                    foreach (var offsetKvp in match.MemberOffsets)
-                    {
-                        if (offsetKvp.Value == (uint)parameter.ByteOffset)
-                        {
-                            targetIndex = offsetKvp.Key;
-                            break;
-                        }
-                    }
-                }
-
-                if (targetIndex.HasValue)
-                {
-                    memberNames.Add((match.StructTypeId.Value, (uint)targetIndex.Value, parameter.Name!));
-                }
+                output.Add((match.StructTypeId!.Value, (uint)targetIndex, structParameter.Name));
             }
         }
-        
-        if (memberNames.Count > 0)
-            return PatchByIds(spirvBytes, [], memberNames);
-
-        return spirvBytes;
     }
 
-    public Dictionary<(int Set, int Binding), uint> AnalyzeBindings(byte[] spirvBytes)
+    private static void CollectScalarMemberNames(ConstantBuffer constantBuffer, SpirvBindingInfo match, List<(uint, uint, string)> output)
     {
-        var detailed = AnalyzeBindingsDetailed(spirvBytes);
-        var result = new Dictionary<(int Set, int Binding), uint>();
-        foreach (var b in detailed)
+        foreach (NumericShaderParameter parameter in constantBuffer.AllNumericParams.Where(static p => !string.IsNullOrWhiteSpace(p.Name)))
         {
-            var key = (b.Set, b.Binding);
-            if (!result.ContainsKey(key))
-                result[key] = b.Id;
+            if (TryFindMemberByByteOffset(match, parameter.ByteOffset) is int targetIndex)
+            {
+                output.Add((match.StructTypeId!.Value, (uint)targetIndex, parameter.Name!));
+            }
         }
-        return result;
     }
 
-    private int FindDebugInsertionPoint(uint[] words)
+    private static int? TryFindMemberByByteOffset(SpirvBindingInfo match, int byteOffset)
     {
-        int offset = SpvOpCode.HeaderWordCount;
-        int lastDebugEnd = SpvOpCode.HeaderWordCount;
-
-        while (offset < words.Length)
+        if (byteOffset < 0 || match.MemberOffsets.Count == 0)
         {
-            uint instrWord = words[offset];
-            ushort opCode = SpvOpCode.GetOpCode(instrWord);
-            ushort wordCount = SpvOpCode.GetWordCount(instrWord);
-            if (wordCount == 0) break;
-
-            if (opCode >= 3 && opCode <= 10)
-                lastDebugEnd = offset + wordCount;
-            else if (opCode == SpvOpCode.OpDecorate || opCode >= SpvOpCode.OpTypeVoid)
-                break;
-
-            offset += wordCount;
+            return null;
         }
 
-        return lastDebugEnd;
-    }
-
-    private uint[] CreateOpName(uint id, string name)
-    {
-        byte[] nameBytes = Encoding.UTF8.GetBytes(name);
-        int paddedLength = (nameBytes.Length + 1 + 3) / 4 * 4;
-        byte[] paddedName = new byte[paddedLength];
-        Array.Copy(nameBytes, paddedName, nameBytes.Length);
-
-        int wordCount = 2 + paddedLength / 4;
-        uint[] instr = new uint[wordCount];
-
-        instr[0] = SpvOpCode.MakeInstructionWord(SpvOpCode.OpName, (ushort)wordCount);
-        instr[1] = id;
-
-        for (int i = 0; i < paddedLength / 4; i++)
-            instr[2 + i] = BitConverter.ToUInt32(paddedName, i * 4);
-
-        return instr;
-    }
-
-    private uint[] CreateOpMemberName(uint typeId, uint memberIndex, string name)
-    {
-        byte[] nameBytes = Encoding.UTF8.GetBytes(name);
-        int paddedLength = (nameBytes.Length + 1 + 3) / 4 * 4;
-        byte[] paddedName = new byte[paddedLength];
-        Array.Copy(nameBytes, paddedName, nameBytes.Length);
-
-        int wordCount = 3 + paddedLength / 4;
-        uint[] instr = new uint[wordCount];
-
-        instr[0] = SpvOpCode.MakeInstructionWord(SpvOpCode.OpMemberName, (ushort)wordCount);
-        instr[1] = typeId;
-        instr[2] = memberIndex;
-
-        for (int i = 0; i < paddedLength / 4; i++)
-            instr[3 + i] = BitConverter.ToUInt32(paddedName, i * 4);
-
-        return instr;
-    }
-
-    private static uint[] BytesToWords(byte[] bytes)
-    {
-        uint[] words = new uint[bytes.Length / 4];
-        Buffer.BlockCopy(bytes, 0, words, 0, bytes.Length);
-        return words;
-    }
-
-    private static byte[] WordsToBytes(uint[] words)
-    {
-        byte[] bytes = new byte[words.Length * 4];
-        Buffer.BlockCopy(words, 0, bytes, 0, bytes.Length);
-        return bytes;
-    }
-
-    private static string? ReadLiteralString(uint[] words, int start, int wordCount)
-    {
-        byte[] bytes = new byte[wordCount * 4];
-        Buffer.BlockCopy(words, start * 4, bytes, 0, bytes.Length);
-        int nullIndex = Array.IndexOf(bytes, (byte)0);
-        if (nullIndex < 0)
+        foreach (KeyValuePair<int, uint> kvp in match.MemberOffsets)
         {
-            nullIndex = bytes.Length;
+            if (kvp.Value == (uint)byteOffset)
+            {
+                return kvp.Key;
+            }
         }
-
-        return Encoding.UTF8.GetString(bytes, 0, nullIndex);
+        return null;
     }
 }
