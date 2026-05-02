@@ -11,7 +11,7 @@
 *   **对于 Unity：**
     操作体验与 AssetRipper 一致，只需在工具中开启 `ShaderDecompilerHook` 即可完成导出和反编译。
 
-*   **对于 Unreal Engine (通过 FModel)：**
+*   **对于 Unreal Engine：**
     操作体验与 FModel 一致，需在工具中开启 `ShaderDecompilerHook` 。
     1. 首先需要 Dump 游戏的 Mapings 类型树，并在 FModel 设置中加载。
     2. 找到并选择 `[GameName]/Contents` 文件夹下的 `ShaderArchive`。
