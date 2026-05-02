@@ -32,9 +32,7 @@ internal static class LinearIndexDecomposer
             // Constants whose magnitude doesn't fit in int (>= 2^31) cannot be a literal
             // register offset for any practical SPIR-V CB shape — a non-array uniform's
             // register count is at most a few thousand. Treat the slot as opaque-dynamic
-            // so the rest of the pipeline can fall through to its composite-extract path
-            // instead of throwing OverflowException out of the rewriter and losing the
-            // entire shader.
+            // so the rest of the pipeline falls through to its composite-extract path.
             if (constantValue > int.MaxValue)
             {
                 expression = new SlotExpression { DynamicIndexId = operandId, DynamicIndexStride = 1 };
@@ -45,33 +43,32 @@ internal static class LinearIndexDecomposer
             return true;
         }
 
-        // The decompose helper does its own checked arithmetic in a few places; on overflow
-        // we again treat the whole expression as opaque-dynamic instead of bubbling out.
-        // The concrete shape is recoverable later via composite-extract fallback even when
-        // the register algebra doesn't fit our canonical `idx*stride+offset` form.
-        try
+        if (TryDecompose(constants.Definitions, constants.IdToValue, operandId,
+                out uint dynamicIndexId, out int dynamicStride, out int constantOffset))
         {
-            if (TryDecompose(constants.Definitions, constants.IdToValue, operandId,
-                    out uint dynamicIndexId, out int dynamicStride, out int constantOffset))
+            expression = new SlotExpression
             {
-                expression = new SlotExpression
-                {
-                    DynamicIndexId = dynamicIndexId,
-                    DynamicIndexStride = dynamicStride,
-                    ConstantRegisterOffset = constantOffset,
-                };
-                return true;
-            }
-        }
-        catch (OverflowException)
-        {
-            expression = new SlotExpression { DynamicIndexId = operandId, DynamicIndexStride = 1 };
+                DynamicIndexId = dynamicIndexId,
+                DynamicIndexStride = dynamicStride,
+                ConstantRegisterOffset = constantOffset,
+            };
             return true;
         }
 
         return false;
     }
 
+    // Tries to recognise `valueId` as `dynamicIndexId * dynamicStride + constantOffset`.
+    // Returns true on either a recognised match or an opaque-dynamic fallback (the latter
+    // gives the access translator a chance to send the chain through the composite-
+    // extract path instead of failing the whole CB rewrite).
+    //
+    // No `checked()` arithmetic. Every cast / shift / sum that could overflow `int` is
+    // gated by an explicit bound, and on out-of-range we fall through to the opaque
+    // default at the bottom. The previous implementation used `checked()` and let the
+    // OverflowException be caught by `TryParseSlotExpression` — functionally fine but
+    // raised a first-chance exception that breaks the debugger on every shader containing
+    // a literal larger than `int.MaxValue` (genuinely common: `0xFFFFFFFF` etc.).
     private static bool TryDecompose(
         Dictionary<uint, SpirvInstruction> definitions,
         Dictionary<uint, uint> constants,
@@ -101,25 +98,39 @@ internal static class LinearIndexDecomposer
             // overlap. Required to recognise Unity instancing access patterns of the form
             // `cb[(instanceId << 4) | n]`.
             if (constants.TryGetValue(right, out uint rightConst)
+                && rightConst <= int.MaxValue
                 && TryDecompose(definitions, constants, left, out dynamicIndexId, out dynamicStride, out constantOffset))
             {
-                constantOffset += definition.OpCode == OpISub ? -checked((int)rightConst) : checked((int)rightConst);
-                return true;
+                int rightInt = (int)rightConst;
+                long combined = definition.OpCode == OpISub
+                    ? (long)constantOffset - rightInt
+                    : (long)constantOffset + rightInt;
+                if (combined >= int.MinValue && combined <= int.MaxValue)
+                {
+                    constantOffset = (int)combined;
+                    return true;
+                }
+                // Sum overflows int → fall through to opaque-default below.
             }
 
             if ((definition.OpCode == OpIAdd || definition.OpCode == OpBitwiseOr)
                 && constants.TryGetValue(left, out uint leftConst)
+                && leftConst <= int.MaxValue
                 && TryDecompose(definitions, constants, right, out dynamicIndexId, out dynamicStride, out constantOffset))
             {
-                constantOffset += checked((int)leftConst);
-                return true;
+                long combined = (long)constantOffset + (int)leftConst;
+                if (combined >= int.MinValue && combined <= int.MaxValue)
+                {
+                    constantOffset = (int)combined;
+                    return true;
+                }
             }
 
-            // dynamic+dynamic / dynamic-dynamic: fall through to the opaque-id default. The
-            // older code returned false here, but downstream the access chain then hit the
-            // generic fallback (`stride=1, offset=0, dynamicId=valueId`) anyway — making
-            // this path outright fail meant the WHOLE CB rewrite was rejected over a single
-            // unrecognised access pattern.
+            // dynamic+dynamic / dynamic-dynamic / overflow / oversized constant: fall
+            // through to the opaque-id default. The older code returned false here, but
+            // downstream the access chain then hit the generic fallback anyway — making
+            // this path outright fail meant the WHOLE CB rewrite was rejected over a
+            // single unrecognised access pattern.
         }
 
         if ((definition.OpCode == OpIMul || definition.OpCode == OpShiftLeftLogical) && definition.Words.Length >= 5)
@@ -129,23 +140,26 @@ internal static class LinearIndexDecomposer
 
             if (constants.TryGetValue(right, out uint rightConst))
             {
-                dynamicIndexId = left;
-                dynamicStride = definition.OpCode == OpShiftLeftLogical
-                    ? 1 << checked((int)rightConst)
-                    : checked((int)rightConst);
-                constantOffset = 0;
-                return true;
+                int stride = ComputeStride(definition.OpCode, rightConst);
+                if (stride > 0)
+                {
+                    dynamicIndexId = left;
+                    dynamicStride = stride;
+                    constantOffset = 0;
+                    return true;
+                }
             }
 
-            if (definition.OpCode == OpIMul && constants.TryGetValue(left, out uint leftConst))
+            if (definition.OpCode == OpIMul && constants.TryGetValue(left, out uint leftConst)
+                && leftConst > 0 && leftConst <= int.MaxValue)
             {
                 dynamicIndexId = right;
-                dynamicStride = checked((int)leftConst);
+                dynamicStride = (int)leftConst;
                 constantOffset = 0;
                 return true;
             }
 
-            // dynamic*dynamic: opaque-id default, same rationale.
+            // dynamic*dynamic / oversized stride: opaque-id default, same rationale.
         }
 
         // Default: the whole valueId is an opaque dynamic index, stride 1 element.
@@ -153,5 +167,23 @@ internal static class LinearIndexDecomposer
         dynamicStride = 1;
         constantOffset = 0;
         return true;
+    }
+
+    // Returns the SSA stride implied by the `value * const` (or `value << const`) shape,
+    // or 0 if the constant is out of representable range. 0 is a valid sentinel for
+    // "couldn't compute" because no real CB element has zero stride.
+    private static int ComputeStride(ushort op, uint constValue)
+    {
+        if (op == OpShiftLeftLogical)
+        {
+            // 1 << 31 would set the sign bit; downstream code treats stride as a positive
+            // register count, so cap at 30 (1 << 30 = 1073741824, plenty for any real
+            // array stride).
+            if (constValue > 30) return 0;
+            return 1 << (int)constValue;
+        }
+
+        if (constValue > int.MaxValue) return 0;
+        return (int)constValue;
     }
 }
