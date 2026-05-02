@@ -22,7 +22,6 @@ public sealed record class TextureParameter
     public string Name { get; set; } = string.Empty;
     public int NameIndex { get; set; }
     public int Index { get; set; }
-    public int Set { get; set; }
     public int SamplerIndex { get; set; }
     public bool MultiSampled { get; set; }
     public byte Dim { get; set; }

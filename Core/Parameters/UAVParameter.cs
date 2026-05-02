@@ -15,6 +15,5 @@ public sealed record class UAVParameter
     public string Name { get; set; } = string.Empty;
     public int NameIndex { get; set; }
     public int Index { get; set; }
-    public int Set { get; set; }
     public int OriginalIndex { get; set; }
 }

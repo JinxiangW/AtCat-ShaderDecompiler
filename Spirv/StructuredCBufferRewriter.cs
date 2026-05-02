@@ -192,9 +192,10 @@ internal sealed class StructuredCBufferRewriter
                 continue;
             }
 
+            int resourceSet = metadata.GetSetIdFor(resource.Index, ShaderResourceType.ConstantBuffer);
             uint? variableId = analysis.SetBindingById
                 .Where(static entry => entry.Value.Set.HasValue && entry.Value.Binding.HasValue)
-                    .Where(entry => entry.Value.Set == resource.Set && entry.Value.Binding == resource.Index)
+                    .Where(entry => entry.Value.Set == resourceSet && entry.Value.Binding == resource.Index)
                 .Select(entry => entry.Key)
                 .FirstOrDefault(id =>
                     analysis.VariablePointerTypes.TryGetValue(id, out uint candidatePointerTypeId) &&
@@ -203,7 +204,7 @@ internal sealed class StructuredCBufferRewriter
 
             if (variableId == 0)
             {
-                summary.Add($"[{resource.Name}] no decorated id for set={resource.Set} binding={resource.Index}");
+                summary.Add($"[{resource.Name}] no decorated id for set={resourceSet} binding={resource.Index}");
                 continue;
             }
 
@@ -250,7 +251,7 @@ internal sealed class StructuredCBufferRewriter
                 {
                     Name = resource.Name,
                     Binding = resource.Index,
-                    Set = resource.Set,
+                    Set = resourceSet,
                 },
                 ConstantBuffer = constantBuffer
             });
@@ -1408,13 +1409,23 @@ internal sealed class StructuredCBufferRewriter
         var uses = new Dictionary<uint, int>();
         foreach (SpirvInstruction instruction in module.Instructions)
         {
-            // Metadata / decoration instructions carry literal values (byte offsets, builtin enums,
-            // location indices, etc.) in operand slots. Counting them as id references inflates use
-            // counts whenever a literal happens to coincide with a real SSA id — which then breaks
-            // the NOP decision in RewriteLoadsAndCompositeExtracts (a load whose extracts were all
-            // rewritten gets kept alive because a literal with the same numeric value as the load's
-            // result id is misread as a "real" extra user).
-            if (IsLiteralBearingMetadataOp(instruction.OpCode))
+            // Skip ops whose operand slots beyond the result id/type id are pure literals.
+            // Counting them inflates use counts whenever a literal happens to coincide with
+            // a real SSA id — which then breaks the NOP decision in
+            // RewriteLoadsAndCompositeExtracts (a load whose extracts were all rewritten gets
+            // kept alive because a literal with the same numeric value as the load's result id
+            // is misread as a "real" extra user).
+            //
+            // Two categories qualify:
+            //   * Metadata / decoration / debug ops (OpName, OpDecorate, OpExecutionMode, …)
+            //   * Constant-definition ops whose post-result words are pure literals
+            //     (OpConstant value words, OpConstantSampler mode literals, OpConstantTrue/
+            //     False/Null with no operands at all, plus the SpecConstant variants).
+            // OpConstantComposite / OpSpecConstantComposite are NOT skipped — their
+            // post-result words are id references to constituent constants, so they carry
+            // real data-flow edges. Same for OpSpecConstantOp (one literal then ids — a
+            // future refinement could skip just that single slot).
+            if (IsLiteralBearingMetadataOp(instruction.OpCode) || IsLiteralValueConstantOp(instruction.OpCode))
             {
                 continue;
             }
@@ -1461,6 +1472,22 @@ internal sealed class StructuredCBufferRewriter
             || opCode == 10                            // OpExtension
             || opCode == SpvOpCode.OpExtInstImport     // 11
             || opCode == SpvOpCode.OpMemoryModel;      // 14
+    }
+
+    private static bool IsLiteralValueConstantOp(ushort opCode)
+    {
+        // Constant-definition ops where every word past the result id is a literal (or
+        // there are no further words at all). Skipping the whole instruction during use-
+        // counting is safe: the only id reference is the result type at index 1, which the
+        // caller already excludes.
+        return opCode == 41   // OpConstantTrue
+            || opCode == 42   // OpConstantFalse
+            || opCode == 43   // OpConstant — value literal words (1 for 32-bit, 2 for 64-bit)
+            || opCode == 45   // OpConstantSampler — three mode literals
+            || opCode == 46   // OpConstantNull
+            || opCode == 48   // OpSpecConstantTrue
+            || opCode == 49   // OpSpecConstantFalse
+            || opCode == 50;  // OpSpecConstant — like OpConstant
     }
     private static bool TryParseFlatAccessChain(SpirvInstruction instruction, ConstantMaps constants, out FlatAccessPath accessPath)
     {

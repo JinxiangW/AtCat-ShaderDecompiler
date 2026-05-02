@@ -14,7 +14,6 @@ public sealed record class SamplerParameter
 
     public uint Sampler { get; set; }
     public int Index { get; set; }
-    public int Set { get; set; }
 
     // Optional resolved name (e.g. "Material_Texture2D_0Sampler" when the
     // sampler is SRT-bound to a Material UB resource). Null when we don't

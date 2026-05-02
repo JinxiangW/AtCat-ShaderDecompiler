@@ -87,7 +87,24 @@ public sealed class ShaderDecompiler : IDisposable
 
     public string TempDir { get; set; }
 
-    private enum SpirvStage { Unknown = 0, Vertex, TessControl, TessEvaluation, Geometry, Fragment, Compute }
+    private enum SpirvStage
+    {
+        Unknown = 0,
+        Vertex,
+        TessControl,
+        TessEvaluation,
+        Geometry,
+        Fragment,
+        Compute,
+        RayGeneration,
+        Intersection,
+        AnyHit,
+        ClosestHit,
+        Miss,
+        Callable,
+        Task,
+        Mesh,
+    }
     private readonly record struct TempFiles(string Dxbc, string Dxil, string Spirv, string Hlsl, string Glsl);
     private readonly record struct Source(string Text, string Language, string Extension);
 
@@ -389,7 +406,7 @@ public sealed class ShaderDecompiler : IDisposable
     private static string? DeriveSamplerName(int set, int binding, ShaderSymbolData metadata)
     {
         List<TextureParameter> linked = metadata.TextureParameters
-            .Where(t => t.Set == set && t.SamplerIndex == binding && !string.IsNullOrWhiteSpace(t.Name))
+            .Where(t => metadata.GetSetIdFor(t.Index, ShaderResourceType.Texture) == set && t.SamplerIndex == binding && !string.IsNullOrWhiteSpace(t.Name))
             .ToList();
         if (linked.Count == 1)
         {
@@ -450,19 +467,28 @@ public sealed class ShaderDecompiler : IDisposable
     private Source Emit(byte[] spirv, string? preferredEntryPoint, uint shaderModel, TempFiles temp)
     {
         (SpirvStage stage, string? entryPoint) = ResolveEntry(spirv, preferredEntryPoint);
-        // Hull / domain / geometry: spirv-cross HLSL backend lacks the
-        // stage-specific builtins (InvocationId / TessCoord / TessLevel*,
-        // patch-constant-function emission, two-entry-point HS layout).
-        // Falling back to GLSL is the documented behaviour, so we suppress
-        // stderr on the first try and print one short note instead.
-        bool isTessOrGeom = stage is SpirvStage.TessControl or SpirvStage.TessEvaluation or SpirvStage.Geometry;
+        // spirv-cross's HLSL backend has well-documented gaps for several stages:
+        //   * tess / geom — InvocationId / TessCoord / TessLevel* / patch-constant emission
+        //   * raytracing (rgen/rint/rahit/rchit/rmiss/rcall) — RT builtins (5321/5322/5326/...)
+        //   * mesh / task — primitive index / cull primitive builtins
+        // For these stages we emit GLSL straight away (skipping the HLSL attempt that's
+        // guaranteed to fail). For tess/geom we still try HLSL first since spirv-cross
+        // *does* handle a meaningful subset there. Plain HLSL stages stay HLSL-only.
+        bool requiresGlsl = IsRaytracingOrMeshStage(stage);
+        bool tessOrGeomFallback = stage is SpirvStage.TessControl or SpirvStage.TessEvaluation or SpirvStage.Geometry;
 
-        if (TryEmit(spirv, temp.Spirv, temp.Hlsl, entryPoint, stage, shaderModel, hlsl: true, quiet: isTessOrGeom, out string? hlsl))
-            return new(hlsl!, "hlsl", ".hlsl");
-
-        if (isTessOrGeom)
+        if (!requiresGlsl)
         {
-            Console.Error.WriteLine($"[spirv-cross note] {stage} stage: HLSL backend lacks tessellation/geometry builtins. Falling back to GLSL output.");
+            if (TryEmit(spirv, temp.Spirv, temp.Hlsl, entryPoint, stage, shaderModel, hlsl: true, quiet: tessOrGeomFallback, out string? hlsl))
+                return new(hlsl!, "hlsl", ".hlsl");
+        }
+
+        if (requiresGlsl || tessOrGeomFallback)
+        {
+            string note = requiresGlsl
+                ? $"[spirv-cross note] {stage} stage: HLSL backend cannot represent raytracing/mesh builtins. Emitting GLSL output."
+                : $"[spirv-cross note] {stage} stage: HLSL backend lacks tessellation/geometry builtins. Falling back to GLSL output.";
+            Console.Error.WriteLine(note);
             if (TryEmit(spirv, temp.Spirv, temp.Glsl, entryPoint, stage, shaderModel, hlsl: false, quiet: false, out string? glsl))
                 return new(glsl!, "glsl", ".glsl");
         }
@@ -476,7 +502,21 @@ public sealed class ShaderDecompiler : IDisposable
         File.WriteAllBytes(tempSpv, spirv);
         List<string> args = new() { Tool("spirv-cross.exe"), tempSpv, "--output", outputPath, hlsl ? "--hlsl" : "-V" };
         AppendStageArgs(args, entryPoint, stage);
-        if (hlsl) { args.Add("--shader-model"); args.Add(shaderModel.ToString()); args.Add("--force-zero-initialized-variables"); }
+        if (hlsl)
+        {
+            args.Add("--shader-model");
+            args.Add(shaderModel.ToString());
+            args.Add("--force-zero-initialized-variables");
+        }
+        else if (IsRaytracingOrMeshStage(stage))
+        {
+            // GL_EXT_ray_tracing / GL_EXT_mesh_shader require GLSL 460+ with Vulkan
+            // semantics; without these spirv-cross refuses ("Ray tracing shaders require
+            // non-es profile with version 460 or above").
+            args.Add("--version");
+            args.Add("460");
+            args.Add("--vulkan-semantics");
+        }
         if (!Run(args.ToArray(), "spirv-cross", quiet: quiet) || !File.Exists(outputPath)) { Delete(outputPath); return false; }
         source = File.ReadAllText(outputPath, Encoding.UTF8);
         Delete(outputPath);
@@ -491,12 +531,47 @@ public sealed class ShaderDecompiler : IDisposable
         {
             if (i.OpCode != SpvOpCode.OpEntryPoint || i.Words.Length < 3) continue;
             string entry = ReadString(i.Words, 3);
-            SpirvStage stage = i[1] switch { 0 => SpirvStage.Vertex, 1 => SpirvStage.TessControl, 2 => SpirvStage.TessEvaluation, 3 => SpirvStage.Geometry, 4 => SpirvStage.Fragment, 5 => SpirvStage.Compute, _ => SpirvStage.Unknown };
+            SpirvStage stage = ClassifyExecutionModel(i[1]);
             first ??= (stage, entry);
             if (!string.IsNullOrWhiteSpace(preferred) && string.Equals(entry, preferred, StringComparison.Ordinal)) return (stage, entry);
         }
         return first ?? (SpirvStage.Unknown, preferred);
     }
+
+    // Numeric values come from the SPIR-V execution model enum. 0..6 are core graphics +
+    // compute; 5267..5272 are KHR raytracing; 5313..5318 are the equivalent NV-flavoured
+    // raytracing aliases (same semantics — UE shipping SPV from dxil-spirv emits NV
+    // numbers; spirv-dis happens to print them with the KHR friendly names so the
+    // discrepancy is invisible without looking at raw words). 5364..5365 are EXT mesh
+    // shading; 5267..5272 NV-mesh-like (legacy) is unlikely from the UE pipeline.
+    private static SpirvStage ClassifyExecutionModel(uint model) => model switch
+    {
+        0 => SpirvStage.Vertex,
+        1 => SpirvStage.TessControl,
+        2 => SpirvStage.TessEvaluation,
+        3 => SpirvStage.Geometry,
+        4 => SpirvStage.Fragment,
+        5 => SpirvStage.Compute,
+        5267 or 5313 => SpirvStage.RayGeneration,
+        5268 or 5314 => SpirvStage.Intersection,
+        5269 or 5315 => SpirvStage.AnyHit,
+        5270 or 5316 => SpirvStage.ClosestHit,
+        5271 or 5317 => SpirvStage.Miss,
+        5272 or 5318 => SpirvStage.Callable,
+        5364 => SpirvStage.Task,
+        5365 => SpirvStage.Mesh,
+        _ => SpirvStage.Unknown,
+    };
+
+    private static bool IsRaytracingOrMeshStage(SpirvStage stage) => stage is
+        SpirvStage.RayGeneration
+        or SpirvStage.Intersection
+        or SpirvStage.AnyHit
+        or SpirvStage.ClosestHit
+        or SpirvStage.Miss
+        or SpirvStage.Callable
+        or SpirvStage.Task
+        or SpirvStage.Mesh;
 
     private static string ReadString(IReadOnlyList<uint> words, int start)
     {
@@ -514,7 +589,24 @@ public sealed class ShaderDecompiler : IDisposable
     private static void AppendStageArgs(List<string> args, string? entryPoint, SpirvStage stage)
     {
         if (!string.IsNullOrWhiteSpace(entryPoint)) { args.Add("--entry"); args.Add(entryPoint); }
-        string? stageArg = stage switch { SpirvStage.Vertex => "vert", SpirvStage.TessControl => "tesc", SpirvStage.TessEvaluation => "tese", SpirvStage.Geometry => "geom", SpirvStage.Fragment => "frag", SpirvStage.Compute => "comp", _ => null };
+        string? stageArg = stage switch
+        {
+            SpirvStage.Vertex => "vert",
+            SpirvStage.TessControl => "tesc",
+            SpirvStage.TessEvaluation => "tese",
+            SpirvStage.Geometry => "geom",
+            SpirvStage.Fragment => "frag",
+            SpirvStage.Compute => "comp",
+            SpirvStage.RayGeneration => "rgen",
+            SpirvStage.Intersection => "rint",
+            SpirvStage.AnyHit => "rahit",
+            SpirvStage.ClosestHit => "rchit",
+            SpirvStage.Miss => "rmiss",
+            SpirvStage.Callable => "rcall",
+            SpirvStage.Task => "task",
+            SpirvStage.Mesh => "mesh",
+            _ => null,
+        };
         if (stageArg != null) { args.Add("--stage"); args.Add(stageArg); }
     }
 

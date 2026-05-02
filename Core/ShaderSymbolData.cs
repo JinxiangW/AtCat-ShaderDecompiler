@@ -7,6 +7,12 @@ public class ShaderSymbolData
     public List<TextureParameter> TextureParameters { get; set; } = new();
     public List<SamplerParameter> Samplers { get; set; } = new();
     public List<UAVParameter> UAVs { get; set; } = new();
+    // Mirrors Unity SerializedProgramParameters.m_DescriptorSetParams. The
+    // single source of truth for descriptor-set membership: per-resource
+    // records (BufferBinding / TextureParameter / SamplerParameter /
+    // UAVParameter) hold the binding slot, the set id is recovered from here
+    // by matching (BindingIndex, DescriptorType).
+    public List<DescriptorSetParameter> DescriptorSetParams { get; set; } = new();
     public string EntryPoint { get; set; } = "main";
     public string? DebugName { get; set; }
     public List<string> UsedMaterials { get; set; } = new();
@@ -15,12 +21,12 @@ public class ShaderSymbolData
     {
         foreach (BufferBinding binding in ConstantBufferBindings)
         {
-            yield return (binding.Name, binding.Index, binding.Set, ShaderResourceType.ConstantBuffer, 'b');
+            yield return (binding.Name, binding.Index, GetSetIdFor(binding.Index, ShaderResourceType.ConstantBuffer), ShaderResourceType.ConstantBuffer, 'b');
         }
 
         foreach (TextureParameter texture in TextureParameters)
         {
-            yield return (texture.Name, texture.Index, texture.Set, ShaderResourceType.Texture, 't');
+            yield return (texture.Name, texture.Index, GetSetIdFor(texture.Index, ShaderResourceType.Texture), ShaderResourceType.Texture, 't');
         }
 
         foreach (SamplerParameter sampler in Samplers)
@@ -28,14 +34,106 @@ public class ShaderSymbolData
             string name = string.IsNullOrWhiteSpace(sampler.Name)
                 ? $"sampler_{sampler.Index}"
                 : sampler.Name!;
-            yield return (name, sampler.Index, sampler.Set, ShaderResourceType.Sampler, 's');
+            yield return (name, sampler.Index, GetSetIdFor(sampler.Index, ShaderResourceType.Sampler), ShaderResourceType.Sampler, 's');
         }
 
         foreach (UAVParameter uav in UAVs)
         {
-            yield return (uav.Name, uav.Index, uav.Set, ShaderResourceType.UAV, 'u');
+            yield return (uav.Name, uav.Index, GetSetIdFor(uav.Index, ShaderResourceType.UAV), ShaderResourceType.UAV, 'u');
         }
     }
+
+    // Resolve the descriptor-set id that owns `(bindingIndex, kind)`. Returns 0
+    // when no entry matches — matches the legacy "default set 0" behaviour
+    // from before Set lived on individual records.
+    public int GetSetIdFor(int bindingIndex, ShaderResourceType kind)
+    {
+        DescriptorBindingType descriptorType = ClassifyDescriptorBindingType(kind);
+        return GetSetIdFor(bindingIndex, descriptorType);
+    }
+
+    public int GetSetIdFor(int bindingIndex, DescriptorBindingType descriptorType)
+    {
+        int wireType = (int)descriptorType;
+        foreach (DescriptorSetParameter set in DescriptorSetParams)
+        {
+            foreach (SetBinding binding in set.Bindings)
+            {
+                if (binding.BindingIndex != bindingIndex)
+                {
+                    continue;
+                }
+                if (descriptorType == DescriptorBindingType.Unknown || binding.DescriptorType == wireType)
+                {
+                    return set.SetId;
+                }
+            }
+        }
+        return 0;
+    }
+
+    // Add or update a descriptor-set entry for `(setId, bindingIndex, kind)`.
+    // Used by hooks that decode packed binding indices (see
+    // EndFieldShaderBindingHook.DecodePackedBindPoint) and need to write the
+    // recovered set id back into the symbol table.
+    public void RegisterSetBinding(int setId, int bindingIndex, ShaderResourceType kind, string? name = null)
+    {
+        if (setId < 0 || bindingIndex < 0)
+        {
+            return;
+        }
+
+        DescriptorBindingType descriptorType = ClassifyDescriptorBindingType(kind);
+        DescriptorSetParameter? set = DescriptorSetParams.FirstOrDefault(s => s.SetId == setId);
+        if (set is null)
+        {
+            set = new DescriptorSetParameter(string.Empty, setId);
+            DescriptorSetParams.Add(set);
+        }
+
+        SetBinding? existing = set.Bindings.FirstOrDefault(b => b.BindingIndex == bindingIndex && b.DescriptorType == (int)descriptorType);
+        if (existing is null)
+        {
+            set.Bindings.Add(new SetBinding(name ?? string.Empty, bindingIndex, descriptorType));
+        }
+        else if (!string.IsNullOrEmpty(name) && string.IsNullOrEmpty(existing.Name))
+        {
+            existing.Name = name;
+        }
+
+        if (bindingIndex > set.MaxBindingIndex)
+        {
+            set.MaxBindingIndex = bindingIndex;
+        }
+    }
+
+    public static DescriptorBindingType ClassifyDescriptorBindingType(ShaderResourceType kind) => kind switch
+    {
+        ShaderResourceType.ConstantBuffer => DescriptorBindingType.UniformBuffer,
+        ShaderResourceType.Sampler or ShaderResourceType.SamplerComparison => DescriptorBindingType.Sampler,
+        ShaderResourceType.Texture
+            or ShaderResourceType.SampledImage
+            or ShaderResourceType.SRV
+            or ShaderResourceType.Texture2D
+            or ShaderResourceType.Texture2DArray
+            or ShaderResourceType.Texture3D
+            or ShaderResourceType.TextureCube
+            or ShaderResourceType.TextureCubeArray
+            or ShaderResourceType.Texture2DMS
+            or ShaderResourceType.Buffer
+            or ShaderResourceType.StructuredBuffer
+            or ShaderResourceType.ByteAddressBuffer => DescriptorBindingType.SampledImage,
+        ShaderResourceType.UAV
+            or ShaderResourceType.RWBuffer
+            or ShaderResourceType.RWStructuredBuffer
+            or ShaderResourceType.RWByteAddressBuffer
+            or ShaderResourceType.StorageBuffer => DescriptorBindingType.StorageBuffer,
+        ShaderResourceType.RWTexture2D
+            or ShaderResourceType.RWTexture2DArray
+            or ShaderResourceType.RWTexture3D
+            or ShaderResourceType.StorageImage => DescriptorBindingType.StorageImage,
+        _ => DescriptorBindingType.Unknown,
+    };
 
     public int GetResourceBindingCount()
     {

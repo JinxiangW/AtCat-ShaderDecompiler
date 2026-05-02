@@ -305,7 +305,8 @@ public class SpirvPatcher
                 continue;
             }
 
-            var match = detailed.FirstOrDefault(b => b.Set == resource.Set && b.Binding == resource.Index && b.StructTypeId.HasValue);
+            int resourceSet = symbols.GetSetIdFor(resource.Index, ShaderResourceType.ConstantBuffer);
+            var match = detailed.FirstOrDefault(b => b.Set == resourceSet && b.Binding == resource.Index && b.StructTypeId.HasValue);
             if (match?.StructTypeId == null)
             {
                 continue;
