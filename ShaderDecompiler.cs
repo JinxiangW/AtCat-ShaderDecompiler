@@ -22,6 +22,7 @@ public sealed class DecompileOptions
 {
     public ShaderArchitecture Format { get; init; } = ShaderArchitecture.Unknown;
     public ShaderSymbolData? Metadata { get; init; }
+    public UnityShaderMetadata? UnityMetadata { get; init; }
     public uint ShaderModel { get; init; } = 51;
 
     // Optional escape hatch. Invoked after the structured-cbuffer rewrite
@@ -68,6 +69,7 @@ public sealed class DecompileResult
     public string? DebugDumpDirectory { get; set; }
     public string? StructuredRewriteSummary { get; set; }
     public ShaderSymbolData? FinalMetadata { get; set; }
+    public UnityShaderMetadata? FinalUnityMetadata { get; set; }
 }
 
 public sealed class ShaderDecompiler : IDisposable
@@ -236,6 +238,7 @@ public sealed class ShaderDecompiler : IDisposable
                 PostPatchSpirv = postPatch,
                 StructuredRewriteSummary = _rewriter.LastRewriteSummary,
                 FinalMetadata = metadata,
+                FinalUnityMetadata = options.UnityMetadata,
             };
         }
         catch (Exception ex)
