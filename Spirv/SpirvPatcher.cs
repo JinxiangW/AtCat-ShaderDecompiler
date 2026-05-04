@@ -65,14 +65,14 @@ public class SpirvPatcher
     // Legacy convenience: combines analyse + match-by-byte-offset + patch in one call. Kept
     // because it's still referenced by some test paths; the modern pipeline calls the two
     // entry points above directly via the higher-level ShaderDecompiler.
-    public byte[] Patch(byte[] spirvBytes, ShaderSymbolData symbols)
+    public byte[] Patch(byte[] spirvBytes, SerializedProgramData symbols)
     {
         var memberNames = new List<(uint TypeId, uint MemberIndex, string Name)>();
         List<SpirvBindingInfo> detailed = AnalyzeBindingsDetailed(spirvBytes);
 
-        foreach (BufferBinding resource in symbols.ConstantBufferBindings)
+        foreach (BufferBindingParameter resource in symbols.BufferBindingParameters)
         {
-            ConstantBuffer? constantBuffer = symbols.GetConstantBufferByName(resource.Name);
+            ConstantBufferParameter? constantBuffer = symbols.GetConstantBufferByName(resource.Name);
             if (constantBuffer == null)
             {
                 continue;
@@ -92,9 +92,9 @@ public class SpirvPatcher
         return memberNames.Count > 0 ? PatchByIds(spirvBytes, [], memberNames) : spirvBytes;
     }
 
-    private static void CollectStructMemberNames(ConstantBuffer constantBuffer, SpirvBindingInfo match, List<(uint, uint, string)> output)
+    private static void CollectStructMemberNames(ConstantBufferParameter constantBuffer, SpirvBindingInfo match, List<(uint, uint, string)> output)
     {
-        foreach (StructParameter structParameter in constantBuffer.StructParams.Where(static s => !string.IsNullOrWhiteSpace(s.Name)))
+        foreach (StructParameter structParameter in constantBuffer.StructParameters.Where(static s => !string.IsNullOrWhiteSpace(s.Name)))
         {
             if (TryFindMemberByByteOffset(match, structParameter.Index) is int targetIndex)
             {
@@ -103,11 +103,11 @@ public class SpirvPatcher
         }
     }
 
-    private static void CollectScalarMemberNames(ConstantBuffer constantBuffer, SpirvBindingInfo match, List<(uint, uint, string)> output)
+    private static void CollectScalarMemberNames(ConstantBufferParameter constantBuffer, SpirvBindingInfo match, List<(uint, uint, string)> output)
     {
-        foreach (NumericShaderParameter parameter in constantBuffer.AllNumericParams.Where(static p => !string.IsNullOrWhiteSpace(p.Name)))
+        foreach (NumericShaderParameter parameter in constantBuffer.AllNumericParameters.Where(static p => !string.IsNullOrWhiteSpace(p.Name)))
         {
-            if (TryFindMemberByByteOffset(match, parameter.ByteOffset) is int targetIndex)
+            if (TryFindMemberByByteOffset(match, parameter.Index) is int targetIndex)
             {
                 output.Add((match.StructTypeId!.Value, (uint)targetIndex, parameter.Name!));
             }

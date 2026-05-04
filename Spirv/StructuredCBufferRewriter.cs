@@ -39,7 +39,7 @@ internal sealed class StructuredCBufferRewriter
         return _resolvedBufferNames.TryGetValue((set, binding), out string? name) ? name : null;
     }
 
-    public byte[] Rewrite(byte[] spirv, ShaderSymbolData metadata)
+    public byte[] Rewrite(byte[] spirv, SerializedProgramData metadata)
     {
         LastRewriteApplied = false;
         _resolvedBufferNames.Clear();

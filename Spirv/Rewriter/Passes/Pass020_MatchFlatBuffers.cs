@@ -17,9 +17,9 @@ internal static class Pass020_MatchFlatBuffers
     public static void DoPass(RewriterPipelineState state)
     {
         var result = new List<FlatUniformBufferInfo>();
-        foreach (BufferBinding resource in state.Metadata.ConstantBufferBindings)
+        foreach (BufferBindingParameter resource in state.Metadata.BufferBindingParameters)
         {
-            ConstantBuffer? constantBuffer = state.Metadata.GetConstantBufferByName(resource.Name);
+            ConstantBufferParameter? constantBuffer = state.Metadata.GetConstantBufferByName(resource.Name);
             if (constantBuffer == null)
             {
                 state.Summary.Add($"[{resource.Name}] no USC constant buffer metadata found");

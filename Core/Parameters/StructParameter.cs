@@ -2,7 +2,12 @@ using Newtonsoft.Json;
 
 namespace Ruri.ShaderTools;
 
-// Mirrors Unity AssetRipper StructParameter exactly.
+// Mirrors Unity's StructParameter (type tree TypeName=StructParameter,
+// the entry type of ConstantBufferParameter.m_StructParams).
+//
+// Unity wire fields: m_NameIndex, m_Index, m_ArraySize, m_StructSize,
+// m_VectorMembers, m_MatrixMembers.
+//
 // `Index` is the byte offset of this struct within the parent CB (Unity wire
 // name kept for compat — semantically a byte offset, not a bind slot).
 public sealed class StructParameter
@@ -33,10 +38,10 @@ public sealed class StructParameter
     {
         get
         {
-            NumericShaderParameter[] shaderParams = new NumericShaderParameter[MatrixMembers.Length + VectorMembers.Length];
-            MatrixMembers.CopyTo(shaderParams, 0);
-            VectorMembers.CopyTo(shaderParams, MatrixMembers.Length);
-            return shaderParams;
+            NumericShaderParameter[] result = new NumericShaderParameter[MatrixMembers.Length + VectorMembers.Length];
+            MatrixMembers.CopyTo(result, 0);
+            VectorMembers.CopyTo(result, MatrixMembers.Length);
+            return result;
         }
     }
 }

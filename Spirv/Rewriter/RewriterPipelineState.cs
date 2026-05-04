@@ -9,7 +9,7 @@ namespace Ruri.ShaderTools.Spirv.Rewriter;
 // scoped to a single shader rewrite instead of a process-wide singleton.
 internal sealed class RewriterPipelineState
 {
-    public RewriterPipelineState(byte[] inputSpirv, ShaderSymbolData metadata)
+    public RewriterPipelineState(byte[] inputSpirv, SerializedProgramData metadata)
     {
         InputSpirv = inputSpirv;
         Metadata = metadata;
@@ -17,7 +17,7 @@ internal sealed class RewriterPipelineState
 
     // Inputs (immutable for the pipeline run).
     public byte[] InputSpirv { get; }
-    public ShaderSymbolData Metadata { get; }
+    public SerializedProgramData Metadata { get; }
 
     // Diagnostic log accumulated by every pass. Surfaced through
     // `StructuredCBufferRewriter.LastRewriteSummary` and the per-shader `rewrite-summary.txt`

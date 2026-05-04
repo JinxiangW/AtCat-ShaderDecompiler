@@ -25,7 +25,7 @@ internal static class Pass010_AnalyzeModule
         state.Constants = BuildConstantMaps(state.Module);
         state.Types = AnalyseScalarTypes(state.Module, state.Analysis);
 
-        state.Summary.Add($"Metadata resources={state.Metadata.GetResourceBindingCount()}, constantBuffers={state.Metadata.ConstantBuffers.Count}");
+        state.Summary.Add($"Metadata resources={state.Metadata.GetResourceBindingCount()}, constantBuffers={state.Metadata.ConstantBufferParameters.Count}");
         state.Summary.Add($"Analyzed decoratedIds={state.Analysis.SetBindingById.Count}, variables={state.Analysis.VariablePointerTypes.Count}, pointers={state.Analysis.PointerTypes.Count}, structs={state.Analysis.StructMembers.Count}, arrays={state.Analysis.ArrayTypes.Count}");
     }
 

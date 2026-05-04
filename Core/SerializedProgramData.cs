@@ -1,25 +1,51 @@
 namespace Ruri.ShaderTools;
 
-public class ShaderSymbolData
+// Mirrors Unity's ProgramParameters (type tree TypeName=ProgramParameters,
+// the m_Parameters / m_CommonParameters payload of SerializedSubProgram /
+// SerializedProgram). Unity's AssetRipper class is `SerializedProgramParameters`
+// — renamed to `SerializedProgramData` here to dodge the namespace clash with
+// AssetRipper.SourceGenerated.Subclasses.SerializedProgramParameters.
+//
+// Unity wire fields (one-to-one with our properties):
+//   m_VectorParams           → VectorParameters
+//   m_MatrixParams           → MatrixParameters
+//   m_TextureParams          → TextureParameters
+//   m_BufferParams           → BufferParameters
+//   m_ConstantBuffers        → ConstantBufferParameters
+//   m_ConstantBufferBindings → BufferBindingParameters
+//   m_UAVParams              → UAVParameters
+//   m_Samplers               → SamplerParameters
+//
+// Custom Ruri additions (NOT in Unity's ProgramParameters):
+//   DescriptorSetParameters  Vulkan descriptor-set decoder output (EndField hook)
+//   EntryPoint               main-function name fed to spirv-cross
+//   DebugName                debug label for failure dumps
+//   UsedMaterials            UE-only: list of materials referencing this shader
+public class SerializedProgramData
 {
-    public List<ConstantBuffer> ConstantBuffers { get; set; } = new();
-    public List<BufferBinding> ConstantBufferBindings { get; set; } = new();
+    public List<VectorParameter> VectorParameters { get; set; } = new();
+    public List<MatrixParameter> MatrixParameters { get; set; } = new();
     public List<TextureParameter> TextureParameters { get; set; } = new();
-    public List<SamplerParameter> Samplers { get; set; } = new();
-    public List<UAVParameter> UAVs { get; set; } = new();
-    // Mirrors Unity SerializedProgramParameters.m_DescriptorSetParams. The
-    // single source of truth for descriptor-set membership: per-resource
-    // records (BufferBinding / TextureParameter / SamplerParameter /
-    // UAVParameter) hold the binding slot, the set id is recovered from here
-    // by matching (BindingIndex, DescriptorType).
-    public List<DescriptorSetParameter> DescriptorSetParams { get; set; } = new();
+    public List<BufferBindingParameter> BufferParameters { get; set; } = new();
+    public List<ConstantBufferParameter> ConstantBufferParameters { get; set; } = new();
+    public List<BufferBindingParameter> BufferBindingParameters { get; set; } = new();
+    public List<UAVParameter> UAVParameters { get; set; } = new();
+    public List<SamplerParameter> SamplerParameters { get; set; } = new();
+
+    // Mirrors a Vulkan-only Unity extension (m_DescriptorSetParams) that some
+    // proprietary engines (EndField) emit. Single source of truth for
+    // descriptor-set membership: per-resource records (BufferBindingParameter /
+    // TextureParameter / SamplerParameter / UAVParameter) hold the binding
+    // slot, the set id is recovered from here by matching
+    // (BindingIndex, DescriptorType).
+    public List<DescriptorSetParameter> DescriptorSetParameters { get; set; } = new();
     public string EntryPoint { get; set; } = "main";
     public string? DebugName { get; set; }
     public List<string> UsedMaterials { get; set; } = new();
 
     public IEnumerable<(string Name, int Binding, int Set, ShaderResourceType Type, char RegisterType)> EnumerateResourceBindings()
     {
-        foreach (BufferBinding binding in ConstantBufferBindings)
+        foreach (BufferBindingParameter binding in BufferBindingParameters)
         {
             yield return (binding.Name, binding.Index, GetSetIdFor(binding.Index, ShaderResourceType.ConstantBuffer), ShaderResourceType.ConstantBuffer, 'b');
         }
@@ -29,15 +55,15 @@ public class ShaderSymbolData
             yield return (texture.Name, texture.Index, GetSetIdFor(texture.Index, ShaderResourceType.Texture), ShaderResourceType.Texture, 't');
         }
 
-        foreach (SamplerParameter sampler in Samplers)
+        foreach (SamplerParameter sampler in SamplerParameters)
         {
             string name = string.IsNullOrWhiteSpace(sampler.Name)
-                ? $"sampler_{sampler.Index}"
+                ? $"sampler_{sampler.BindPoint}"
                 : sampler.Name!;
-            yield return (name, sampler.Index, GetSetIdFor(sampler.Index, ShaderResourceType.Sampler), ShaderResourceType.Sampler, 's');
+            yield return (name, sampler.BindPoint, GetSetIdFor(sampler.BindPoint, ShaderResourceType.Sampler), ShaderResourceType.Sampler, 's');
         }
 
-        foreach (UAVParameter uav in UAVs)
+        foreach (UAVParameter uav in UAVParameters)
         {
             yield return (uav.Name, uav.Index, GetSetIdFor(uav.Index, ShaderResourceType.UAV), ShaderResourceType.UAV, 'u');
         }
@@ -55,7 +81,7 @@ public class ShaderSymbolData
     public int GetSetIdFor(int bindingIndex, DescriptorBindingType descriptorType)
     {
         int wireType = (int)descriptorType;
-        foreach (DescriptorSetParameter set in DescriptorSetParams)
+        foreach (DescriptorSetParameter set in DescriptorSetParameters)
         {
             foreach (SetBinding binding in set.Bindings)
             {
@@ -84,11 +110,11 @@ public class ShaderSymbolData
         }
 
         DescriptorBindingType descriptorType = ClassifyDescriptorBindingType(kind);
-        DescriptorSetParameter? set = DescriptorSetParams.FirstOrDefault(s => s.SetId == setId);
+        DescriptorSetParameter? set = DescriptorSetParameters.FirstOrDefault(s => s.SetId == setId);
         if (set is null)
         {
             set = new DescriptorSetParameter(string.Empty, setId);
-            DescriptorSetParams.Add(set);
+            DescriptorSetParameters.Add(set);
         }
 
         SetBinding? existing = set.Bindings.FirstOrDefault(b => b.BindingIndex == bindingIndex && b.DescriptorType == (int)descriptorType);
@@ -137,17 +163,17 @@ public class ShaderSymbolData
 
     public int GetResourceBindingCount()
     {
-        return ConstantBufferBindings.Count + TextureParameters.Count + Samplers.Count + UAVs.Count;
+        return BufferBindingParameters.Count + TextureParameters.Count + SamplerParameters.Count + UAVParameters.Count;
     }
 
-    public ConstantBuffer? GetConstantBufferByName(string name)
+    public ConstantBufferParameter? GetConstantBufferByName(string name)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
             return null;
         }
 
-        List<ConstantBuffer> matches = ConstantBuffers
+        List<ConstantBufferParameter> matches = ConstantBufferParameters
             .Where(cb => string.Equals(cb.Name, name, StringComparison.Ordinal))
             .ToList();
         if (matches.Count == 0)
@@ -163,18 +189,18 @@ public class ShaderSymbolData
         return BuildMergedConstantBuffer(matches);
     }
 
-    private static ConstantBuffer BuildMergedConstantBuffer(List<ConstantBuffer> matches)
+    private static ConstantBufferParameter BuildMergedConstantBuffer(List<ConstantBufferParameter> matches)
     {
-        ConstantBuffer first = matches[0];
-        return new ConstantBuffer
+        ConstantBufferParameter first = matches[0];
+        return new ConstantBufferParameter
         {
             Name = first.Name,
             NameIndex = matches.Select(static cb => cb.NameIndex).FirstOrDefault(static index => index >= 0),
             Size = matches.Max(static cb => cb.Size),
             IsPartialCB = matches.Any(static cb => cb.IsPartialCB),
-            MatrixParams = MergeNumericParameters(matches.SelectMany(static cb => cb.MatrixParams)),
-            VectorParams = MergeNumericParameters(matches.SelectMany(static cb => cb.VectorParams)),
-            StructParams = MergeStructParameters(matches.SelectMany(static cb => cb.StructParams)),
+            MatrixParameters = MergeNumericParameters(matches.SelectMany(static cb => cb.MatrixParameters)),
+            VectorParameters = MergeNumericParameters(matches.SelectMany(static cb => cb.VectorParameters)),
+            StructParameters = MergeStructParameters(matches.SelectMany(static cb => cb.StructParameters)),
         };
     }
 
@@ -183,14 +209,14 @@ public class ShaderSymbolData
         return parameters
             .GroupBy(static parameter => new NumericParameterKey(
                 parameter.Name ?? string.Empty,
-                parameter.ByteOffset,
+                parameter.Index,
                 parameter.ArraySize,
                 parameter.Type,
                 parameter.RowCount,
                 parameter.ColumnCount,
                 parameter.IsMatrix))
             .Select(static group => group.First())
-            .OrderBy(static parameter => parameter.ByteOffset)
+            .OrderBy(static parameter => parameter.Index)
             .ThenBy(static parameter => parameter.Name, StringComparer.Ordinal)
             .ToArray();
     }
@@ -222,6 +248,6 @@ public class ShaderSymbolData
             .ToArray();
     }
 
-    private readonly record struct NumericParameterKey(string Name, int ByteOffset, int ArraySize, ShaderParamType Type, byte Rows, byte Columns, bool IsMatrix);
+    private readonly record struct NumericParameterKey(string Name, int Index, int ArraySize, ShaderParamType Type, byte Rows, byte Columns, bool IsMatrix);
     private readonly record struct StructParameterKey(string Name, int Index, int ArraySize, int StructSize);
 }

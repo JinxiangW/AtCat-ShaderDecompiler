@@ -13,9 +13,9 @@ internal static class LayoutBuilder
 {
     public static StructuredBufferLayout? Build(FlatUniformBufferInfo flatBuffer)
     {
-        ConstantBuffer constantBuffer = flatBuffer.ConstantBuffer;
-        bool hasNumeric = constantBuffer.VectorParams.Length > 0 || constantBuffer.MatrixParams.Length > 0;
-        if (!hasNumeric && constantBuffer.StructParams.Length == 0)
+        ConstantBufferParameter constantBuffer = flatBuffer.ConstantBuffer;
+        bool hasNumeric = constantBuffer.VectorParameters.Length > 0 || constantBuffer.MatrixParameters.Length > 0;
+        if (!hasNumeric && constantBuffer.StructParameters.Length == 0)
         {
             return null;
         }
@@ -24,7 +24,7 @@ internal static class LayoutBuilder
         var members = new List<StructuredMemberLayout>();
         int maxAvailableByteOffset = flatBuffer.ArrayLength * 16;
 
-        foreach (NumericShaderParameter parameter in constantBuffer.AllNumericParams.OrderBy(static p => p.ByteOffset))
+        foreach (NumericShaderParameter parameter in constantBuffer.AllNumericParameters.OrderBy(static p => p.Index))
         {
             StructuredMemberLayout? member = TryCreateScalarOrVectorMember(parameter, maxAvailableByteOffset);
             if (member != null)
@@ -33,7 +33,7 @@ internal static class LayoutBuilder
             }
         }
 
-        foreach (StructParameter structParameter in flatBuffer.ConstantBuffer.StructParams.OrderBy(static p => p.Index))
+        foreach (StructParameter structParameter in flatBuffer.ConstantBuffer.StructParameters.OrderBy(static p => p.Index))
         {
             StructuredMemberLayout? member = TryCreateStructMember(structParameter, maxAvailableByteOffset);
             if (member != null)
@@ -115,7 +115,7 @@ internal static class LayoutBuilder
 
     private static StructuredMemberLayout? TryCreateScalarOrVectorMember(NumericShaderParameter parameter, int maxAvailableByteOffset)
     {
-        if (parameter.ByteOffset < 0 || parameter.ByteOffset >= maxAvailableByteOffset)
+        if (parameter.Index < 0 || parameter.Index >= maxAvailableByteOffset)
         {
             return null;
         }
@@ -129,11 +129,11 @@ internal static class LayoutBuilder
         return new StructuredMemberLayout
         {
             Name = parameter.Name ?? string.Empty,
-            ByteOffset = parameter.ByteOffset,
+            ByteOffset = parameter.Index,
             Metadata = parameter,
             LogicalType = logicalType,
-            RegisterOffset = parameter.ByteOffset / 16,
-            RegisterCount = GetRequiredRegisterCount(parameter.ByteOffset, logicalType),
+            RegisterOffset = parameter.Index / 16,
+            RegisterCount = GetRequiredRegisterCount(parameter.Index, logicalType),
         };
     }
 
@@ -147,9 +147,9 @@ internal static class LayoutBuilder
 
         var childMembers = new List<StructuredMemberLayout>();
         int structEnd = Math.Min(maxAvailableByteOffset, structParameter.Index + Math.Max(structParameter.StructSize, 0));
-        foreach (NumericShaderParameter child in structParameter.AllNumericMembers.OrderBy(static p => p.ByteOffset))
+        foreach (NumericShaderParameter child in structParameter.AllNumericMembers.OrderBy(static p => p.Index))
         {
-            if (child.ByteOffset < structParameter.Index || child.ByteOffset >= structEnd)
+            if (child.Index < structParameter.Index || child.Index >= structEnd)
             {
                 continue;
             }
@@ -163,11 +163,11 @@ internal static class LayoutBuilder
             childMembers.Add(new StructuredMemberLayout
             {
                 Name = child.Name ?? string.Empty,
-                ByteOffset = child.ByteOffset - structParameter.Index,
+                ByteOffset = child.Index - structParameter.Index,
                 Metadata = child,
                 LogicalType = childType,
-                RegisterOffset = (child.ByteOffset - structParameter.Index) / 16,
-                RegisterCount = GetRequiredRegisterCount(child.ByteOffset - structParameter.Index, childType),
+                RegisterOffset = (child.Index - structParameter.Index) / 16,
+                RegisterCount = GetRequiredRegisterCount(child.Index - structParameter.Index, childType),
             });
         }
 
@@ -221,7 +221,7 @@ internal static class LayoutBuilder
             Columns = parameter.ColumnCount,
             ArrayLength = Math.Max(parameter.ArraySize, 1),
             DeclaredByteSize = GetDeclaredByteSize(parameter),
-            UscIndex = parameter.ByteOffset,
+            UscIndex = parameter.Index,
             IsMatrix = parameter.IsMatrix,
         };
     }

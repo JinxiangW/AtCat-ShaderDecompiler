@@ -7,7 +7,7 @@ namespace Ruri.ShaderTools;
 // This type is the *only* place SetId lives now. Per-resource records
 // (BufferBinding / TextureParameter / SamplerParameter / UAVParameter) carry
 // the binding slot but no longer carry the set id — callers read it back via
-// ShaderSymbolData.GetSetIdFor(bindingIndex, kind).
+// SerializedProgramData.GetSetIdFor(bindingIndex, kind).
 public sealed class DescriptorSetParameter
 {
     public DescriptorSetParameter() { }

@@ -21,7 +21,7 @@ namespace Ruri.ShaderTools;
 //             bytes when --format is omitted or "auto".
 // `[output]`  output file. Defaults to "<input>.hlsl" / ".glsl" depending
 //             on what spirv-cross emits. Use "-" to write to stdout.
-// `--metadata` optional JSON file matching `ShaderSymbolData`. When the
+// `--metadata` optional JSON file matching `SerializedProgramData`. When the
 //             flag is omitted, "<input>.metadata.json" is loaded if present.
 internal static class Program
 {
@@ -92,7 +92,7 @@ internal static class Program
             }
         }
 
-        ShaderSymbolData? symbols = LoadSymbols(inputPath, metadataPath);
+        SerializedProgramData? symbols = LoadSymbols(inputPath, metadataPath);
 
         try
         {
@@ -202,7 +202,7 @@ internal static class Program
         for (int i = 0; i < inputs.Count; i++)
         {
             var (stem, binPath, metaPath) = inputs[i];
-            ShaderSymbolData? symbols = metaPath is null ? null : LoadSymbols(binPath, metaPath);
+            SerializedProgramData? symbols = metaPath is null ? null : LoadSymbols(binPath, metaPath);
             requests[i] = (File.ReadAllBytes(binPath), new DecompileOptions
             {
                 Format = ShaderArchitecture.Unknown,
@@ -237,7 +237,7 @@ internal static class Program
         return fail == 0 ? 0 : 2;
     }
 
-    private static void DumpIntermediates(string dir, string inputPath, DecompileResult result, ShaderSymbolData? symbols)
+    private static void DumpIntermediates(string dir, string inputPath, DecompileResult result, SerializedProgramData? symbols)
     {
         Directory.CreateDirectory(dir);
         string stem = Path.GetFileNameWithoutExtension(inputPath);
@@ -252,7 +252,7 @@ internal static class Program
         Console.WriteLine($"Debug-dump → {dir}");
     }
 
-    private static ShaderSymbolData? LoadSymbols(string inputPath, string? explicitMetadataPath)
+    private static SerializedProgramData? LoadSymbols(string inputPath, string? explicitMetadataPath)
     {
         string? path = explicitMetadataPath;
         if (string.IsNullOrWhiteSpace(path))
@@ -268,7 +268,7 @@ internal static class Program
             throw new FileNotFoundException($"Metadata file not found: {fullPath}");
 
         string json = File.ReadAllText(fullPath);
-        ShaderSymbolData? symbols = JsonConvert.DeserializeObject<ShaderSymbolData>(json);
+        SerializedProgramData? symbols = JsonConvert.DeserializeObject<SerializedProgramData>(json);
         if (symbols == null)
             throw new InvalidOperationException($"Failed to deserialize metadata: {fullPath}");
         return symbols;
@@ -296,7 +296,7 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("  <input>          shader binary (DXBC, DXIL, or SPIR-V).");
         Console.WriteLine("  [output]         output path. Defaults to <input>.hlsl/.glsl. Use '-' for stdout.");
-        Console.WriteLine("  --metadata       optional ShaderSymbolData JSON. Auto-loaded from '<input>.metadata.json' if present.");
+        Console.WriteLine("  --metadata       optional SerializedProgramData JSON. Auto-loaded from '<input>.metadata.json' if present.");
         Console.WriteLine("  --format         override format detection (default: auto-detect from magic bytes).");
         Console.WriteLine("  --shader-model   spirv-cross HLSL shader model (default: 50).");
         Console.WriteLine("  --debug-dump     directory to dump pre-rewrite / post-rewrite / post-patch SPIR-V plus metadata.");

@@ -15,5 +15,5 @@ internal sealed class FlatUniformBufferInfo
     public int ArrayLength { get; set; }
     public int ArrayStride { get; set; }
     public FlatResourceBinding Metadata { get; set; } = null!;
-    public ConstantBuffer ConstantBuffer { get; set; } = null!;
+    public ConstantBufferParameter ConstantBuffer { get; set; } = null!;
 }

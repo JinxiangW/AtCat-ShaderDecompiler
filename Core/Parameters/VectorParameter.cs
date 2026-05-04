@@ -8,7 +8,7 @@ public sealed class VectorParameter : NumericShaderParameter
     {
         Name = name;
         NameIndex = -1;
-        ByteOffset = index;
+        Index = index;
         ArraySize = 0;
         Type = type;
         Dim = unchecked((byte)columns);

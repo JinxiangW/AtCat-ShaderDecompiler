@@ -21,7 +21,7 @@ public enum ShaderArchitecture
 public sealed class DecompileOptions
 {
     public ShaderArchitecture Format { get; init; } = ShaderArchitecture.Unknown;
-    public ShaderSymbolData? Metadata { get; init; }
+    public SerializedProgramData? Metadata { get; init; }
     public UnityShaderMetadata? UnityMetadata { get; init; }
     public uint ShaderModel { get; init; } = 51;
 
@@ -34,7 +34,7 @@ public sealed class DecompileOptions
     // inference from OpSampledImage pairs, where you can only name a
     // texture once you've matched it to an already-named sampler in a
     // sampled-image pair). Unity's caller doesn't need this.
-    public Action<byte[], ShaderSymbolData>? MetadataEnricher { get; init; }
+    public Action<byte[], SerializedProgramData>? MetadataEnricher { get; init; }
 
     // When set, a failed Decompile call writes every intermediate
     // artifact (input binary, pre-rewrite SPIR-V, post-rewrite SPIR-V,
@@ -68,7 +68,7 @@ public sealed class DecompileResult
     public string? BuiltInDecorationsDescription { get; set; }
     public string? DebugDumpDirectory { get; set; }
     public string? StructuredRewriteSummary { get; set; }
-    public ShaderSymbolData? FinalMetadata { get; set; }
+    public SerializedProgramData? FinalMetadata { get; set; }
     public UnityShaderMetadata? FinalUnityMetadata { get; set; }
 }
 
@@ -116,7 +116,7 @@ public sealed class ShaderDecompiler : IDisposable
         _toolsDir = FindToolsDirectory(toolsDir);
     }
 
-    public DecompileResult Decompile(byte[] binary, ShaderArchitecture format = ShaderArchitecture.Unknown, ShaderSymbolData? metadata = null, uint shaderModel = 51)
+    public DecompileResult Decompile(byte[] binary, ShaderArchitecture format = ShaderArchitecture.Unknown, SerializedProgramData? metadata = null, uint shaderModel = 51)
         => Decompile(binary, new DecompileOptions { Format = format, Metadata = metadata, ShaderModel = shaderModel });
 
     /// <summary>
@@ -167,7 +167,7 @@ public sealed class ShaderDecompiler : IDisposable
         if (string.IsNullOrWhiteSpace(_toolsDir)) return Fail("Decompiler tools not found. Expected dxbc2dxil.exe, dxil-spirv.exe, and spirv-cross.exe.");
 
         _lastToolFailureLog = null;
-        ShaderSymbolData metadata = options.Metadata ?? new ShaderSymbolData();
+        SerializedProgramData metadata = options.Metadata ?? new SerializedProgramData();
         ShaderArchitecture format = Detect(options.Format, binary);
 
         TempFiles temp = Temps();
@@ -279,7 +279,7 @@ public sealed class ShaderDecompiler : IDisposable
         }
     }
 
-    private string WriteFailureDump(DecompileOptions options, byte[] inputBinary, DecompileResult fail, ShaderSymbolData metadata)
+    private string WriteFailureDump(DecompileOptions options, byte[] inputBinary, DecompileResult fail, SerializedProgramData metadata)
     {
         string dir = options.DebugDumpDirectory!;
         Directory.CreateDirectory(dir);
@@ -391,7 +391,7 @@ public sealed class ShaderDecompiler : IDisposable
         return File.ReadAllBytes(tempSpv);
     }
 
-    private byte[] Patch(byte[] spirv, ShaderSymbolData metadata)
+    private byte[] Patch(byte[] spirv, SerializedProgramData metadata)
     {
         if (metadata.GetResourceBindingCount() == 0) return spirv;
         IReadOnlyList<SpirvBindingInfo> bindings = _patcher.AnalyzeBindingsDetailed(spirv);
@@ -400,7 +400,7 @@ public sealed class ShaderDecompiler : IDisposable
         return names.Count == 0 && members.Count == 0 ? spirv : _patcher.PatchByIds(spirv, names, members);
     }
 
-    private List<(uint Id, string Name)> BuildNamePatches(IReadOnlyList<SpirvBindingInfo> bindings, ShaderSymbolData metadata)
+    private List<(uint Id, string Name)> BuildNamePatches(IReadOnlyList<SpirvBindingInfo> bindings, SerializedProgramData metadata)
     {
         // Variables get the metadata name verbatim. The cbuffer struct type gets the
         // DXC-style `type.<Name>` alias — spirv-cross sanitises the dot to `_` so the
@@ -447,7 +447,7 @@ public sealed class ShaderDecompiler : IDisposable
         return result;
     }
 
-    private static string? DeriveSamplerName(int set, int binding, ShaderSymbolData metadata)
+    private static string? DeriveSamplerName(int set, int binding, SerializedProgramData metadata)
     {
         List<TextureParameter> linked = metadata.TextureParameters
             .Where(t => metadata.GetSetIdFor(t.Index, ShaderResourceType.Texture) == set && t.SamplerIndex == binding && !string.IsNullOrWhiteSpace(t.Name))
@@ -460,13 +460,13 @@ public sealed class ShaderDecompiler : IDisposable
         return $"sampler_{binding}";
     }
 
-    private List<(uint TypeId, uint MemberIndex, string Name)> BuildMemberPatches(IReadOnlyList<SpirvBindingInfo> bindings, ShaderSymbolData metadata)
+    private List<(uint TypeId, uint MemberIndex, string Name)> BuildMemberPatches(IReadOnlyList<SpirvBindingInfo> bindings, SerializedProgramData metadata)
     {
         List<(uint TypeId, uint MemberIndex, string Name)> result = new();
         foreach (var resource in metadata.EnumerateResourceBindings().Where(static r => r.RegisterType == 'b' && !string.IsNullOrWhiteSpace(r.Name)))
             foreach (SpirvBindingInfo binding in MatchBindings(bindings, resource).Where(static b => b.DescriptorType == "UniformBuffer" && b.StructTypeId is > 0))
             {
-                ConstantBuffer? cb = metadata.GetConstantBufferByName(ResolveName(resource, binding));
+                ConstantBufferParameter? cb = metadata.GetConstantBufferByName(ResolveName(resource, binding));
                 if (cb == null) continue;
                 result.AddRange(MemberPatches(binding, cb));
             }
@@ -479,24 +479,24 @@ public sealed class ShaderDecompiler : IDisposable
     private string ResolveName((string Name, int Binding, int Set, ShaderResourceType Type, char RegisterType) resource, SpirvBindingInfo binding)
         => binding.DescriptorType == "UniformBuffer" ? _rewriter.GetResolvedBufferName(resource.Set, resource.Binding) ?? resource.Name : resource.Name;
 
-    private static IEnumerable<(uint TypeId, uint MemberIndex, string Name)> MemberPatches(SpirvBindingInfo binding, ConstantBuffer cb)
+    private static IEnumerable<(uint TypeId, uint MemberIndex, string Name)> MemberPatches(SpirvBindingInfo binding, ConstantBufferParameter cb)
     {
-        List<NumericShaderParameter> all = AllNumericParams(cb);
+        List<NumericShaderParameter> all = AllNumericParameters(cb);
         if (binding.StructMemberCount == 1 && all.Count > 0 && all.All(static p => p.IsMatrix && p.RowCount == 4 && p.ColumnCount == 4))
             return new[] { (binding.StructTypeId!.Value, 0u, string.Join("_", all.Select(static p => p.Name ?? string.Empty))) };
 
         List<(uint TypeId, uint MemberIndex, string Name)> result = new();
-        foreach (StructParameter p in cb.StructParams.Where(static p => !string.IsNullOrWhiteSpace(p.Name)))
+        foreach (StructParameter p in cb.StructParameters.Where(static p => !string.IsNullOrWhiteSpace(p.Name)))
             if (FindMemberIndex(binding, p.Index) is int i) result.Add((binding.StructTypeId!.Value, (uint)i, p.Name));
-        foreach (NumericShaderParameter p in cb.AllNumericParams.Where(static p => !string.IsNullOrWhiteSpace(p.Name)))
-            if (FindMemberIndex(binding, p.ByteOffset) is int i) result.Add((binding.StructTypeId!.Value, (uint)i, p.Name!));
+        foreach (NumericShaderParameter p in cb.AllNumericParameters.Where(static p => !string.IsNullOrWhiteSpace(p.Name)))
+            if (FindMemberIndex(binding, p.Index) is int i) result.Add((binding.StructTypeId!.Value, (uint)i, p.Name!));
         return result;
     }
 
-    private static List<NumericShaderParameter> AllNumericParams(ConstantBuffer cb)
+    private static List<NumericShaderParameter> AllNumericParameters(ConstantBufferParameter cb)
     {
-        List<NumericShaderParameter> result = new(cb.AllNumericParams);
-        foreach (StructParameter s in cb.StructParams) result.AddRange(s.AllNumericMembers);
+        List<NumericShaderParameter> result = new(cb.AllNumericParameters);
+        foreach (StructParameter s in cb.StructParameters) result.AddRange(s.AllNumericMembers);
         return result;
     }
 
@@ -654,7 +654,7 @@ public sealed class ShaderDecompiler : IDisposable
         if (stageArg != null) { args.Add("--stage"); args.Add(stageArg); }
     }
 
-    private string DescribePatchPlan(byte[] spirv, ShaderSymbolData metadata)
+    private string DescribePatchPlan(byte[] spirv, SerializedProgramData metadata)
     {
         if (metadata.GetResourceBindingCount() == 0) return "Patch plan: metadata contained no resource bindings.";
 

@@ -9,14 +9,14 @@ public static class UnityShaderLabWriter
         ArgumentNullException.ThrowIfNull(metadata);
 
         IndentedStringBuilder sb = new();
-        sb.AppendLine($"Shader \"{metadata.m_Name}\" {{");
+        sb.AppendLine($"Shader \"{metadata.Name}\" {{");
         sb.Indent();
 
-        if (metadata.m_ParsedForm.m_PropInfo.m_Props.Count > 0)
+        if (metadata.ParsedForm.PropInfo.Props.Count > 0)
         {
             sb.AppendLine("Properties {");
             sb.Indent();
-            foreach (UnitySerializedProperty property in metadata.m_ParsedForm.m_PropInfo.m_Props)
+            foreach (UnitySerializedProperty property in metadata.ParsedForm.PropInfo.Props)
             {
                 string declaration = BuildPropertyDeclaration(property);
                 if (!string.IsNullOrWhiteSpace(declaration))
@@ -28,47 +28,51 @@ public static class UnityShaderLabWriter
             sb.AppendLine("}");
         }
 
-        foreach (UnitySerializedSubShader subShader in metadata.m_ParsedForm.m_SubShaders)
+        foreach (UnitySerializedSubShader subShader in metadata.ParsedForm.SubShaders)
         {
             sb.AppendLine("SubShader {");
             sb.Indent();
-            WriteTags(sb, subShader.m_Tags.tags);
-            if (subShader.m_LOD != 0)
+            WriteTags(sb, subShader.Tags.Tags);
+            if (subShader.LOD != 0)
             {
-                sb.AppendLine($"LOD {subShader.m_LOD}");
+                sb.AppendLine($"LOD {subShader.LOD}");
             }
 
-            foreach (UnitySerializedPass pass in subShader.m_Passes)
+            foreach (UnitySerializedPass pass in subShader.Passes)
             {
-                if (!string.IsNullOrWhiteSpace(pass.m_UseName))
+                if (!string.IsNullOrWhiteSpace(pass.UseName))
                 {
-                    sb.AppendLine($"UsePass \"{pass.m_UseName}\"");
+                    sb.AppendLine($"UsePass \"{pass.UseName}\"");
                     continue;
                 }
 
                 sb.AppendLine("Pass {");
                 sb.Indent();
 
-                if (!string.IsNullOrWhiteSpace(pass.m_State.m_Name))
+                if (!string.IsNullOrWhiteSpace(pass.State.Name))
                 {
-                    sb.AppendLine($"Name \"{pass.m_State.m_Name}\"");
+                    sb.AppendLine($"Name \"{pass.State.Name}\"");
                 }
-                if (pass.m_State.m_LOD != 0)
+                if (pass.State.LOD != 0)
                 {
-                    sb.AppendLine($"LOD {pass.m_State.m_LOD}");
+                    sb.AppendLine($"LOD {pass.State.LOD}");
                 }
-                foreach (string command in BuildStateCommands(pass.m_State))
+                foreach (string command in BuildStateCommands(pass.State))
                 {
                     if (!string.IsNullOrWhiteSpace(command))
                     {
                         sb.AppendLine(command);
                     }
                 }
-                WriteTags(sb, pass.m_State.m_Tags.tags);
-
-                if (pass.Programs.Count > 0)
+                WriteTags(sb, pass.State.Tags.Tags);
+                if (pass.Tags.Tags.Count > 0)
                 {
-                    WriteProgramsBlock(sb, metadata.m_ParsedForm.m_KeywordNames, pass.Programs);
+                    WriteTags(sb, pass.Tags.Tags);
+                }
+
+                if (HasAnyProgram(pass))
+                {
+                    WriteProgramsBlock(sb, metadata.ParsedForm.KeywordNames, pass);
                 }
 
                 sb.Unindent();
@@ -79,9 +83,14 @@ public static class UnityShaderLabWriter
             sb.AppendLine("}");
         }
 
-        if (!string.IsNullOrWhiteSpace(metadata.m_FallbackName))
+        if (!string.IsNullOrWhiteSpace(metadata.ParsedForm.FallbackName))
         {
-            sb.AppendLine($"Fallback \"{metadata.m_FallbackName}\"");
+            sb.AppendLine($"Fallback \"{metadata.ParsedForm.FallbackName}\"");
+        }
+
+        if (!string.IsNullOrWhiteSpace(metadata.ParsedForm.CustomEditorName))
+        {
+            sb.AppendLine($"CustomEditor \"{metadata.ParsedForm.CustomEditorName}\"");
         }
 
         sb.Unindent();
@@ -89,15 +98,24 @@ public static class UnityShaderLabWriter
         return sb.ToString();
     }
 
+    private static bool HasAnyProgram(UnitySerializedPass pass)
+    {
+        foreach ((_, UnitySerializedProgram program) in pass.EnumerateProgramSlots())
+        {
+            if (program.SubPrograms.Count > 0) return true;
+        }
+        return false;
+    }
+
     private static string BuildPropertyDeclaration(UnitySerializedProperty property)
     {
         StringBuilder builder = new();
-        foreach (string attribute in property.m_Attributes)
+        foreach (string attribute in property.Attributes)
         {
             builder.Append('[').Append(attribute).Append("] ");
         }
 
-        uint flags = property.m_Flags;
+        uint flags = property.Flags;
         if ((flags & 1u) != 0) builder.Append("[HideInInspector] ");
         if ((flags & 2u) != 0) builder.Append("[PerRendererData] ");
         if ((flags & 4u) != 0) builder.Append("[NoScaleOffset] ");
@@ -105,13 +123,13 @@ public static class UnityShaderLabWriter
         if ((flags & 0x10u) != 0) builder.Append("[HDR] ");
         if ((flags & 0x20u) != 0) builder.Append("[Gamma] ");
 
-        string typeName = property.m_Type switch
+        string typeName = property.Type switch
         {
             0 => "Color",
             1 => "Vector",
             2 => "Float",
-            3 => $"Range({FormatFloat(property.m_DefValue[1])}, {FormatFloat(property.m_DefValue[2])})",
-            4 => property.m_DefTexture.m_TexDim switch
+            3 => $"Range({FormatFloat(property.DefValue[1])}, {FormatFloat(property.DefValue[2])})",
+            4 => property.DefTexture.TexDim switch
             {
                 1 => "any",
                 2 => "2D",
@@ -125,50 +143,51 @@ public static class UnityShaderLabWriter
             _ => "Float",
         };
 
-        string value = property.m_Type switch
+        string value = property.Type switch
         {
-            0 or 1 => $"({FormatFloat(property.m_DefValue[0])}, {FormatFloat(property.m_DefValue[1])}, {FormatFloat(property.m_DefValue[2])}, {FormatFloat(property.m_DefValue[3])})",
-            2 or 3 or 5 => FormatFloat(property.m_DefValue[0]),
-            4 => $"\"{property.m_DefTexture.m_DefaultName}\" {{}}",
-            _ => FormatFloat(property.m_DefValue[0]),
+            0 or 1 => $"({FormatFloat(property.DefValue[0])}, {FormatFloat(property.DefValue[1])}, {FormatFloat(property.DefValue[2])}, {FormatFloat(property.DefValue[3])})",
+            2 or 3 or 5 => FormatFloat(property.DefValue[0]),
+            4 => $"\"{property.DefTexture.DefaultName}\" {{}}",
+            _ => FormatFloat(property.DefValue[0]),
         };
 
-        builder.Append($"{property.m_Name} (\"{property.m_Description}\", {typeName}) = {value}");
+        builder.Append($"{property.Name} (\"{property.Description}\", {typeName}) = {value}");
         return builder.ToString();
     }
 
     private static IEnumerable<string> BuildStateCommands(UnitySerializedShaderState state)
     {
-        if (state.rtSeparateBlend)
+        if (state.RtSeparateBlend)
         {
-            foreach (string command in BuildRtBlendCommands(state.rtBlend0, 0)) yield return command;
-            foreach (string command in BuildRtBlendCommands(state.rtBlend1, 1)) yield return command;
-            foreach (string command in BuildRtBlendCommands(state.rtBlend2, 2)) yield return command;
-            foreach (string command in BuildRtBlendCommands(state.rtBlend3, 3)) yield return command;
-            foreach (string command in BuildRtBlendCommands(state.rtBlend4, 4)) yield return command;
-            foreach (string command in BuildRtBlendCommands(state.rtBlend5, 5)) yield return command;
-            foreach (string command in BuildRtBlendCommands(state.rtBlend6, 6)) yield return command;
-            foreach (string command in BuildRtBlendCommands(state.rtBlend7, 7)) yield return command;
+            foreach (string command in BuildRtBlendCommands(state.RtBlend0, 0)) yield return command;
+            foreach (string command in BuildRtBlendCommands(state.RtBlend1, 1)) yield return command;
+            foreach (string command in BuildRtBlendCommands(state.RtBlend2, 2)) yield return command;
+            foreach (string command in BuildRtBlendCommands(state.RtBlend3, 3)) yield return command;
+            foreach (string command in BuildRtBlendCommands(state.RtBlend4, 4)) yield return command;
+            foreach (string command in BuildRtBlendCommands(state.RtBlend5, 5)) yield return command;
+            foreach (string command in BuildRtBlendCommands(state.RtBlend6, 6)) yield return command;
+            foreach (string command in BuildRtBlendCommands(state.RtBlend7, 7)) yield return command;
         }
         else
         {
-            foreach (string command in BuildRtBlendCommands(state.rtBlend0, -1)) yield return command;
+            foreach (string command in BuildRtBlendCommands(state.RtBlend0, -1)) yield return command;
         }
 
-        if (state.alphaToMask.val > 0f || HasName(state.alphaToMask))
+        if (state.AlphaToMask.Val > 0f || HasName(state.AlphaToMask))
         {
-            yield return HasName(state.alphaToMask) ? $"AlphaToMask [{state.alphaToMask.name}]" : "AlphaToMask On";
+            yield return HasName(state.AlphaToMask) ? $"AlphaToMask [{state.AlphaToMask.Name}]" : "AlphaToMask On";
         }
-        if ((int)state.zClip.val == 1 || HasName(state.zClip)) yield return $"ZClip {FormatNamedOrEnum(state.zClip, FormatZClip(state.zClip.val))}";
-        if (((int)state.zTest.val != 0 && (int)state.zTest.val != 4) || HasName(state.zTest)) yield return $"ZTest {FormatNamedOrEnum(state.zTest, FormatZTest(state.zTest.val))}";
-        if ((int)state.zWrite.val != 1 || HasName(state.zWrite)) yield return $"ZWrite {FormatNamedOrEnum(state.zWrite, FormatZWrite(state.zWrite.val))}";
-        if ((int)state.culling.val != 2 || HasName(state.culling)) yield return $"Cull {FormatNamedOrEnum(state.culling, FormatCullMode(state.culling.val))}";
-        if (state.offsetFactor.val != 0f || state.offsetUnits.val != 0f || HasName(state.offsetFactor) || HasName(state.offsetUnits)) yield return $"Offset {FormatNamedOrDecimal(state.offsetFactor)}, {FormatNamedOrDecimal(state.offsetUnits)}";
+        if ((int)state.ZClip.Val == 1 || HasName(state.ZClip)) yield return $"ZClip {FormatNamedOrEnum(state.ZClip, FormatZClip(state.ZClip.Val))}";
+        if (((int)state.ZTest.Val != 0 && (int)state.ZTest.Val != 4) || HasName(state.ZTest)) yield return $"ZTest {FormatNamedOrEnum(state.ZTest, FormatZTest(state.ZTest.Val))}";
+        if ((int)state.ZWrite.Val != 1 || HasName(state.ZWrite)) yield return $"ZWrite {FormatNamedOrEnum(state.ZWrite, FormatZWrite(state.ZWrite.Val))}";
+        if ((int)state.Culling.Val != 2 || HasName(state.Culling)) yield return $"Cull {FormatNamedOrEnum(state.Culling, FormatCullMode(state.Culling.Val))}";
+        if ((int)state.Conservative.Val != 0 || HasName(state.Conservative)) yield return $"Conservative {FormatNamedOrEnum(state.Conservative, ((int)state.Conservative.Val) == 1 ? "True" : "False")}";
+        if (state.OffsetFactor.Val != 0f || state.OffsetUnits.Val != 0f || HasName(state.OffsetFactor) || HasName(state.OffsetUnits)) yield return $"Offset {FormatNamedOrDecimal(state.OffsetFactor)}, {FormatNamedOrDecimal(state.OffsetUnits)}";
 
         foreach (string command in BuildStencilCommands(state)) yield return command;
         foreach (string command in BuildFogCommands(state)) yield return command;
 
-        if (state.lighting)
+        if (state.Lighting)
         {
             yield return "Lighting On";
         }
@@ -176,47 +195,47 @@ public static class UnityShaderLabWriter
 
     private static IEnumerable<string> BuildRtBlendCommands(UnitySerializedShaderRTBlendState state, int index)
     {
-        bool hasBlendName = HasName(state.srcBlend) || HasName(state.destBlend) || HasName(state.srcBlendAlpha) || HasName(state.destBlendAlpha);
-        bool hasBlendOpName = HasName(state.blendOp) || HasName(state.blendOpAlpha);
-        bool hasColMaskName = HasName(state.colMask);
+        bool hasBlendName = HasName(state.SrcBlend) || HasName(state.DestBlend) || HasName(state.SrcBlendAlpha) || HasName(state.DestBlendAlpha);
+        bool hasBlendOpName = HasName(state.BlendOp) || HasName(state.BlendOpAlpha);
+        bool hasColMaskName = HasName(state.ColMask);
 
-        if ((int)state.srcBlend.val != 1 || (int)state.destBlend.val != 0 || (int)state.srcBlendAlpha.val != 1 || (int)state.destBlendAlpha.val != 0 || hasBlendName)
+        if ((int)state.SrcBlend.Val != 1 || (int)state.DestBlend.Val != 0 || (int)state.SrcBlendAlpha.Val != 1 || (int)state.DestBlendAlpha.Val != 0 || hasBlendName)
         {
             string command = index >= 0 ? $"Blend {index} " : "Blend ";
-            command += $"{FormatNamedOrEnum(state.srcBlend, FormatBlendMode(state.srcBlend.val))} {FormatNamedOrEnum(state.destBlend, FormatBlendMode(state.destBlend.val))}";
-            string alphaPart = (int)state.srcBlendAlpha.val != 1 || (int)state.destBlendAlpha.val != 0 || HasName(state.srcBlendAlpha) || HasName(state.destBlendAlpha)
-                ? $", {FormatNamedOrEnum(state.srcBlendAlpha, FormatBlendMode(state.srcBlendAlpha.val))} {FormatNamedOrEnum(state.destBlendAlpha, FormatBlendMode(state.destBlendAlpha.val))}"
+            command += $"{FormatNamedOrEnum(state.SrcBlend, FormatBlendMode(state.SrcBlend.Val))} {FormatNamedOrEnum(state.DestBlend, FormatBlendMode(state.DestBlend.Val))}";
+            string alphaPart = (int)state.SrcBlendAlpha.Val != 1 || (int)state.DestBlendAlpha.Val != 0 || HasName(state.SrcBlendAlpha) || HasName(state.DestBlendAlpha)
+                ? $", {FormatNamedOrEnum(state.SrcBlendAlpha, FormatBlendMode(state.SrcBlendAlpha.Val))} {FormatNamedOrEnum(state.DestBlendAlpha, FormatBlendMode(state.DestBlendAlpha.Val))}"
                 : string.Empty;
             yield return command + alphaPart;
         }
 
-        if ((int)state.blendOp.val != 0 || (int)state.blendOpAlpha.val != 0 || hasBlendOpName)
+        if ((int)state.BlendOp.Val != 0 || (int)state.BlendOpAlpha.Val != 0 || hasBlendOpName)
         {
             string command = index >= 0 ? $"BlendOp {index} " : "BlendOp ";
-            command += FormatNamedOrEnum(state.blendOp, FormatBlendOp(state.blendOp.val));
-            if ((int)state.blendOpAlpha.val != 0 || HasName(state.blendOpAlpha))
+            command += FormatNamedOrEnum(state.BlendOp, FormatBlendOp(state.BlendOp.Val));
+            if ((int)state.BlendOpAlpha.Val != 0 || HasName(state.BlendOpAlpha))
             {
-                command += $", {FormatNamedOrEnum(state.blendOpAlpha, FormatBlendOp(state.blendOpAlpha.val))}";
+                command += $", {FormatNamedOrEnum(state.BlendOpAlpha, FormatBlendOp(state.BlendOpAlpha.Val))}";
             }
             yield return command;
         }
 
-        if ((int)state.colMask.val != 15 || hasColMaskName)
+        if ((int)state.ColMask.Val != 15 || hasColMaskName)
         {
-            string mask = hasColMaskName ? $"[{state.colMask.name}]" : ((int)state.colMask.val) == 0 ? "0" : BuildColorMask((int)state.colMask.val);
+            string mask = hasColMaskName ? $"[{state.ColMask.Name}]" : ((int)state.ColMask.Val) == 0 ? "0" : BuildColorMask((int)state.ColMask.Val);
             yield return index >= 0 ? $"ColorMask {mask} {index}" : $"ColorMask {mask}";
         }
     }
 
     private static IEnumerable<string> BuildStencilCommands(UnitySerializedShaderState state)
     {
-        bool hasNames = HasName(state.stencilRef) || HasName(state.stencilReadMask) || HasName(state.stencilWriteMask)
-            || HasStencilNames(state.stencilOp) || HasStencilNames(state.stencilOpFront) || HasStencilNames(state.stencilOpBack);
+        bool hasNames = HasName(state.StencilRef) || HasName(state.StencilReadMask) || HasName(state.StencilWriteMask)
+            || HasStencilNames(state.StencilOp) || HasStencilNames(state.StencilOpFront) || HasStencilNames(state.StencilOpBack);
 
-        bool hasValues = state.stencilRef.val != 0f || state.stencilReadMask.val != 255f || state.stencilWriteMask.val != 255f
-            || !IsDefaultStencilBlock(state.stencilOp, allowDisabledComp: false)
-            || !IsDefaultStencilBlock(state.stencilOpFront, allowDisabledComp: false)
-            || !IsDefaultStencilBlock(state.stencilOpBack, allowDisabledComp: false);
+        bool hasValues = state.StencilRef.Val != 0f || state.StencilReadMask.Val != 255f || state.StencilWriteMask.Val != 255f
+            || !IsDefaultStencilBlock(state.StencilOp, allowDisabledComp: false)
+            || !IsDefaultStencilBlock(state.StencilOpFront, allowDisabledComp: false)
+            || !IsDefaultStencilBlock(state.StencilOpBack, allowDisabledComp: false);
 
         if (!hasValues && !hasNames)
         {
@@ -224,38 +243,38 @@ public static class UnityShaderLabWriter
         }
 
         yield return "Stencil {";
-        if (state.stencilRef.val != 0f || HasName(state.stencilRef)) yield return $"    Ref {FormatNamedOrInt(state.stencilRef)}";
-        if (state.stencilReadMask.val != 255f || HasName(state.stencilReadMask)) yield return $"    ReadMask {FormatNamedOrInt(state.stencilReadMask)}";
-        if (state.stencilWriteMask.val != 255f || HasName(state.stencilWriteMask)) yield return $"    WriteMask {FormatNamedOrInt(state.stencilWriteMask)}";
-        if (!IsDefaultStencilBlock(state.stencilOp, allowDisabledComp: true) || HasStencilNames(state.stencilOp))
+        if (state.StencilRef.Val != 0f || HasName(state.StencilRef)) yield return $"    Ref {FormatNamedOrInt(state.StencilRef)}";
+        if (state.StencilReadMask.Val != 255f || HasName(state.StencilReadMask)) yield return $"    ReadMask {FormatNamedOrInt(state.StencilReadMask)}";
+        if (state.StencilWriteMask.Val != 255f || HasName(state.StencilWriteMask)) yield return $"    WriteMask {FormatNamedOrInt(state.StencilWriteMask)}";
+        if (!IsDefaultStencilBlock(state.StencilOp, allowDisabledComp: true) || HasStencilNames(state.StencilOp))
         {
-            yield return $"    Comp {FormatNamedOrEnum(state.stencilOp.comp, FormatStencilComp(state.stencilOp.comp.val))}";
-            yield return $"    Pass {FormatNamedOrEnum(state.stencilOp.pass, FormatStencilOp(state.stencilOp.pass.val))}";
-            yield return $"    Fail {FormatNamedOrEnum(state.stencilOp.fail, FormatStencilOp(state.stencilOp.fail.val))}";
-            yield return $"    ZFail {FormatNamedOrEnum(state.stencilOp.zFail, FormatStencilOp(state.stencilOp.zFail.val))}";
+            yield return $"    Comp {FormatNamedOrEnum(state.StencilOp.Comp, FormatStencilComp(state.StencilOp.Comp.Val))}";
+            yield return $"    Pass {FormatNamedOrEnum(state.StencilOp.Pass, FormatStencilOp(state.StencilOp.Pass.Val))}";
+            yield return $"    Fail {FormatNamedOrEnum(state.StencilOp.Fail, FormatStencilOp(state.StencilOp.Fail.Val))}";
+            yield return $"    ZFail {FormatNamedOrEnum(state.StencilOp.ZFail, FormatStencilOp(state.StencilOp.ZFail.Val))}";
         }
-        if (!IsDefaultStencilBlock(state.stencilOpFront, allowDisabledComp: true) || HasStencilNames(state.stencilOpFront))
+        if (!IsDefaultStencilBlock(state.StencilOpFront, allowDisabledComp: true) || HasStencilNames(state.StencilOpFront))
         {
-            yield return $"    CompFront {FormatNamedOrEnum(state.stencilOpFront.comp, FormatStencilComp(state.stencilOpFront.comp.val))}";
-            yield return $"    PassFront {FormatNamedOrEnum(state.stencilOpFront.pass, FormatStencilOp(state.stencilOpFront.pass.val))}";
-            yield return $"    FailFront {FormatNamedOrEnum(state.stencilOpFront.fail, FormatStencilOp(state.stencilOpFront.fail.val))}";
-            yield return $"    ZFailFront {FormatNamedOrEnum(state.stencilOpFront.zFail, FormatStencilOp(state.stencilOpFront.zFail.val))}";
+            yield return $"    CompFront {FormatNamedOrEnum(state.StencilOpFront.Comp, FormatStencilComp(state.StencilOpFront.Comp.Val))}";
+            yield return $"    PassFront {FormatNamedOrEnum(state.StencilOpFront.Pass, FormatStencilOp(state.StencilOpFront.Pass.Val))}";
+            yield return $"    FailFront {FormatNamedOrEnum(state.StencilOpFront.Fail, FormatStencilOp(state.StencilOpFront.Fail.Val))}";
+            yield return $"    ZFailFront {FormatNamedOrEnum(state.StencilOpFront.ZFail, FormatStencilOp(state.StencilOpFront.ZFail.Val))}";
         }
-        if (!IsDefaultStencilBlock(state.stencilOpBack, allowDisabledComp: true) || HasStencilNames(state.stencilOpBack))
+        if (!IsDefaultStencilBlock(state.StencilOpBack, allowDisabledComp: true) || HasStencilNames(state.StencilOpBack))
         {
-            yield return $"    CompBack {FormatNamedOrEnum(state.stencilOpBack.comp, FormatStencilComp(state.stencilOpBack.comp.val))}";
-            yield return $"    PassBack {FormatNamedOrEnum(state.stencilOpBack.pass, FormatStencilOp(state.stencilOpBack.pass.val))}";
-            yield return $"    FailBack {FormatNamedOrEnum(state.stencilOpBack.fail, FormatStencilOp(state.stencilOpBack.fail.val))}";
-            yield return $"    ZFailBack {FormatNamedOrEnum(state.stencilOpBack.zFail, FormatStencilOp(state.stencilOpBack.zFail.val))}";
+            yield return $"    CompBack {FormatNamedOrEnum(state.StencilOpBack.Comp, FormatStencilComp(state.StencilOpBack.Comp.Val))}";
+            yield return $"    PassBack {FormatNamedOrEnum(state.StencilOpBack.Pass, FormatStencilOp(state.StencilOpBack.Pass.Val))}";
+            yield return $"    FailBack {FormatNamedOrEnum(state.StencilOpBack.Fail, FormatStencilOp(state.StencilOpBack.Fail.Val))}";
+            yield return $"    ZFailBack {FormatNamedOrEnum(state.StencilOpBack.ZFail, FormatStencilOp(state.StencilOpBack.ZFail.Val))}";
         }
         yield return "}";
     }
 
     private static IEnumerable<string> BuildFogCommands(UnitySerializedShaderState state)
     {
-        int fogMode = (int)state.fogMode;
-        bool needsFog = fogMode != -1 || state.fogDensity.val != 0f || state.fogStart.val != 0f || state.fogEnd.val != 0f
-            || state.fogColor.x.val != 0f || state.fogColor.y.val != 0f || state.fogColor.z.val != 0f || state.fogColor.w.val != 0f;
+        int fogMode = state.FogMode;
+        bool needsFog = fogMode != -1 || state.FogDensity.Val != 0f || state.FogStart.Val != 0f || state.FogEnd.Val != 0f
+            || state.FogColor.X.Val != 0f || state.FogColor.Y.Val != 0f || state.FogColor.Z.Val != 0f || state.FogColor.W.Val != 0f;
         if (!needsFog)
         {
             yield break;
@@ -264,19 +283,19 @@ public static class UnityShaderLabWriter
         yield return "Fog {";
         if (fogMode != -1)
         {
-            yield return $"    Mode {FormatFogMode(state.fogMode)}";
+            yield return $"    Mode {FormatFogMode(fogMode)}";
         }
-        if (state.fogColor.x.val != 0f || state.fogColor.y.val != 0f || state.fogColor.z.val != 0f || state.fogColor.w.val != 0f)
+        if (state.FogColor.X.Val != 0f || state.FogColor.Y.Val != 0f || state.FogColor.Z.Val != 0f || state.FogColor.W.Val != 0f)
         {
-            yield return $"    Color ({FormatFloat(state.fogColor.x.val)},{FormatFloat(state.fogColor.y.val)},{FormatFloat(state.fogColor.z.val)},{FormatFloat(state.fogColor.w.val)})";
+            yield return $"    Color ({FormatFloat(state.FogColor.X.Val)},{FormatFloat(state.FogColor.Y.Val)},{FormatFloat(state.FogColor.Z.Val)},{FormatFloat(state.FogColor.W.Val)})";
         }
-        if (state.fogDensity.val != 0f)
+        if (state.FogDensity.Val != 0f)
         {
-            yield return $"    Density {FormatFloat(state.fogDensity.val)}";
+            yield return $"    Density {FormatFloat(state.FogDensity.Val)}";
         }
-        if (state.fogStart.val != 0f || state.fogEnd.val != 0f)
+        if (state.FogStart.Val != 0f || state.FogEnd.Val != 0f)
         {
-            yield return $"    Range {FormatFloat(state.fogStart.val)}, {FormatFloat(state.fogEnd.val)}";
+            yield return $"    Range {FormatFloat(state.FogStart.Val)}, {FormatFloat(state.FogEnd.Val)}";
         }
         yield return "}";
     }
@@ -293,34 +312,34 @@ public static class UnityShaderLabWriter
 
     private static bool HasName(UnitySerializedShaderFloatValue value)
     {
-        return !string.IsNullOrWhiteSpace(value.name) && !string.Equals(value.name, "<noninit>", StringComparison.Ordinal);
+        return !string.IsNullOrWhiteSpace(value.Name) && !string.Equals(value.Name, "<noninit>", StringComparison.Ordinal);
     }
 
     private static bool HasStencilNames(UnitySerializedStencilOp op)
     {
-        return HasName(op.pass) || HasName(op.fail) || HasName(op.zFail) || HasName(op.comp);
+        return HasName(op.Pass) || HasName(op.Fail) || HasName(op.ZFail) || HasName(op.Comp);
     }
 
     private static bool IsDefaultStencilBlock(UnitySerializedStencilOp op, bool allowDisabledComp)
     {
-        int comp = (int)op.comp.val;
+        int comp = (int)op.Comp.Val;
         bool defaultComp = comp == 8 || (allowDisabledComp && comp == 0);
-        return (int)op.pass.val == 0 && (int)op.fail.val == 0 && (int)op.zFail.val == 0 && defaultComp;
+        return (int)op.Pass.Val == 0 && (int)op.Fail.Val == 0 && (int)op.ZFail.Val == 0 && defaultComp;
     }
 
     private static string FormatNamedOrEnum(UnitySerializedShaderFloatValue value, string fallback)
     {
-        return HasName(value) ? $"[{value.name}]" : fallback;
+        return HasName(value) ? $"[{value.Name}]" : fallback;
     }
 
     private static string FormatNamedOrInt(UnitySerializedShaderFloatValue value)
     {
-        return HasName(value) ? $"[{value.name}]" : ((int)value.val).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return HasName(value) ? $"[{value.Name}]" : ((int)value.Val).ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private static string FormatNamedOrDecimal(UnitySerializedShaderFloatValue value)
     {
-        return HasName(value) ? $"[{value.name}]" : FormatFloat(value.val);
+        return HasName(value) ? $"[{value.Name}]" : FormatFloat(value.Val);
     }
 
     private static string FormatCullMode(float value)
@@ -452,16 +471,16 @@ public static class UnityShaderLabWriter
         };
     }
 
-    private static string FormatFogMode(float value)
+    private static string FormatFogMode(int value)
     {
-        return (int)value switch
+        return value switch
         {
             -1 => "Unknown",
             0 => "Off",
             1 => "Linear",
             2 => "Exp",
             3 => "Exp2",
-            _ => ((int)value).ToString(System.Globalization.CultureInfo.InvariantCulture),
+            _ => value.ToString(System.Globalization.CultureInfo.InvariantCulture),
         };
     }
 
@@ -476,7 +495,7 @@ public static class UnityShaderLabWriter
         sb.Indent();
         foreach (UnityTagMapEntry tag in tags)
         {
-            sb.AppendLine($"\"{tag.first}\"=\"{tag.second}\"");
+            sb.AppendLine($"\"{tag.First}\"=\"{tag.Second}\"");
         }
         sb.Unindent();
         sb.AppendLine("}");
@@ -487,69 +506,70 @@ public static class UnityShaderLabWriter
         return value.ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    private static void WriteProgramsBlock(IndentedStringBuilder sb, List<string> keywordNames, List<UnityProgramData> programs)
+    // Walks ProgVertex/Fragment/Geometry/Hull/Domain/RayTracing in order and writes one
+    // CGPROGRAM block per pass. SubPrograms within each prog* slot share the stage
+    // pragma but get split across `#if defined(KEYWORD)` blocks when their KeywordIndices
+    // differ. Decompile output (Success/SourceCode/ErrorMessage) lives on each
+    // SubProgram directly, populated by ShaderRuriDecompileExporter after the decompiler
+    // returns.
+    private static void WriteProgramsBlock(IndentedStringBuilder sb, List<string> keywordNames, UnitySerializedPass pass)
     {
         sb.AppendLine("CGPROGRAM");
 
-        List<IGrouping<string, UnityProgramData>> stageGroups = programs
-            .GroupBy(static p => p.Stage)
-            .ToList();
-
-        foreach (IGrouping<string, UnityProgramData> stageGroup in stageGroups)
+        foreach ((string stage, _) in pass.EnumerateProgramSlots())
         {
-            if (TryGetStagePragma(stageGroup.Key, out string pragma))
+            if (TryGetStagePragma(stage, out string pragma))
             {
                 sb.AppendLine($"{pragma} main");
             }
         }
 
-        foreach (string keyword in BuildPassKeywordSymbols(keywordNames, programs))
+        foreach (string keyword in BuildPassKeywordSymbols(keywordNames, pass))
         {
             sb.AppendLine($"#pragma multi_compile_local __ {keyword}");
         }
 
         sb.AppendLine(string.Empty);
-        foreach (IGrouping<string, UnityProgramData> stageGroup in stageGroups)
+        foreach ((string stage, UnitySerializedProgram program) in pass.EnumerateProgramSlots())
         {
-            WriteStagePrograms(sb, keywordNames, stageGroup.Key, stageGroup.ToList());
+            WriteStageSubPrograms(sb, keywordNames, stage, program.SubPrograms);
         }
         sb.AppendLine("ENDCG");
     }
 
-    private static void WriteStagePrograms(IndentedStringBuilder sb, List<string> keywordNames, string stage, List<UnityProgramData> programs)
+    private static void WriteStageSubPrograms(IndentedStringBuilder sb, List<string> keywordNames, string stage, List<UnitySerializedSubProgram> subPrograms)
     {
+        if (subPrograms.Count == 0)
+        {
+            return;
+        }
+
         string? stageMacro = GetStageMacro(stage);
         if (!string.IsNullOrWhiteSpace(stageMacro))
         {
             sb.AppendLine($"#if defined({stageMacro})");
         }
 
-        List<ushort> stageKeywordIndices = CollectDistinctKeywordIndices(programs);
+        List<ushort> stageKeywordIndices = CollectDistinctKeywordIndices(subPrograms);
 
-        List<UnityProgramData> conditionalPrograms = [];
-        List<UnityProgramData> unconditionalPrograms = [];
+        List<UnitySerializedSubProgram> conditionalPrograms = [];
+        List<UnitySerializedSubProgram> unconditionalPrograms = [];
 
-        foreach (UnityProgramData program in programs)
+        foreach (UnitySerializedSubProgram sp in subPrograms)
         {
-            if (program.KeywordIndices.Count == 0)
-            {
-                unconditionalPrograms.Add(program);
-            }
-            else
-            {
-                conditionalPrograms.Add(program);
-            }
+            if (sp.KeywordIndices.Count == 0) unconditionalPrograms.Add(sp);
+            else conditionalPrograms.Add(sp);
         }
 
         bool wroteConditionalHeader = false;
         for (int i = 0; i < conditionalPrograms.Count; i++)
         {
-            UnityProgramData program = conditionalPrograms[i];
-            string keywordCondition = BuildKeywordCondition(keywordNames, stageKeywordIndices, program.KeywordIndices) ?? string.Empty;
-            sb.AppendLine($"// Stage: {program.Stage}, Blob: {program.BlobIndex}, ParamBlob: {(program.ParameterBlobIndex.HasValue ? program.ParameterBlobIndex.Value.ToString() : "<none>")}, Language: {program.SourceLanguage}");
+            UnitySerializedSubProgram sp = conditionalPrograms[i];
+            string keywordCondition = BuildKeywordCondition(keywordNames, stageKeywordIndices, sp.KeywordIndices) ?? string.Empty;
+            sb.AppendLine($"// Stage: {stage}, Blob: {sp.BlobIndex}, ParamBlob: {(sp.ParameterBlobIndex.HasValue ? sp.ParameterBlobIndex.Value.ToString() : "<none>")}, Language: {sp.SourceLanguage}");
             sb.AppendLine($"{(wroteConditionalHeader ? "#elif" : "#if")} {keywordCondition}");
             wroteConditionalHeader = true;
-            WriteProgramBody(sb, program);
+            WriteSubProgramBody(sb, stage, sp);
             sb.AppendLine(string.Empty);
         }
 
@@ -557,13 +577,13 @@ public static class UnityShaderLabWriter
         {
             for (int i = 0; i < unconditionalPrograms.Count; i++)
             {
-                UnityProgramData program = unconditionalPrograms[i];
-                sb.AppendLine($"// Stage: {program.Stage}, Blob: {program.BlobIndex}, ParamBlob: {(program.ParameterBlobIndex.HasValue ? program.ParameterBlobIndex.Value.ToString() : "<none>")}, Language: {program.SourceLanguage}");
+                UnitySerializedSubProgram sp = unconditionalPrograms[i];
+                sb.AppendLine($"// Stage: {stage}, Blob: {sp.BlobIndex}, ParamBlob: {(sp.ParameterBlobIndex.HasValue ? sp.ParameterBlobIndex.Value.ToString() : "<none>")}, Language: {sp.SourceLanguage}");
                 if (wroteConditionalHeader && i == 0)
                 {
                     sb.AppendLine("#else");
                 }
-                WriteProgramBody(sb, program);
+                WriteSubProgramBody(sb, stage, sp);
                 sb.AppendLine(string.Empty);
             }
         }
@@ -581,18 +601,18 @@ public static class UnityShaderLabWriter
         }
     }
 
-    private static void WriteProgramBody(IndentedStringBuilder sb, UnityProgramData program)
+    private static void WriteSubProgramBody(IndentedStringBuilder sb, string stage, UnitySerializedSubProgram sp)
     {
-        if (program.Success && !string.IsNullOrWhiteSpace(program.SourceCode))
+        if (sp.Success && !string.IsNullOrWhiteSpace(sp.SourceCode))
         {
-            WriteRawBlock(sb, TrimTrailingWhitespace(program.SourceCode!));
+            WriteRawBlock(sb, TrimTrailingWhitespace(sp.SourceCode!));
             return;
         }
 
         sb.AppendLine("// Decompile failed.");
-        if (!string.IsNullOrWhiteSpace(program.ErrorMessage))
+        if (!string.IsNullOrWhiteSpace(sp.ErrorMessage))
         {
-            foreach (string line in SplitLines(program.ErrorMessage!))
+            foreach (string line in SplitLines(sp.ErrorMessage!))
             {
                 sb.AppendLine($"// {line}");
             }
@@ -617,21 +637,26 @@ public static class UnityShaderLabWriter
         return string.Join(" && ", conditions);
     }
 
-    private static List<string> BuildPassKeywordSymbols(List<string> keywordNames, List<UnityProgramData> programs)
+    private static List<string> BuildPassKeywordSymbols(List<string> keywordNames, UnitySerializedPass pass)
     {
-        return CollectDistinctKeywordIndices(programs)
+        List<UnitySerializedSubProgram> all = new();
+        foreach ((_, UnitySerializedProgram program) in pass.EnumerateProgramSlots())
+        {
+            all.AddRange(program.SubPrograms);
+        }
+        return CollectDistinctKeywordIndices(all)
             .Select(i => BuildKeywordSymbol(keywordNames, i))
             .Distinct(StringComparer.Ordinal)
             .ToList();
     }
 
-    private static List<ushort> CollectDistinctKeywordIndices(List<UnityProgramData> programs)
+    private static List<ushort> CollectDistinctKeywordIndices(List<UnitySerializedSubProgram> subPrograms)
     {
         List<ushort> result = [];
         HashSet<ushort> seen = [];
-        foreach (UnityProgramData program in programs)
+        foreach (UnitySerializedSubProgram sp in subPrograms)
         {
-            foreach (ushort keywordIndex in program.KeywordIndices)
+            foreach (ushort keywordIndex in sp.KeywordIndices)
             {
                 if (seen.Add(keywordIndex))
                 {
@@ -639,7 +664,6 @@ public static class UnityShaderLabWriter
                 }
             }
         }
-
         return result;
     }
 
