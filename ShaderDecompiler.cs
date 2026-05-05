@@ -550,31 +550,47 @@ public sealed class ShaderDecompiler : IDisposable
     private Source Emit(byte[] spirv, string? preferredEntryPoint, uint shaderModel, TempFiles temp)
     {
         (SpirvStage stage, string? entryPoint) = ResolveEntry(spirv, preferredEntryPoint);
-        // spirv-cross's HLSL backend has well-documented gaps for several stages:
+        // spirv-cross's HLSL backend has well-documented gaps that GLSL covers:
         //   * tess / geom — InvocationId / TessCoord / TessLevel* / patch-constant emission
         //   * raytracing (rgen/rint/rahit/rchit/rmiss/rcall) — RT builtins (5321/5322/5326/...)
         //   * mesh / task — primitive index / cull primitive builtins
-        // For these stages we emit GLSL straight away (skipping the HLSL attempt that's
-        // guaranteed to fail). For tess/geom we still try HLSL first since spirv-cross
-        // *does* handle a meaningful subset there. Plain HLSL stages stay HLSL-only.
+        //   * cbuffers whose array members have `ArrayStride < 16` (UE bindless index
+        //     tables — `cbuffer Material { uint _m0[N] }` with stride 4 — fail with
+        //     "cbuffer ID X (name: ...) member 0 (name: _m0) cannot be expressed with
+        //     either HLSL packing layout or packoffset"). spirv-cross's GLSL backend
+        //     handles arbitrary strides fine.
+        //   * uint8/uint16 storage usage that's legal in SPIR-V but not in shader-
+        //     model-5.x HLSL.
+        // For RT/mesh/task we go straight to GLSL (the HLSL attempt is guaranteed
+        // to fail). For everything else we try HLSL first, then **always** try GLSL
+        // as a fallback if HLSL fails — strictly more permissive than the previous
+        // "tess/geom-only fallback" gate. The output language is reflected via
+        // SourceLanguage / SourceFileExtension so consumers writing the file pick
+        // the right extension.
         bool requiresGlsl = IsRaytracingOrMeshStage(stage);
-        bool tessOrGeomFallback = stage is SpirvStage.TessControl or SpirvStage.TessEvaluation or SpirvStage.Geometry;
 
         if (!requiresGlsl)
         {
-            if (TryEmit(spirv, temp.Spirv, temp.Hlsl, entryPoint, stage, shaderModel, hlsl: true, quiet: tessOrGeomFallback, out string? hlsl))
+            if (TryEmit(spirv, temp.Spirv, temp.Hlsl, entryPoint, stage, shaderModel, hlsl: true, quiet: true, out string? hlsl))
                 return new(hlsl!, "hlsl", ".hlsl");
+            // HLSL failed. Surface the captured stderr through Console.Error so
+            // the diagnostic crumbs (which `quiet: true` above suppressed) still
+            // make it into the per-shader failure dump path; the caller's
+            // exception-driven dump uses _lastToolFailureLog as the source.
+            if (!string.IsNullOrEmpty(_lastToolFailureLog))
+            {
+                Console.Error.WriteLine($"[spirv-cross note] HLSL emission failed for {stage} — falling back to GLSL. Underlying cause:");
+                Console.Error.WriteLine(_lastToolFailureLog);
+            }
+        }
+        else
+        {
+            string note = $"[spirv-cross note] {stage} stage: HLSL backend cannot represent raytracing/mesh builtins. Emitting GLSL output.";
+            Console.Error.WriteLine(note);
         }
 
-        if (requiresGlsl || tessOrGeomFallback)
-        {
-            string note = requiresGlsl
-                ? $"[spirv-cross note] {stage} stage: HLSL backend cannot represent raytracing/mesh builtins. Emitting GLSL output."
-                : $"[spirv-cross note] {stage} stage: HLSL backend lacks tessellation/geometry builtins. Falling back to GLSL output.";
-            Console.Error.WriteLine(note);
-            if (TryEmit(spirv, temp.Spirv, temp.Glsl, entryPoint, stage, shaderModel, hlsl: false, quiet: false, out string? glsl))
-                return new(glsl!, "glsl", ".glsl");
-        }
+        if (TryEmit(spirv, temp.Spirv, temp.Glsl, entryPoint, stage, shaderModel, hlsl: false, quiet: false, out string? glsl))
+            return new(glsl!, "glsl", ".glsl");
 
         throw new InvalidOperationException("Failed to decompile patched SPIR-V.");
     }
@@ -591,11 +607,17 @@ public sealed class ShaderDecompiler : IDisposable
             args.Add(shaderModel.ToString());
             args.Add("--force-zero-initialized-variables");
         }
-        else if (IsRaytracingOrMeshStage(stage))
+        else
         {
-            // GL_EXT_ray_tracing / GL_EXT_mesh_shader require GLSL 460+ with Vulkan
-            // semantics; without these spirv-cross refuses ("Ray tracing shaders require
-            // non-es profile with version 460 or above").
+            // GLSL emission: always go through the modern Vulkan profile
+            // (GLSL 460 + --vulkan-semantics). UE shipping SPV is
+            // vulkan-flavoured anyway, and GLSL 460 is the lowest version
+            // that accepts every SPIR-V feature spirv-cross might emit
+            // (raytracing builtins, mesh-shader EXT, descriptor indexing,
+            // shader_clock, control_flow_attribute, etc.). Without these
+            // flags GLSL emit falls back to a pre-Vulkan profile that
+            // rejects most of UE's bindless / RT shaders, defeating the
+            // point of the HLSL-failure fallback.
             args.Add("--version");
             args.Add("460");
             args.Add("--vulkan-semantics");
