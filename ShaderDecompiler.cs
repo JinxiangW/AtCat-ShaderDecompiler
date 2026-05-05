@@ -412,18 +412,57 @@ public sealed class ShaderDecompiler : IDisposable
         // skipped cbuffers (layout-fit fails — e.g. `UnityInstancing_SRP_UnityPerDraw`
         // with its 65536-byte instancing array), this is the only chance to give the
         // block a real name instead of spirv-cross's synthetic `CBNUBO` fallback.
+        //
+        // Cross-binding name collision: UE shaders frequently expose the
+        // SAME logical UB name (e.g. "Material") at two different binding
+        // points — one is the actual material constant buffer (v4float[N]),
+        // the other is a bindless-resource-table index buffer (uint[N]).
+        // The original SPV gives them distinct struct types but the SRT-
+        // derived metadata lists both under "Material". Patching both
+        // struct types with the same `type.Material` alias is what makes
+        // spirv-cross fail with "cbuffer ID X member 0 (_m0) cannot be
+        // expressed with HLSL packing" — the second cbuffer gets the
+        // first's layout assumptions inherited via the shared name.
+        //
+        // We disambiguate by remembering which struct types and variable
+        // names we've already emitted, and suffix later occurrences with
+        // `_b<binding>` (e.g. `Material_b5`, `type.Material_b5`). Single-
+        // binding cases are unaffected so the existing fixture set stays
+        // byte-identical.
         List<(uint Id, string Name)> result = new();
         HashSet<uint> patchedIds = new();
+        Dictionary<string, int> variableNameSeen = new(StringComparer.Ordinal);
+        Dictionary<string, int> structAliasSeen = new(StringComparer.Ordinal);
         foreach (var resource in metadata.EnumerateResourceBindings().Where(static r => !string.IsNullOrWhiteSpace(r.Name)))
             foreach (SpirvBindingInfo binding in MatchBindings(bindings, resource))
             {
-                string name = ResolveName(resource, binding);
-                result.Add((binding.Id, name));
+                if (patchedIds.Contains(binding.Id)) continue;
+
+                string baseName = ResolveName(resource, binding);
+                string variableName = baseName;
+                if (variableNameSeen.TryGetValue(baseName, out int prevCount) && prevCount > 0)
+                {
+                    variableName = $"{baseName}_b{binding.Binding}";
+                }
+                variableNameSeen[baseName] = variableNameSeen.GetValueOrDefault(baseName) + 1;
+
+                result.Add((binding.Id, variableName));
                 patchedIds.Add(binding.Id);
                 if (binding.DescriptorType == "UniformBuffer" && binding.StructTypeId is > 0)
                 {
-                    result.Add((binding.StructTypeId.Value, "type." + name));
-                    patchedIds.Add(binding.StructTypeId.Value);
+                    string structAliasBase = "type." + baseName;
+                    string structAlias = structAliasBase;
+                    if (structAliasSeen.TryGetValue(structAliasBase, out int prevStruct) && prevStruct > 0)
+                    {
+                        structAlias = $"{structAliasBase}_b{binding.Binding}";
+                    }
+                    structAliasSeen[structAliasBase] = structAliasSeen.GetValueOrDefault(structAliasBase) + 1;
+
+                    if (!patchedIds.Contains(binding.StructTypeId.Value))
+                    {
+                        result.Add((binding.StructTypeId.Value, structAlias));
+                        patchedIds.Add(binding.StructTypeId.Value);
+                    }
                 }
             }
 
@@ -766,15 +805,40 @@ public sealed class ShaderDecompiler : IDisposable
 
     private static bool IsDxbc(byte[] data) => data.Length >= 4 && data[0] == 'D' && data[1] == 'X' && data[2] == 'B' && data[3] == 'C';
     private static bool IsSpirv(byte[] data) => data.Length >= 4 && BitConverter.ToUInt32(data, 0) == SpvOpCode.MagicNumber;
+
+    // DXIL detection: SM 5.x via dxbc2dxil produces a DXBC container with
+    // an embedded `DXIL` chunk. SM 6.0+ shaders ship the same way from
+    // UE's ShaderConductor / DXC pipeline (DXBC container holds the DXIL
+    // module so the runtime can pick it up via the existing DXBC-style
+    // chunk loader). Native bitcode (LLVM `BC\xC0\xDE` magic) is the rare
+    // case where a tool emits raw DXIL outside the DXBC envelope — we
+    // accept that too so a hand-extracted DXIL byte blob still routes to
+    // the dxil-spirv path.
     private static bool IsDxil(byte[] data)
     {
+        // Path 1 — bare LLVM bitcode magic (`BC \xC0\xDE`). dxil-spirv
+        // accepts this directly as raw DXIL on its --raw-llvm path.
+        if (data.Length >= 4 && data[0] == 0x42 && data[1] == 0x43 && data[2] == 0xC0 && data[3] == 0xDE) return true;
+
+        // Path 2 — DXBC container with a DXIL chunk. Covers both SM 5.1
+        // (via dxbc2dxil) and SM 6.0+ (DXC-emitted, container-wrapped).
+        // Walk the DXBC chunk-offset table looking for a chunk whose
+        // first 4 bytes are 'DXIL'. The chunk count is at offset 28; the
+        // offset table starts at 32.
         if (!IsDxbc(data) || data.Length < 32) return false;
         int count = BitConverter.ToInt32(data, 28);
         if (count <= 0 || count > 256 || 32 + (count * 4) > data.Length) return false;
         for (int i = 0; i < count; i++)
         {
             int offset = BitConverter.ToInt32(data, 32 + (i * 4));
-            if (offset >= 0 && offset + 4 <= data.Length && data[offset] == 'D' && data[offset + 1] == 'X' && data[offset + 2] == 'I' && data[offset + 3] == 'L') return true;
+            if (offset < 0 || offset + 4 > data.Length) continue;
+            if (data[offset] == 'D' && data[offset + 1] == 'X' && data[offset + 2] == 'I' && data[offset + 3] == 'L') return true;
+            // ILDB / ILDN chunks are emitted by DXC alongside DXIL for
+            // debug info — their presence is also a strong signal of an
+            // SM 6.x container (and dxil-spirv handles those fine since
+            // they're wrapped around the DXIL chunk).
+            if (data[offset] == 'I' && data[offset + 1] == 'L' && data[offset + 2] == 'D' &&
+                (data[offset + 3] == 'B' || data[offset + 3] == 'N')) return true;
         }
         return false;
     }
