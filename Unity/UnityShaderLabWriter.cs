@@ -2,11 +2,35 @@ using System.Text;
 
 namespace Ruri.ShaderTools;
 
+// Render result: the main `.shader` file plus a per-variant `<key>.hlsl` map
+// the caller writes to a sibling folder named after the .shader stem. The
+// .shader file references those bodies via `#include` so the file stays
+// compact (and individual variants stay diffable in isolation).
+public sealed record UnityShaderLabResult(string ShaderText, IReadOnlyDictionary<string, string> VariantFiles);
+
 public static class UnityShaderLabWriter
 {
+    // Backwards-compat overload for callers that don't want per-variant
+    // splitting. The variant bodies stay inlined inside the .shader file.
     public static string Write(UnityShaderMetadata metadata)
+        => WriteCore(metadata, variantFolderStem: null).ShaderText;
+
+    // Variant-splitting form: each subprogram's HLSL body lands in
+    // `<variantFolderStem>/<key>.hlsl`, the .shader file references them
+    // via `#include`. Caller is responsible for materialising the dictionary
+    // entries to disk under that folder name.
+    public static UnityShaderLabResult WriteSplit(UnityShaderMetadata metadata, string variantFolderStem)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(variantFolderStem);
+        return WriteCore(metadata, variantFolderStem);
+    }
+
+    private static UnityShaderLabResult WriteCore(UnityShaderMetadata metadata, string? variantFolderStem)
     {
         ArgumentNullException.ThrowIfNull(metadata);
+
+        Dictionary<string, string> variantFiles = new(StringComparer.Ordinal);
+        WriteContext ctx = new(variantFolderStem, variantFiles);
 
         IndentedStringBuilder sb = new();
         sb.AppendLine($"Shader \"{metadata.Name}\" {{");
@@ -28,8 +52,9 @@ public static class UnityShaderLabWriter
             sb.AppendLine("}");
         }
 
-        foreach (UnitySerializedSubShader subShader in metadata.ParsedForm.SubShaders)
+        for (int subShaderIndex = 0; subShaderIndex < metadata.ParsedForm.SubShaders.Count; subShaderIndex++)
         {
+            UnitySerializedSubShader subShader = metadata.ParsedForm.SubShaders[subShaderIndex];
             sb.AppendLine("SubShader {");
             sb.Indent();
             WriteTags(sb, subShader.Tags.Tags);
@@ -38,8 +63,9 @@ public static class UnityShaderLabWriter
                 sb.AppendLine($"LOD {subShader.LOD}");
             }
 
-            foreach (UnitySerializedPass pass in subShader.Passes)
+            for (int passIndex = 0; passIndex < subShader.Passes.Count; passIndex++)
             {
+                UnitySerializedPass pass = subShader.Passes[passIndex];
                 if (!string.IsNullOrWhiteSpace(pass.UseName))
                 {
                     sb.AppendLine($"UsePass \"{pass.UseName}\"");
@@ -72,7 +98,7 @@ public static class UnityShaderLabWriter
 
                 if (HasAnyProgram(pass))
                 {
-                    WriteProgramsBlock(sb, metadata.ParsedForm.KeywordNames, pass);
+                    WriteProgramsBlock(sb, metadata.ParsedForm.KeywordNames, pass, subShaderIndex, passIndex, ctx);
                 }
 
                 sb.Unindent();
@@ -95,7 +121,23 @@ public static class UnityShaderLabWriter
 
         sb.Unindent();
         sb.AppendLine("}");
-        return sb.ToString();
+        return new UnityShaderLabResult(sb.ToString(), variantFiles);
+    }
+
+    // Per-emit context. Carries the variant-folder stem used in `#include`
+    // paths plus the dictionary that collects (filename -> body) entries
+    // so the caller can flush them to disk after Write returns. When the
+    // stem is null, every variant body stays inlined in the .shader text
+    // and the dictionary stays empty.
+    private sealed class WriteContext
+    {
+        public string? VariantFolderStem { get; }
+        public Dictionary<string, string> VariantFiles { get; }
+        public WriteContext(string? variantFolderStem, Dictionary<string, string> variantFiles)
+        {
+            VariantFolderStem = variantFolderStem;
+            VariantFiles = variantFiles;
+        }
     }
 
     private static bool HasAnyProgram(UnitySerializedPass pass)
@@ -507,14 +549,20 @@ public static class UnityShaderLabWriter
     }
 
     // Walks ProgVertex/Fragment/Geometry/Hull/Domain/RayTracing in order and writes one
-    // CGPROGRAM block per pass. SubPrograms within each prog* slot share the stage
+    // HLSLPROGRAM block per pass. SubPrograms within each prog* slot share the stage
     // pragma but get split across `#if defined(KEYWORD)` blocks when their KeywordIndices
     // differ. Decompile output (Success/SourceCode/ErrorMessage) lives on each
     // SubProgram directly, populated by ShaderRuriDecompileExporter after the decompiler
     // returns.
-    private static void WriteProgramsBlock(IndentedStringBuilder sb, List<string> keywordNames, UnitySerializedPass pass)
+    //
+    // When `ctx.VariantFolderStem` is set, every concrete subprogram body is offloaded
+    // to a sibling `<stem>/<variantKey>.hlsl` file and the .shader gets a single
+    // `#include "<stem>/<variantKey>.hlsl"` line per variant. The variant key is built
+    // from (subShaderIndex, passIndex, stage, keyword combo, blob index) so two binaries
+    // with the same active-keyword set in the same pass slot still get distinct files.
+    private static void WriteProgramsBlock(IndentedStringBuilder sb, List<string> keywordNames, UnitySerializedPass pass, int subShaderIndex, int passIndex, WriteContext ctx)
     {
-        sb.AppendLine("CGPROGRAM");
+        sb.AppendLine("HLSLPROGRAM");
 
         foreach ((string stage, _) in pass.EnumerateProgramSlots())
         {
@@ -532,23 +580,28 @@ public static class UnityShaderLabWriter
         sb.AppendLine(string.Empty);
         foreach ((string stage, UnitySerializedProgram program) in pass.EnumerateProgramSlots())
         {
-            WriteStageSubPrograms(sb, keywordNames, stage, program.SubPrograms);
+            WriteStageSubPrograms(sb, keywordNames, stage, program.SubPrograms, subShaderIndex, passIndex, ctx);
         }
-        sb.AppendLine("ENDCG");
+        sb.AppendLine("ENDHLSL");
     }
 
-    private static void WriteStageSubPrograms(IndentedStringBuilder sb, List<string> keywordNames, string stage, List<UnitySerializedSubProgram> subPrograms)
+    private static void WriteStageSubPrograms(IndentedStringBuilder sb, List<string> keywordNames, string stage, List<UnitySerializedSubProgram> subPrograms, int subShaderIndex, int passIndex, WriteContext ctx)
     {
         if (subPrograms.Count == 0)
         {
             return;
         }
 
-        string? stageMacro = GetStageMacro(stage);
-        if (!string.IsNullOrWhiteSpace(stageMacro))
-        {
-            sb.AppendLine($"#if defined({stageMacro})");
-        }
+        // Stage delimiter is a comment block, not a `#if defined(SHADER_STAGE_*)`
+        // wrapper. The per-stage HLSL bodies under this banner each have their
+        // own globals/types/entry function and won't compile concatenated, but
+        // ShaderLab readers consume this file as documentation rather than feed
+        // it to a compiler — comments make the structure obvious without
+        // implying the file is a single compilable translation unit, and
+        // SHADER_STAGE_* isn't a real Unity-defined keyword anyway.
+        sb.AppendLine($"// ============================================================");
+        sb.AppendLine($"// Stage: {stage}");
+        sb.AppendLine($"// ============================================================");
 
         List<ushort> stageKeywordIndices = CollectDistinctKeywordIndices(subPrograms);
 
@@ -569,7 +622,7 @@ public static class UnityShaderLabWriter
             sb.AppendLine($"// Stage: {stage}, Blob: {sp.BlobIndex}, ParamBlob: {(sp.ParameterBlobIndex.HasValue ? sp.ParameterBlobIndex.Value.ToString() : "<none>")}, Language: {sp.SourceLanguage}");
             sb.AppendLine($"{(wroteConditionalHeader ? "#elif" : "#if")} {keywordCondition}");
             wroteConditionalHeader = true;
-            WriteSubProgramBody(sb, stage, sp);
+            WriteSubProgramBody(sb, stage, sp, keywordNames, subShaderIndex, passIndex, ctx);
             sb.AppendLine(string.Empty);
         }
 
@@ -583,7 +636,7 @@ public static class UnityShaderLabWriter
                 {
                     sb.AppendLine("#else");
                 }
-                WriteSubProgramBody(sb, stage, sp);
+                WriteSubProgramBody(sb, stage, sp, keywordNames, subShaderIndex, passIndex, ctx);
                 sb.AppendLine(string.Empty);
             }
         }
@@ -593,16 +646,23 @@ public static class UnityShaderLabWriter
             sb.AppendLine("#endif");
             sb.AppendLine(string.Empty);
         }
-
-        if (!string.IsNullOrWhiteSpace(stageMacro))
-        {
-            sb.AppendLine("#endif");
-            sb.AppendLine(string.Empty);
-        }
     }
 
-    private static void WriteSubProgramBody(IndentedStringBuilder sb, string stage, UnitySerializedSubProgram sp)
+    private static void WriteSubProgramBody(IndentedStringBuilder sb, string stage, UnitySerializedSubProgram sp, List<string> keywordNames, int subShaderIndex, int passIndex, WriteContext ctx)
     {
+        // Variant-split mode: spool the body into a sibling .hlsl file and
+        // emit a single `#include` line. Keeps the .shader file compact and
+        // gives each variant its own diffable artifact.
+        if (!string.IsNullOrEmpty(ctx.VariantFolderStem) && sp.Success && !string.IsNullOrWhiteSpace(sp.SourceCode))
+        {
+            string variantKey = BuildVariantKey(subShaderIndex, passIndex, stage, sp, keywordNames);
+            string fileName = variantKey + (string.IsNullOrWhiteSpace(sp.SourceFileExtension) ? ".hlsl" : sp.SourceFileExtension);
+            string includePath = $"{ctx.VariantFolderStem}/{fileName}";
+            ctx.VariantFiles[fileName] = BuildVariantFileContent(stage, sp, variantKey, TrimTrailingWhitespace(sp.SourceCode!));
+            sb.AppendLine($"#include \"{includePath}\"");
+            return;
+        }
+
         if (sp.Success && !string.IsNullOrWhiteSpace(sp.SourceCode))
         {
             WriteRawBlock(sb, TrimTrailingWhitespace(sp.SourceCode!));
@@ -617,6 +677,73 @@ public static class UnityShaderLabWriter
                 sb.AppendLine($"// {line}");
             }
         }
+    }
+
+    // Variant key rules:
+    //   Sub<N>_Pass<M>_<Stage>_<KeywordCombo>_b<BlobIndex>
+    //
+    // KeywordCombo is `_`-joined active keyword names. When no keywords
+    // are set we use `DEFAULT` so the file path stays human-readable.
+    // BlobIndex tiebreaks across distinct binaries that share the same
+    // (subshader, pass, stage, keyword set) — happens when Unity emits
+    // platform variants under one keyword combo. Without that tail we'd
+    // get filename collisions and the dictionary write would lose data.
+    private static string BuildVariantKey(int subShaderIndex, int passIndex, string stage, UnitySerializedSubProgram sp, List<string> keywordNames)
+    {
+        StringBuilder sb = new();
+        sb.Append("Sub").Append(subShaderIndex);
+        sb.Append("_Pass").Append(passIndex);
+        sb.Append('_').Append(stage);
+        sb.Append('_');
+        if (sp.KeywordIndices.Count == 0)
+        {
+            sb.Append("DEFAULT");
+        }
+        else
+        {
+            // Sorted to keep filename stable across reorderings of
+            // KeywordIndices that may differ between exporter runs.
+            List<string> kws = new(sp.KeywordIndices.Count);
+            foreach (ushort idx in sp.KeywordIndices)
+            {
+                kws.Add(BuildKeywordSymbol(keywordNames, idx));
+            }
+            kws.Sort(StringComparer.Ordinal);
+            sb.Append(string.Join('_', kws));
+        }
+        sb.Append("_b").Append(sp.BlobIndex);
+        return SanitizeFileStem(sb.ToString());
+    }
+
+    private static string BuildVariantFileContent(string stage, UnitySerializedSubProgram sp, string variantKey, string body)
+    {
+        StringBuilder sb = new();
+        sb.AppendLine("// =============================================================");
+        sb.AppendLine($"// Variant: {variantKey}");
+        sb.AppendLine($"// Stage: {stage}");
+        sb.AppendLine($"// Blob: {sp.BlobIndex}");
+        sb.AppendLine($"// ParamBlob: {(sp.ParameterBlobIndex.HasValue ? sp.ParameterBlobIndex.Value.ToString() : "<none>")}");
+        sb.AppendLine($"// Language: {sp.SourceLanguage}");
+        sb.AppendLine("// =============================================================");
+        sb.AppendLine();
+        sb.Append(body);
+        if (!body.EndsWith('\n')) sb.AppendLine();
+        return sb.ToString();
+    }
+
+    // Filename-safe form of the variant key. Builds a stem that survives
+    // both Windows and POSIX file-system rules; the variant key itself is
+    // already alnum+underscore but we belt-and-braces strip path separators
+    // and any other invalid char that future enums might inject.
+    private static string SanitizeFileStem(string raw)
+    {
+        char[] invalid = System.IO.Path.GetInvalidFileNameChars();
+        StringBuilder sb = new(raw.Length);
+        foreach (char c in raw)
+        {
+            sb.Append(Array.IndexOf(invalid, c) >= 0 ? '_' : c);
+        }
+        return sb.ToString();
     }
 
     private static string? BuildKeywordCondition(List<string> keywordNames, List<ushort> stageKeywordIndices, List<ushort> keywordIndices)
@@ -717,19 +844,6 @@ public static class UnityShaderLabWriter
         };
 
         return pragma.Length > 0;
-    }
-
-    private static string? GetStageMacro(string stage)
-    {
-        return stage switch
-        {
-            "Vertex" => "SHADER_STAGE_VERTEX",
-            "Fragment" => "SHADER_STAGE_FRAGMENT",
-            "Geometry" => "SHADER_STAGE_GEOMETRY",
-            "Hull" => "SHADER_STAGE_HULL",
-            "Domain" => "SHADER_STAGE_DOMAIN",
-            _ => null,
-        };
     }
 
     private static void WriteRawBlock(IndentedStringBuilder sb, string text)
