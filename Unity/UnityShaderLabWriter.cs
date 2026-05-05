@@ -603,6 +603,25 @@ public static class UnityShaderLabWriter
         sb.AppendLine($"// Stage: {stage}");
         sb.AppendLine($"// ============================================================");
 
+        // Per-stage split decision: distribution to per-variant .hlsl files
+        // is only useful when there's more than one variant in the stage —
+        // a single-variant stage has no chain to slim down, so it stays inline
+        // regardless of the global VariantFolderStem.
+        bool effectiveSplit = !string.IsNullOrEmpty(ctx.VariantFolderStem) && subPrograms.Count > 1;
+
+        // Single-variant short-circuit: emit the body directly with no
+        // `#if defined(KEYWORD)` wrapper. Single-variant stages with the
+        // empty keyword list would otherwise produce no condition at all
+        // and a malformed `#if` line.
+        if (subPrograms.Count == 1)
+        {
+            UnitySerializedSubProgram only = subPrograms[0];
+            sb.AppendLine($"// Stage: {stage}, Blob: {only.BlobIndex}, ParamBlob: {(only.ParameterBlobIndex.HasValue ? only.ParameterBlobIndex.Value.ToString() : "<none>")}, Language: {only.SourceLanguage}");
+            WriteSubProgramBody(sb, stage, only, keywordNames, subShaderIndex, passIndex, ctx, effectiveSplit);
+            sb.AppendLine(string.Empty);
+            return;
+        }
+
         List<ushort> stageKeywordIndices = CollectDistinctKeywordIndices(subPrograms);
 
         List<UnitySerializedSubProgram> conditionalPrograms = [];
@@ -622,7 +641,7 @@ public static class UnityShaderLabWriter
             sb.AppendLine($"// Stage: {stage}, Blob: {sp.BlobIndex}, ParamBlob: {(sp.ParameterBlobIndex.HasValue ? sp.ParameterBlobIndex.Value.ToString() : "<none>")}, Language: {sp.SourceLanguage}");
             sb.AppendLine($"{(wroteConditionalHeader ? "#elif" : "#if")} {keywordCondition}");
             wroteConditionalHeader = true;
-            WriteSubProgramBody(sb, stage, sp, keywordNames, subShaderIndex, passIndex, ctx);
+            WriteSubProgramBody(sb, stage, sp, keywordNames, subShaderIndex, passIndex, ctx, effectiveSplit);
             sb.AppendLine(string.Empty);
         }
 
@@ -636,7 +655,7 @@ public static class UnityShaderLabWriter
                 {
                     sb.AppendLine("#else");
                 }
-                WriteSubProgramBody(sb, stage, sp, keywordNames, subShaderIndex, passIndex, ctx);
+                WriteSubProgramBody(sb, stage, sp, keywordNames, subShaderIndex, passIndex, ctx, effectiveSplit);
                 sb.AppendLine(string.Empty);
             }
         }
@@ -648,12 +667,15 @@ public static class UnityShaderLabWriter
         }
     }
 
-    private static void WriteSubProgramBody(IndentedStringBuilder sb, string stage, UnitySerializedSubProgram sp, List<string> keywordNames, int subShaderIndex, int passIndex, WriteContext ctx)
+    private static void WriteSubProgramBody(IndentedStringBuilder sb, string stage, UnitySerializedSubProgram sp, List<string> keywordNames, int subShaderIndex, int passIndex, WriteContext ctx, bool effectiveSplit)
     {
         // Variant-split mode: spool the body into a sibling .hlsl file and
         // emit a single `#include` line. Keeps the .shader file compact and
-        // gives each variant its own diffable artifact.
-        if (!string.IsNullOrEmpty(ctx.VariantFolderStem) && sp.Success && !string.IsNullOrWhiteSpace(sp.SourceCode))
+        // gives each variant its own diffable artifact. The caller decides
+        // whether split applies for THIS stage (it's gated on stage having
+        // more than one variant — single-variant stages always inline so
+        // there's no chain to slim down).
+        if (effectiveSplit && sp.Success && !string.IsNullOrWhiteSpace(sp.SourceCode))
         {
             string variantKey = BuildVariantKey(subShaderIndex, passIndex, stage, sp, keywordNames);
             string fileName = variantKey + (string.IsNullOrWhiteSpace(sp.SourceFileExtension) ? ".hlsl" : sp.SourceFileExtension);
