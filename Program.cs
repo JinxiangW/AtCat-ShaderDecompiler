@@ -167,17 +167,28 @@ internal static class Program
         }
 
         // Discover (binary, metadata) pairs. Two layouts are accepted:
-        //   1. Failure-dump format: <root>/<subdir>/with-symbols.input.bin + with-symbols.metadata.json
+        //   1. Failure-dump format: <root>/<subdir>/{with-symbols|no-symbols}.input.bin + matching .metadata.json
+        //      (Pass 180 picks the stem based on whether the material symbol resolver
+        //       returned a hit for the shader; both forms share the same on-disk shape.)
         //   2. Flat format: <root>/*.bin (+ optional <name>.bin.metadata.json or <name>.metadata.json)
-        // Mode 1 is what `--debug-dump` produces; mode 2 is what the user gets from a custom export.
+        // Mode 1 is what `--debug-dump` / the FModelHook failure dumper produce; mode 2 is what
+        // the user gets from a custom export. We also try the repaired-output extensions
+        // (.hlsl / .glsl) to skip subdirs that have already been resolved on a previous run.
         var inputs = new List<(string Stem, string BinPath, string? MetaPath)>();
+        string[] failureStems = { "with-symbols", "no-symbols" };
         foreach (string subdir in Directory.GetDirectories(root))
         {
-            string bin = Path.Combine(subdir, "with-symbols.input.bin");
-            string meta = Path.Combine(subdir, "with-symbols.metadata.json");
-            if (File.Exists(bin))
+            foreach (string stem in failureStems)
             {
+                string bin = Path.Combine(subdir, stem + ".input.bin");
+                if (!File.Exists(bin)) continue;
+                // Skip if a successful repair output already sits next to the
+                // input — re-running batch over an already-fixed _failures
+                // tree should be a no-op, not a re-decompile.
+                if (File.Exists(bin + ".hlsl") || File.Exists(bin + ".glsl")) break;
+                string meta = Path.Combine(subdir, stem + ".metadata.json");
                 inputs.Add((Path.GetFileName(subdir), bin, File.Exists(meta) ? meta : null));
+                break; // one stem per subdir is enough
             }
         }
         if (inputs.Count == 0)
