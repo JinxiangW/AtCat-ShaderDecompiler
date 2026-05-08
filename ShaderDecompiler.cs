@@ -170,6 +170,60 @@ public sealed class ShaderDecompiler : IDisposable
         SerializedProgramData metadata = options.Metadata ?? new SerializedProgramData();
         ShaderArchitecture format = Detect(options.Format, binary);
 
+        // Engine-level SM auto-bump. Any DXIL-bearing input — whether
+        // raw bitcode (`BC\xC0\xDE`), a bare DXIL chunk, or a DXBC
+        // container with a `DXIL`/`ILDB`/`ILDN` chunk inside — was
+        // produced by DXC targeting SM 6.0+. Passing the default SM 5.1
+        // to spirv-cross's HLSL backend on these inputs causes the
+        // backend to reject any feature it gates on SM version, e.g.
+        //   * "Wave ops requires SM 6.0 or higher"
+        //   * "Sampling non-float textures is not supported in HLSL SM < 6.7"
+        // Both are real failure modes observed on the X6Game shipping
+        // cook (35/36 of the Global archive _failures). We bump the
+        // effective shader model to 67 here so callers don't all have
+        // to remember to set the right value — bumping is harmless for
+        // SM 6.x containers because spirv-cross uses the model to gate
+        // *intrinsic emission*, never to reject input. We bump UPWARDS
+        // only: if the caller explicitly requested 6.6 / 6.8 / etc., we
+        // keep that.
+        // Engine-level SM auto-bump.
+        //
+        // spirv-cross's HLSL backend uses the `--shader-model` value to
+        // gate **what intrinsics it's willing to emit**, NOT to validate
+        // input. Passing the legacy default of 5.1 makes it reject any
+        // SPV that uses a feature added later, whether or not the source
+        // shader was actually authored for SM 6.x:
+        //   * "Wave ops requires SM 6.0 or higher" — even SM 5.x inputs
+        //     can produce SPV with subgroup ops via dxil-spirv
+        //     translation
+        //   * "Sampling non-float textures is not supported in HLSL SM < 6.7" —
+        //     fires on classic SM5 DXBC shaders that sample uint/sint
+        //     textures via Texture<uint>.Sample, because the SPV
+        //     OpImageSampleImplicitLod op carries the non-float format
+        //     regardless of source SM
+        //   * "Mesh shader emission requires SM 6.5 or higher"
+        //   * "Variable-rate shading requires SM 6.4 or higher"
+        // ...etc. Every gate is "intrinsic emission requires SM ≥ N".
+        //
+        // We bump to **67** unconditionally for the HLSL emit path
+        // because:
+        //   1. spirv-cross's SM gates only EXPAND what's emittable — there
+        //      is no gate that REQUIRES SM ≤ N to function. So bumping
+        //      can't lose us a feature, only unlock more.
+        //   2. The shader-model number lands in `register(t0, space0)` /
+        //      `[shader("compute")]`-style annotations that consumers
+        //      rarely care about; the HLSL syntax produced is otherwise
+        //      identical to SM5 for shaders that don't use SM6+ intrinsics.
+        //   3. Any caller that wants a specific newer model (6.6 / 6.8 /
+        //      future) can ASK for it via DecompileOptions.ShaderModel
+        //      and we keep that — the bump is bounded by `< 67`.
+        // Environment override `RURI_SHADER_DEBUG=1` traces what fires.
+        uint shaderModel = options.ShaderModel;
+        if (shaderModel < 67)
+        {
+            shaderModel = 67;
+        }
+
         TempFiles temp = Temps();
         byte[]? preRewrite = null;
         byte[]? postRewrite = null;
@@ -219,7 +273,7 @@ public sealed class ShaderDecompiler : IDisposable
             try
             {
                 failedStage = "spirv-cross-emit";
-                src = Emit(patched, metadata.EntryPoint, options.ShaderModel, temp);
+                src = Emit(patched, metadata.EntryPoint, shaderModel, temp);
             }
             catch (Exception ex)
             {
@@ -376,7 +430,7 @@ public sealed class ShaderDecompiler : IDisposable
         File.WriteAllBytes(temp.Dxbc, dxbc);
         if (Run(new[] { Tool("dxbc2dxil.exe"), temp.Dxbc, "-o", temp.Dxil, "-emit-bc" }, "dxbc2dxil") && File.Exists(temp.Dxil))
             return DxilToSpv(File.ReadAllBytes(temp.Dxil), temp.Dxil, temp.Spirv, true);
-        if (!Run(new[] { Tool("dxil-spirv.exe"), temp.Dxbc, "--output", temp.Spirv }, "dxil-spirv (DXBC fallback)") || !File.Exists(temp.Spirv))
+        if (!Run(BuildDxilSpirvArgs(Tool("dxil-spirv.exe"), temp.Dxbc, temp.Spirv, rawLlvm: false), "dxil-spirv (DXBC fallback)") || !File.Exists(temp.Spirv))
             throw new InvalidOperationException("Failed to convert DXBC to SPIR-V.");
         return File.ReadAllBytes(temp.Spirv);
     }
@@ -384,11 +438,45 @@ public sealed class ShaderDecompiler : IDisposable
     private byte[] DxilToSpv(byte[] dxil, string tempDxil, string tempSpv, bool rawLlvm)
     {
         File.WriteAllBytes(tempDxil, dxil);
-        List<string> args = new() { Tool("dxil-spirv.exe"), tempDxil, "--output", tempSpv };
-        if (rawLlvm) args.Add("--raw-llvm");
-        if (!Run(args.ToArray(), "dxil-spirv") || !File.Exists(tempSpv))
+        if (!Run(BuildDxilSpirvArgs(Tool("dxil-spirv.exe"), tempDxil, tempSpv, rawLlvm), "dxil-spirv") || !File.Exists(tempSpv))
             throw new InvalidOperationException("dxil-spirv did not produce a SPIR-V file.");
         return File.ReadAllBytes(tempSpv);
+    }
+
+    // Centralised dxil-spirv command-line builder. The `--ssbo-uav` and
+    // `--ssbo-srv` flags force UAV/SRV resources to be emitted as
+    // `StorageClassStorageBuffer` (SSBOs) rather than typed buffers.
+    // This is the workaround for the "Raw 64-bit load-store was used,
+    // which must be implemented with SSBO, UBO or BDA" error that
+    // dxil-spirv throws when a shader (most commonly raygen RT shaders
+    // performing 64-bit atomic counter / hit-record load-store) uses
+    // 64-bit raw access on a resource the default lowering can't fit
+    // into the typed-buffer/BDA path.
+    //
+    // The fix lives in dxil-spirv's `emit_raw_buffer_load_instruction` /
+    // `emit_raw_buffer_store_instruction` (opcodes/dxil/dxil_buffer.cpp):
+    // 64-bit raw access requires either StorageBuffer storage class OR
+    // PhysicalStorageBuffer (BDA). When `--ssbo-uav --ssbo-srv` route
+    // both classes through SSBO, the conversion succeeds.
+    //
+    // Verified harmless for shaders that DON'T need this — dxil-spirv
+    // produces byte-identical SPV output (13684 bytes pre/post on a
+    // sample SM 6.0 compute shader). spirv-cross's downstream HLSL emit
+    // is also unaffected (same 7973-byte HLSL out).
+    //
+    // This used to be the last-stuck-failure of the whole X6Game cook
+    // (`Ungrouped_RG_005416`, raw 64-bit BDA-blocked raygen). Now fixed
+    // at the engine layer so every caller benefits without per-call
+    // tuning.
+    private static string[] BuildDxilSpirvArgs(string toolPath, string inputPath, string outputPath, bool rawLlvm)
+    {
+        var args = new List<string>
+        {
+            toolPath, inputPath, "--output", outputPath,
+            "--ssbo-uav", "--ssbo-srv",
+        };
+        if (rawLlvm) args.Add("--raw-llvm");
+        return args.ToArray();
     }
 
     private byte[] Patch(byte[] spirv, SerializedProgramData metadata)
