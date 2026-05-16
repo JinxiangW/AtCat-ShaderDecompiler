@@ -1110,6 +1110,104 @@ public static class UnityShaderLabWriter
             body = FixVertexInputSemantics(body);
         }
 
+        // Pass 6 — strip the cbuffer name prefix off its members. Our SPIR-V
+        // symbol patcher names the cbuffer's struct type as `type.<Name>` and
+        // the variable as `<Name>`; spirv-cross then prepends the variable
+        // name onto every member during its uniquify pass, producing
+        //   cbuffer UnityPerMaterial { float UnityPerMaterial_Color; … }
+        // when the metadata supplied just `_Color`. Unity's SRP Batcher /
+        // material-property binding matches cbuffer member names against
+        // property block names verbatim, so `UnityPerMaterial_Color` never
+        // receives the material's `_Color` value at runtime — the shader
+        // compiles but renders with uninitialised material data.
+        //
+        // Strip the prefix so the member ends up at its original property
+        // name (`_Color` / `_MainTex_ST` / `_Time` etc.). We only strip when
+        // the cbuffer member literally starts with `<cbufferName>_` so we
+        // don't accidentally truncate genuine identifiers.
+        body = StripCbufferMemberPrefix(body);
+
+        return body;
+    }
+
+    // Strip the cbuffer-name prefix from every member declaration AND every
+    // body reference inside each `cbuffer Foo { … }` block (and any non-Foo
+    // reference too, since the body uses the prefixed form everywhere).
+    //
+    //   cbuffer UnityPerMaterial : register(b0) {
+    //       float UnityPerMaterial_Color;       →  float _Color;
+    //       float4 UnityPerMaterial_MainTex_ST; →  float4 _MainTex_ST;
+    //   };
+    //   // body:
+    //   sampled.rgb * UnityPerMaterial_Color    →  sampled.rgb * _Color
+    //
+    // The prefix shows up because the SPIR-V symbol patcher tags the cbuffer
+    // struct as `type.<Name>` and the variable as `<Name>`; spirv-cross's
+    // uniquify pass concatenates the variable name with each member to keep
+    // it globally unique inside the TU. Unity's SRP Batcher binds material
+    // properties by *member name match*, so the prefixed form silently breaks
+    // every shader that consumes material properties.
+    private static readonly System.Text.RegularExpressions.Regex CbufferDeclRegex =
+        new(@"cbuffer\s+(?<name>[A-Za-z_][\w]*)\s*(?::\s*register\([^)]*\))?\s*\{(?<body>[^}]*)\}",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static string StripCbufferMemberPrefix(string body)
+    {
+        // Collect the (cbufferName) → (memberNames) map by walking each cbuffer
+        // declaration's body once. Members that don't carry the cbuffer name as
+        // a prefix stay untouched (some Unity SRP cbuffers contain pre-stripped
+        // names already).
+        //
+        // The cbuffer-declaration name often appears as `type_<Foo>` after
+        // spirv-cross sanitises our `type.<Foo>` struct alias; the member
+        // prefix is the *variable* name (`<Foo>`) not the struct-type alias.
+        // Try both forms when looking for the prefix.
+        Dictionary<string, List<string>> renamePairs = new();
+        foreach (System.Text.RegularExpressions.Match m in CbufferDeclRegex.Matches(body))
+        {
+            string cbName = m.Groups["name"].Value;
+            string cbBody = m.Groups["body"].Value;
+            string varName = cbName.StartsWith("type_", StringComparison.Ordinal)
+                ? cbName.Substring(5)
+                : cbName;
+            string prefix = varName + "_";
+            foreach (string line in cbBody.Split('\n'))
+            {
+                // Each member line: `<type> <name>[<array>] : packoffset(...);`
+                // We just need the identifier after the type tokens.
+                var memberMatch = System.Text.RegularExpressions.Regex.Match(line,
+                    @"\b(?<n>" + System.Text.RegularExpressions.Regex.Escape(prefix) + @"\w+)\b");
+                if (!memberMatch.Success) continue;
+                string name = memberMatch.Groups["n"].Value;
+                if (!renamePairs.TryGetValue(cbName, out var list))
+                {
+                    list = new();
+                    renamePairs[cbName] = list;
+                }
+                if (!list.Contains(name)) list.Add(name);
+            }
+        }
+        if (renamePairs.Count == 0) return body;
+
+        // Apply rewrites: for each prefixed name, rewrite ALL occurrences in
+        // the body to the unprefixed form. We use a single alternation regex
+        // so we don't accidentally rewrite the same site twice; word
+        // boundaries keep nested identifiers safe (`UnityPerMaterial_Color2`
+        // doesn't shorten to `_Color2` when we meant to strip `_Color`).
+        List<string> allNames = renamePairs.Values.SelectMany(l => l).Distinct().ToList();
+        // Longest-first so prefixes don't shadow longer names with the same root.
+        allNames.Sort((a, b) => b.Length.CompareTo(a.Length));
+
+        var sb = new System.Text.StringBuilder(body.Length);
+        var pattern = new System.Text.RegularExpressions.Regex(
+            @"\b(" + string.Join("|", allNames.Select(System.Text.RegularExpressions.Regex.Escape)) + @")\b",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
+        body = pattern.Replace(body, m =>
+        {
+            string s = m.Value;
+            int us = s.IndexOf('_');
+            return us >= 0 ? s.Substring(us) : s;
+        });
         return body;
     }
 
