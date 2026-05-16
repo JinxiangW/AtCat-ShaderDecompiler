@@ -16,15 +16,22 @@ public sealed class ShaderDecompilerSettings
     public const string ModuleKey = "ShaderDecompiler";
 
     /// <summary>
-    /// When true, multi-variant stages emit per-variant
+    /// When true (default), multi-variant stages emit per-variant
     /// `<stem>/<variantKey>.hlsl` files and the .shader file uses
     /// `#include` distributors per `#if defined(KEYWORD)` branch.
-    /// When false (default), every variant body stays inline inside
-    /// the .shader file under its `#if defined` block. Single-variant
-    /// stages always inline regardless — distribution is only useful
-    /// when there's actually a chain to slim down.
+    /// When false, every variant body stays inline inside the .shader
+    /// file under its `#if defined` block. Single-variant stages always
+    /// inline regardless — distribution is only useful when there's
+    /// actually a chain to slim down.
+    ///
+    /// Default is true: multi-variant Unity shaders (e.g. URP scene
+    /// shaders) routinely have 30+ vertex variants × 30+ fragment
+    /// variants per pass and multiple passes; inlining produces
+    /// .shader files of 200K+ lines that block Unity's importer for
+    /// minutes. Splitting keeps each file workable while preserving
+    /// the same logical structure.
     /// </summary>
-    public bool SplitVariantsToHlslFiles { get; set; }
+    public bool SplitVariantsToHlslFiles { get; set; } = true;
 
     /// <summary>
     /// When true (default), the FModel-side decompile hook pops a
