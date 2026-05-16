@@ -548,18 +548,30 @@ public static class UnityShaderLabWriter
         return value.ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    // Walks ProgVertex/Fragment/Geometry/Hull/Domain/RayTracing in order and writes one
-    // HLSLPROGRAM block per pass. SubPrograms within each prog* slot share the stage
-    // pragma but get split across `#if defined(KEYWORD)` blocks when their KeywordIndices
-    // differ. Decompile output (Success/SourceCode/ErrorMessage) lives on each
-    // SubProgram directly, populated by ShaderRuriDecompileExporter after the decompiler
-    // returns.
+    // Writes one `HLSLPROGRAM { … } ENDHLSL` block per pass. Each pass interleaves
+    // every stage's variants in declaration order. Within a stage we emit *all*
+    // SubPrograms (not just the first) so material assignment can pick the right
+    // keyword combo at runtime; each variant body is wrapped in
+    // `#if <keyword condition>` derived from its <c>KeywordIndices</c> against the
+    // pass's keyword universe so exactly one variant per stage is visible per
+    // compile permutation.
     //
-    // When `ctx.VariantFolderStem` is set, every concrete subprogram body is offloaded
-    // to a sibling `<stem>/<variantKey>.hlsl` file and the .shader gets a single
-    // `#include "<stem>/<variantKey>.hlsl"` line per variant. The variant key is built
-    // from (subShaderIndex, passIndex, stage, keyword combo, blob index) so two binaries
-    // with the same active-keyword set in the same pass slot still get distinct files.
+    // Per-stage entry-point renaming (`main` → `vertMain` / `fragMain` / …) keeps
+    // multiple `main` definitions from colliding inside the same translation unit
+    // when both stages are textually present. The corresponding `#pragma vertex
+    // vertMain` / `#pragma fragment fragMain` pin Unity's stage compile to the
+    // right entry. Old design had `#ifdef SHADER_STAGE_*` wrapping each stage —
+    // dropped, the entry-point rename is enough and the macro guards just
+    // hid all-but-one variant of each stage.
+    //
+    // `#pragma multi_compile_local` is emitted from the union of keywords any
+    // variant references, so Unity actually compiles the cross-product. Keywords
+    // that appear in zero variants are omitted. With one variant total the pragma
+    // is omitted entirely.
+    //
+    // When `ctx.VariantFolderStem` is set, every concrete subprogram body is
+    // offloaded to a sibling `<stem>/<variantKey>.hlsl` file and the .shader gets
+    // a single `#include "<stem>/<variantKey>.hlsl"` line per variant.
     private static void WriteProgramsBlock(IndentedStringBuilder sb, List<string> keywordNames, UnitySerializedPass pass, int subShaderIndex, int passIndex, WriteContext ctx)
     {
         sb.AppendLine("HLSLPROGRAM");
@@ -576,24 +588,162 @@ public static class UnityShaderLabWriter
         {
             if (TryGetStagePragma(stage, out string pragma))
             {
-                sb.AppendLine($"{pragma} main");
+                sb.AppendLine($"{pragma} {GetStageEntryName(stage)}");
             }
         }
 
-        // Single-variant mode: each stage emits only the first SubProgram,
-        // so the chain-of-`#if defined(VARIANT_*)` no longer applies and we
-        // skip the cross-product multi_compile_local pragmas entirely. With
-        // them in place Unity generates 2^N variant permutations and the
-        // ones where neither stage's `main` is defined fail to compile.
+        // multi_compile_local: union of keywords any variant in any stage of this
+        // pass references. Unity compiles each combination into a separate shader
+        // permutation; the `#if defined(KEYWORD)` guards on each variant's body
+        // ensure exactly one fires per permutation.
+        List<string> passKeywords = BuildPassKeywordSymbols(keywordNames, pass);
+        if (passKeywords.Count > 0)
+        {
+            // One `multi_compile_local` line per keyword: each is treated as a
+            // toggle (on/off). Bundling them as `#pragma multi_compile_local A B C`
+            // would make them mutually exclusive, which is wrong for unrelated
+            // toggles.
+            foreach (string kw in passKeywords)
+            {
+                sb.AppendLine($"#pragma multi_compile_local _ {kw}");
+            }
+        }
+
         sb.AppendLine(string.Empty);
+
+        // Buffer per-stage output so we can post-process before flushing to the
+        // outer StringBuilder. Cross-stage `cbuffer` deduplication needs to see
+        // the full text from every stage; doing it inline would force each stage
+        // to know about earlier ones' cbuffers.
+        IndentedStringBuilder stagesScratch = new();
         foreach ((string stage, UnitySerializedProgram program) in pass.EnumerateProgramSlots())
         {
-            WriteStageSubPrograms(sb, keywordNames, stage, program.SubPrograms, subShaderIndex, passIndex, ctx);
+            WriteStageSubPrograms(stagesScratch, keywordNames, stage, program.SubPrograms, subShaderIndex, passIndex, ctx, passKeywords);
         }
+        string stagesText = stagesScratch.ToString();
+        // Cross-stage cbuffer & resource deduplication: spirv-cross emits the
+        // same cbuffer / texture / sampler declaration in every stage that
+        // touches it, but in Unity all stages of a Pass share one HLSL TU so a
+        // duplicate declaration is a redefinition error. We collapse every
+        // `cbuffer Name { ... };` block to its first occurrence (members
+        // unioned across all occurrences so no stage loses a binding) and
+        // every `Texture<Dim> _Name : register(...);` / `SamplerState
+        // sampler_Name : register(...);` line to its first.
+        stagesText = DeduplicateCrossStageDeclarations(stagesText);
+        foreach (string line in SplitLines(stagesText))
+        {
+            sb.AppendLine(line);
+        }
+
         sb.AppendLine("ENDHLSL");
     }
 
-    private static void WriteStageSubPrograms(IndentedStringBuilder sb, List<string> keywordNames, string stage, List<UnitySerializedSubProgram> subPrograms, int subShaderIndex, int passIndex, WriteContext ctx)
+    private static readonly System.Text.RegularExpressions.Regex CBufferBlockRegex =
+        new(@"(?<indent>[ \t]*)cbuffer\s+(?<name>[A-Za-z_][\w]*)(?<header>\s*(?::\s*register\([^)]*\))?)\s*\{(?<body>[^}]*)\}\s*;?",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static readonly System.Text.RegularExpressions.Regex ResourceDeclRegex =
+        new(@"(?<indent>[ \t]*)(?<type>(?:Texture(?:1D|2D|3D|Cube)(?:Array)?|TextureCubeArray|RWTexture(?:1D|2D|3D)|Buffer|RWBuffer|StructuredBuffer|RWStructuredBuffer|ByteAddressBuffer|RWByteAddressBuffer|SamplerState|SamplerComparisonState)(?:<[^>]+>)?)\s+(?<name>[A-Za-z_][\w]*)\s*:\s*register\([^)]*\)\s*;",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    // Collapse duplicate `cbuffer X { ... }` and `Texture/Sampler/Buffer Name :
+    // register(...)` declarations to a single instance each — Unity's HLSL
+    // compiler treats both stages of a Pass as one translation unit, so a
+    // verbatim duplicate from spirv-cross's per-stage emit is a redefinition
+    // error. We keep the first occurrence in declaration order; for cbuffers
+    // we union the member lists so a stage that needs members the first stage
+    // didn't reference still has access to them.
+    private static string DeduplicateCrossStageDeclarations(string text)
+    {
+        // Resource decls (textures / samplers / buffers): hoist out of every
+        // `#if` branch they currently sit in, dedup by name, and emit once at
+        // the top of the HLSLPROGRAM block. Just dropping later occurrences
+        // would leave the surviving declaration inside a branch that may not
+        // be active for the current compile permutation, breaking other
+        // variants that reference the resource. Hoisting puts them at file
+        // scope where every variant sees them.
+        var resourceOrder = new List<string>();
+        var resourceDecls = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (System.Text.RegularExpressions.Match m in ResourceDeclRegex.Matches(text))
+        {
+            string key = m.Groups["type"].Value + " " + m.Groups["name"].Value;
+            if (resourceDecls.ContainsKey(key)) continue;
+            resourceOrder.Add(key);
+            // Strip leading indent so the hoisted decl uses the outer indent.
+            resourceDecls[key] = m.Value.TrimStart();
+        }
+        text = ResourceDeclRegex.Replace(text, "");
+
+        // cbuffers: build a member-union per name, then emit one merged block
+        // at the first occurrence; subsequent matches drop entirely. We keep
+        // the first occurrence's header (including register binding) so the
+        // bind point doesn't change.
+        var cbufferOrder = new List<string>();
+        var cbufferHeaders = new Dictionary<string, string>(StringComparer.Ordinal);
+        var cbufferIndents = new Dictionary<string, string>(StringComparer.Ordinal);
+        var cbufferMembers = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        var cbufferSeenMembers = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+
+        foreach (System.Text.RegularExpressions.Match m in CBufferBlockRegex.Matches(text))
+        {
+            string name = m.Groups["name"].Value;
+            if (!cbufferOrder.Contains(name))
+            {
+                cbufferOrder.Add(name);
+                cbufferHeaders[name] = m.Groups["header"].Value;
+                cbufferIndents[name] = m.Groups["indent"].Value;
+                cbufferMembers[name] = new List<string>();
+                cbufferSeenMembers[name] = new HashSet<string>(StringComparer.Ordinal);
+            }
+            // Members: split the body into trimmed declaration lines, dedup by
+            // exact line content (different stages may emit the same member with
+            // different packoffset/no packoffset — keep both as distinct).
+            foreach (string raw in m.Groups["body"].Value.Split('\n'))
+            {
+                string trimmed = raw.TrimEnd();
+                if (string.IsNullOrWhiteSpace(trimmed)) continue;
+                if (cbufferSeenMembers[name].Add(trimmed.Trim()))
+                {
+                    cbufferMembers[name].Add(trimmed);
+                }
+            }
+        }
+
+        // Strip every cbuffer occurrence from the body. We hoist the merged
+        // declarations above the stage chains rather than keeping them inline
+        // because the inline location of the *first* cbuffer might be inside
+        // an `#if` branch — re-emitting the merged set there would scope all
+        // the cbuffers to that branch's preprocessor condition and hide them
+        // from the other branches' code.
+        text = CBufferBlockRegex.Replace(text, "");
+
+        // Assemble the hoisted block: deduplicated resources first (textures,
+        // samplers, buffers) followed by the merged cbuffers. Both groups are
+        // outdented to a 12-space common indent that matches the HLSLPROGRAM
+        // block's body indentation in `WriteRawBlock` output. We prepend the
+        // hoisted block to the existing text so every `#if` branch sees the
+        // declarations at file scope.
+        if (resourceOrder.Count == 0 && cbufferOrder.Count == 0) return text;
+
+        System.Text.StringBuilder all = new();
+        const string hoistIndent = "            ";
+        foreach (string key in resourceOrder)
+        {
+            all.Append(hoistIndent).AppendLine(resourceDecls[key]);
+        }
+        foreach (string orderedName in cbufferOrder)
+        {
+            all.Append(hoistIndent).Append("cbuffer ").Append(orderedName).Append(cbufferHeaders[orderedName]).AppendLine().Append(hoistIndent).AppendLine("{");
+            foreach (string member in cbufferMembers[orderedName])
+            {
+                all.AppendLine(member);
+            }
+            all.Append(hoistIndent).AppendLine("};");
+        }
+        return all.ToString() + text;
+    }
+
+    private static void WriteStageSubPrograms(IndentedStringBuilder sb, List<string> keywordNames, string stage, List<UnitySerializedSubProgram> subPrograms, int subShaderIndex, int passIndex, WriteContext ctx, List<string> passKeywords)
     {
         if (subPrograms.Count == 0)
         {
@@ -604,51 +754,137 @@ public static class UnityShaderLabWriter
         sb.AppendLine($"// Stage: {stage}");
         sb.AppendLine($"// ============================================================");
 
-        // Wrap each stage body in `#ifdef SHADER_STAGE_*` so VS-only and PS-only
-        // declarations (entry `main`, SPIRV_Cross_Input/Output structs, statics,
-        // cbuffers) don't collide when Unity compiles a single TU per stage.
-        // SHADER_STAGE_VERTEX/FRAGMENT/etc are Unity-provided macros set per
-        // stage compile, so the preprocessor naturally strips the other stage's
-        // declarations.
-        string? stageMacro = GetShaderStageMacro(stage);
-        if (stageMacro != null)
-        {
-            sb.AppendLine($"#ifdef {stageMacro}");
-        }
+        // No `#ifdef SHADER_STAGE_*` outer guard: Unity does NOT define those
+        // macros in plain HLSLPROGRAM blocks (they're only set when a shader
+        // includes `HLSLSupport.cginc` from the Built-in / SRP packages).
+        // Without the macro, the guard hides every variant of every stage and
+        // Unity reports "Did not find shader kernel 'main' to compile".
+        //
+        // Stage isolation is instead handled by `AdaptHlslForUnity` which
+        // renames the spirv-cross-emitted identifiers that collide across
+        // stages (`SPIRV_Cross_Input/Output`, file-scope statics, the
+        // `vertex_info` cbuffer, the entry `main`) with a stage-specific
+        // suffix. After the rename, vertex and fragment can sit next to each
+        // other in the same translation unit without redefinition errors,
+        // and Unity's `#pragma vertex <X>Main` / `#pragma fragment <X>Main`
+        // pin the right entry per compile.
+        //
+        // Per-variant inner guards still run: `#if defined(KEYWORD_COMBO)`
+        // chains gate which subprogram body is visible per compile permutation.
+        // `#pragma multi_compile_local _ <KW>` (emitted by WriteProgramsBlock)
+        // tells Unity to actually iterate the cross-product.
 
-        // Single-variant mode for v0 of Unity output: each stage emits only
-        // its FIRST SubProgram. Multi-variant requires either per-pass pairing
-        // (vertex+fragment paired into individual Pass blocks) or stage-aware
-        // `multi_compile_local` keyword sets, which still produce most of an
-        // invalid cross-product. v0 keeps the dev loop tight by trading variant
-        // coverage for a clean compile.
-        UnitySerializedSubProgram primary = subPrograms[0];
-        sb.AppendLine($"// Stage: {stage}, Blob: {primary.BlobIndex}, ParamBlob: {(primary.ParameterBlobIndex.HasValue ? primary.ParameterBlobIndex.Value.ToString() : "<none>")}, Language: {primary.SourceLanguage}");
-        if (subPrograms.Count > 1)
-        {
-            sb.AppendLine($"// Note: {subPrograms.Count - 1} additional variant(s) elided (single-variant emit mode).");
-        }
+        // Pre-compute the keyword universe relevant to *this* stage so the per-
+        // variant condition only mentions keywords this stage actually uses.
+        List<ushort> stageKeywordIndices = CollectDistinctKeywordIndices(subPrograms);
 
-        bool effectiveSplit = !string.IsNullOrEmpty(ctx.VariantFolderStem) && subPrograms.Count > 1;
-        WriteSubProgramBody(sb, stage, primary, keywordNames, subShaderIndex, passIndex, ctx, effectiveSplit);
-        sb.AppendLine(string.Empty);
+        // Deduplicate variants by (keyword combo): SubPrograms with identical
+        // KeywordIndices but different blob indices are platform variants of the
+        // same logical compile. Pick the first-listed one.
+        var grouped = subPrograms
+            .GroupBy(sp => string.Join(",", sp.KeywordIndices.OrderBy(i => i)))
+            .ToList();
 
-        if (stageMacro != null)
+        // Single-variant fast path — no condition chain, no `#if/#endif`.
+        if (grouped.Count <= 1)
         {
-            sb.AppendLine($"#endif");
+            UnitySerializedSubProgram only = grouped[0].First();
+            sb.AppendLine($"// Stage: {stage}, Blob: {only.BlobIndex}, ParamBlob: {(only.ParameterBlobIndex.HasValue ? only.ParameterBlobIndex.Value.ToString() : "<none>")}, Language: {only.SourceLanguage}");
+            WriteSubProgramBody(sb, stage, only, keywordNames, subShaderIndex, passIndex, ctx, effectiveSplit: false);
             sb.AppendLine(string.Empty);
+            return;
         }
+
+        // Multi-variant: emit an `#if/#elif/.../#else/#endif` chain. Every
+        // permutation Unity generates from `multi_compile_local _ KW` lands in
+        // exactly one branch — the matching variant if one exists, otherwise
+        // the catch-all `#else` body so vertex/fragment compile always finds a
+        // `main` (Unity errors out with "Did not find shader kernel 'main'"
+        // otherwise). Pick the catch-all variant in priority order:
+        //   1. The variant with empty KeywordIndices (the original game's
+        //      "no-keyword" state).
+        //   2. Otherwise the first-listed variant — it's the highest blob
+        //      index, usually the closest thing to a default the game ships.
+        // The catch-all body is functionally a fallback; runtime keyword state
+        // determines which branch Unity actually executes, so picking a
+        // suboptimal default only affects unused permutations.
+        int defaultIdx = grouped.FindIndex(g => g.First().KeywordIndices.Count == 0);
+        if (defaultIdx < 0) defaultIdx = 0;
+
+        // Order: every non-default variant first as `#if`/`#elif`, default
+        // last as `#else`. This guarantees every permutation matches a body.
+        List<int> emitOrder = new();
+        for (int i = 0; i < grouped.Count; i++) if (i != defaultIdx) emitOrder.Add(i);
+        emitOrder.Add(defaultIdx);
+
+        for (int oi = 0; oi < emitOrder.Count; oi++)
+        {
+            var group = grouped[emitOrder[oi]];
+            UnitySerializedSubProgram primary = group.First();
+            bool isLast = oi == emitOrder.Count - 1;
+
+            string directive;
+            if (oi == 0)
+            {
+                directive = "#if " + (BuildKeywordCondition(keywordNames, stageKeywordIndices, primary.KeywordIndices.ToList()) ?? "1");
+            }
+            else if (isLast)
+            {
+                directive = "#else";
+            }
+            else
+            {
+                directive = "#elif " + (BuildKeywordCondition(keywordNames, stageKeywordIndices, primary.KeywordIndices.ToList()) ?? "1");
+            }
+            sb.AppendLine(directive);
+
+            sb.AppendLine($"// Stage: {stage}, Blob: {primary.BlobIndex}, ParamBlob: {(primary.ParameterBlobIndex.HasValue ? primary.ParameterBlobIndex.Value.ToString() : "<none>")}, Language: {primary.SourceLanguage}");
+            if (group.Count() > 1)
+            {
+                sb.AppendLine($"// Note: {group.Count() - 1} additional platform variant(s) collapsed into this combo.");
+            }
+            if (isLast)
+            {
+                sb.AppendLine("// Catch-all variant (no other branch matched).");
+            }
+
+            // Force per-variant include splitting when there's more than one
+            // variant: keeping all bodies inline blows up the .shader file fast
+            // and makes diffs impossible.
+            bool effectiveSplit = !string.IsNullOrEmpty(ctx.VariantFolderStem);
+            WriteSubProgramBody(sb, stage, primary, keywordNames, subShaderIndex, passIndex, ctx, effectiveSplit);
+        }
+        sb.AppendLine("#endif");
+        sb.AppendLine(string.Empty);
     }
 
-    private static string? GetShaderStageMacro(string stage) => stage switch
+    // Stage entry-point name: spirv-cross emits `void main(...)` for every
+    // stage; renaming to a stage-unique name lets vertex + fragment + … live
+    // inside the same HLSLPROGRAM block without colliding on `main`. The
+    // matching `#pragma vertex <X>Main` / `#pragma fragment <X>Main` lines
+    // pin Unity's stage compile to the right entry.
+    private static string GetStageEntryName(string stage) => stage switch
     {
-        "Vertex" => "SHADER_STAGE_VERTEX",
-        "Fragment" => "SHADER_STAGE_FRAGMENT",
-        "Geometry" => "SHADER_STAGE_GEOMETRY",
-        "Hull" => "SHADER_STAGE_HULL",
-        "Domain" => "SHADER_STAGE_DOMAIN",
-        "RayTracing" => "SHADER_STAGE_RAY_TRACING",
-        _ => null,
+        "Vertex" => "vertMain",
+        "Fragment" => "fragMain",
+        "Geometry" => "geomMain",
+        "Hull" => "hullMain",
+        "Domain" => "domainMain",
+        "RayTracing" => "rayMain",
+        _ => "main",
+    };
+
+    // 3-letter stage tag used to suffix the spirv-cross-generated identifiers
+    // that would otherwise collide across stages (struct/static/cbuffer names).
+    private static string GetStageIdSuffix(string stage) => stage switch
+    {
+        "Vertex" => "_v",
+        "Fragment" => "_f",
+        "Geometry" => "_g",
+        "Hull" => "_h",
+        "Domain" => "_d",
+        "RayTracing" => "_r",
+        _ => "",
     };
 
     private static void WriteSubProgramBody(IndentedStringBuilder sb, string stage, UnitySerializedSubProgram sp, List<string> keywordNames, int subShaderIndex, int passIndex, WriteContext ctx, bool effectiveSplit)
@@ -658,14 +894,14 @@ public static class UnityShaderLabWriter
             string variantKey = BuildVariantKey(subShaderIndex, passIndex, stage, sp, keywordNames);
             string fileName = variantKey + (string.IsNullOrWhiteSpace(sp.SourceFileExtension) ? ".hlsl" : sp.SourceFileExtension);
             string includePath = $"{ctx.VariantFolderStem}/{fileName}";
-            ctx.VariantFiles[fileName] = BuildVariantFileContent(stage, sp, variantKey, AdaptHlslForUnity(TrimTrailingWhitespace(sp.SourceCode!)));
+            ctx.VariantFiles[fileName] = BuildVariantFileContent(stage, sp, variantKey, AdaptHlslForUnity(TrimTrailingWhitespace(sp.SourceCode!), stage));
             sb.AppendLine($"#include \"{includePath}\"");
             return;
         }
 
         if (sp.Success && !string.IsNullOrWhiteSpace(sp.SourceCode))
         {
-            WriteRawBlock(sb, AdaptHlslForUnity(TrimTrailingWhitespace(sp.SourceCode!)));
+            WriteRawBlock(sb, AdaptHlslForUnity(TrimTrailingWhitespace(sp.SourceCode!), stage));
             return;
         }
 
@@ -702,11 +938,124 @@ public static class UnityShaderLabWriter
     private static readonly System.Text.RegularExpressions.Regex AliasedByteAddressRefRegex =
         new(@"\bT(\d+)_\d+\b", System.Text.RegularExpressions.RegexOptions.Compiled);
 
-    public static string AdaptHlslForUnity(string body)
+    // spirv-cross emits the stage entry as `<ReturnType> main(<Args>)` (no
+    // attribute, no `static`). Match the function header so we only rename the
+    // entry, not any nested `main` reference inside the body. The `lhs` group
+    // holds everything up to and including the whitespace before `main`, the
+    // `rhs` group is the trailing `(`, both are kept verbatim.
+    private static readonly System.Text.RegularExpressions.Regex MainEntryDeclRegex =
+        new(@"(?<lhs>(?:^|\n)\s*(?:[A-Za-z_][A-Za-z0-9_<>]*\s+)+)main(?<rhs>\s*\()",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    // File-scope `static <type> <name>;` declaration. Captures the bare name in
+    // group `n`; the type prefix can include vector / matrix template syntax so
+    // we accept any `[A-Za-z_][\w<>]*` plus optional whitespace.
+    private static readonly System.Text.RegularExpressions.Regex StaticGlobalDeclRegex =
+        new(@"(?<lhs>^|\n)(?<indent>\s*)static\s+(?<type>[A-Za-z_][\w<>]*(?:\s*[A-Za-z_][\w<>]*)*)\s+(?<n>[A-Za-z_][A-Za-z0-9_]*)\s*;",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    // Renames spirv-cross-generated identifiers that would collide if vertex
+    // and fragment stages share a translation unit. Touches:
+    //   - `main` entry → `<stage>Main`
+    //   - `SPIRV_Cross_Input` / `SPIRV_Cross_Output` → +`<suffix>`
+    //   - `cbuffer SPIRV_Cross_VertexInfo` body and member usage → +`<suffix>`
+    //   - File-scope `static <T> <name>;` decls → +`<suffix>` (and every body
+    //     reference). User-facing names (textures, samplers, cbuffer members
+    //     written by symbol injection) are skipped — the static-decl pass only
+    //     adds names it actually finds at file scope, and the rest of the
+    //     identifier universe (textures, samplers, cbuffer keywords) is fixed
+    //     by the explicit set below.
+    private static string RenameStageScopedIdentifiers(string body, string entryName, string suffix)
+    {
+        if (string.IsNullOrEmpty(suffix)) return body;
+
+        // 1. Entry rename: `... main(` → `... <entryName>(`.
+        if (entryName != "main")
+        {
+            body = MainEntryDeclRegex.Replace(body, m => m.Groups["lhs"].Value + entryName + m.Groups["rhs"].Value);
+        }
+
+        // 2. Collect file-scope static names — only ones actually declared get
+        // rewritten so we don't touch identical-named cbuffer fields (e.g.
+        // `static float2 TEXCOORD;` becomes a rename target, but a cbuffer's
+        // `float2 TEXCOORD : packoffset(c0);` is left alone since it's not a
+        // static decl). The rename target set is body-scoped so two stages
+        // never see each other's targets.
+        HashSet<string> renameTargets = new(StringComparer.Ordinal);
+        foreach (System.Text.RegularExpressions.Match m in StaticGlobalDeclRegex.Matches(body))
+        {
+            renameTargets.Add(m.Groups["n"].Value);
+        }
+
+        // 3. Always-renamed identifiers that spirv-cross emits with a fixed
+        // name across stages and that participate in the collision set. Add
+        // these to the rename set unconditionally — if they aren't present in
+        // the body, the regex below just won't fire.
+        foreach (string fixedName in s_spirvCrossFixedIdentifiers)
+        {
+            renameTargets.Add(fixedName);
+        }
+
+        if (renameTargets.Count == 0) return body;
+
+        // 4. Word-boundary rewrite of every reference. We compile a single
+        // alternation so the scan is one pass; to keep the regex from matching
+        // identifiers nested inside larger ones (`TEXCOORD_2` shouldn't match
+        // when we want `TEXCOORD`) we frame each name in `\b…\b`.
+        string pattern = @"\b(" + string.Join("|", renameTargets.Select(System.Text.RegularExpressions.Regex.Escape)) + @")\b";
+        var renameRegex = new System.Text.RegularExpressions.Regex(pattern,
+            System.Text.RegularExpressions.RegexOptions.Compiled);
+        body = renameRegex.Replace(body, m => m.Value + suffix);
+
+        return body;
+    }
+
+    // spirv-cross-generated identifiers that always collide between stages and
+    // are present in *every* shader's HLSL output (or at least never refer to a
+    // user name). Anything user-facing (textures/samplers/cbuffer members fed
+    // by symbol injection) stays out of this list.
+    private static readonly string[] s_spirvCrossFixedIdentifiers =
+    {
+        "SPIRV_Cross_Input",
+        "SPIRV_Cross_Output",
+        "SPIRV_Cross_VertexInfo",
+        "SPIRV_Cross_BaseVertex",
+        "SPIRV_Cross_BaseInstance",
+        "stage_input",
+        "stage_output",
+    };
+
+    // Backwards-compat overload — older callers / tests pass no stage. Defaults to
+    // leaving `main` untouched (legacy single-stage behaviour).
+    public static string AdaptHlslForUnity(string body) => AdaptHlslForUnity(body, stage: null);
+
+    public static string AdaptHlslForUnity(string body, string? stage)
     {
         if (string.IsNullOrEmpty(body))
         {
             return body;
+        }
+
+        // Pass 0 — make spirv-cross's per-stage identifiers stage-unique. Every
+        // stage spirv-cross emits standalone has the same `SPIRV_Cross_Input` /
+        // `SPIRV_Cross_Output` struct names, the same `cbuffer
+        // SPIRV_Cross_VertexInfo` (vertex stage only but still namespaced the
+        // same way), and the same `static <type> <name>;` file-scope variables
+        // backing each Location. Once two stages live in one TU these all
+        // collide. We rename in place by suffixing the recognised
+        // spirv-cross-generated identifiers with `_v` / `_f` / … and rewrite
+        // every reference to them in the body.
+        //
+        // We deliberately skip `vert_main` / `frag_main` — those are already
+        // stage-prefixed by spirv-cross. We also skip user-facing names
+        // (textures, cbuffer members, samplers) — the rename is gated on
+        // identifiers that match a fixed allowlist of spirv-cross emit
+        // patterns so user names don't get touched.
+        if (!string.IsNullOrEmpty(stage))
+        {
+            string entryName = GetStageEntryName(stage);
+            string suffix = GetStageIdSuffix(stage);
+            body = RenameStageScopedIdentifiers(body, entryName, suffix);
         }
 
         // Pass 1 — sampler decl + refs.
@@ -734,7 +1083,78 @@ public static class UnityShaderLabWriter
         body = AliasedByteAddressDeclRegex.Replace(body, string.Empty);
         body = AliasedByteAddressRefRegex.Replace(body, "T$1");
 
+        // Pass 4 — deduplicate TEXCOORDN semantics inside SPIRV_Cross_Input /
+        // SPIRV_Cross_Output struct blocks. spirv-cross's HLSL backend emits
+        // separate `: TEXCOORDN` slots for each SPIR-V Output variable that
+        // shares a Location with a different Component offset (e.g. a packed
+        // `vec4` written via two `float2` writes). Unity's d3d11 compiler
+        // rejects "Semantic 'TEXCOORD' overlap at N" — vertex output / fragment
+        // input semantics must be unique.
+        //
+        // We renumber duplicates to the next-unused TEXCOORDN slot, walking
+        // fields in declaration order. Because vertex output and fragment input
+        // appear as separate spirv-cross emissions but agree on the duplicate
+        // pattern (same Location reused at the same struct position by both
+        // ends — spirv-cross is deterministic), the renumbering is consistent
+        // across stages without needing cross-stage state.
+        body = DeduplicateInterstageSemantics(body);
+
         return body;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex SpirvCrossStructRegex =
+        new(@"struct\s+SPIRV_Cross_(Input|Output)\s*\{(?<body>[^}]*)\}",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    // Match `<field> : <SEMANTIC>;` within a struct body. The semantic is captured
+    // verbatim (including any trailing index digits) so we can decide whether to
+    // renumber it.
+    private static readonly System.Text.RegularExpressions.Regex StructFieldSemanticRegex =
+        new(@"(?<lhs>\b\w[\w\s]*\b)\s*:\s*(?<sem>TEXCOORD\d+)\s*(?<tail>;)",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static string DeduplicateInterstageSemantics(string body)
+    {
+        return SpirvCrossStructRegex.Replace(body, structMatch =>
+        {
+            string structHeader = structMatch.Value.Substring(0, structMatch.Value.IndexOf('{') + 1);
+            string structBody = structMatch.Groups["body"].Value;
+
+            HashSet<int> usedSlots = new();
+            // First pass: collect declared indices to know which slots are taken.
+            foreach (System.Text.RegularExpressions.Match m in StructFieldSemanticRegex.Matches(structBody))
+            {
+                if (TryParseTexcoordIndex(m.Groups["sem"].Value, out int idx))
+                {
+                    usedSlots.Add(idx);
+                }
+            }
+
+            // Second pass: walk declaration order, when we see a duplicate, hand it the
+            // smallest unused index. We mutate a working `seen` set so subsequent
+            // duplicates don't all get the same fresh index.
+            HashSet<int> seen = new();
+            string rewritten = StructFieldSemanticRegex.Replace(structBody, m =>
+            {
+                string sem = m.Groups["sem"].Value;
+                if (!TryParseTexcoordIndex(sem, out int idx)) return m.Value;
+                if (seen.Add(idx)) return m.Value; // first occurrence — keep
+                int free = 0;
+                while (usedSlots.Contains(free) || seen.Contains(free)) free++;
+                seen.Add(free);
+                usedSlots.Add(free);
+                return $"{m.Groups["lhs"].Value} : TEXCOORD{free}{m.Groups["tail"].Value}";
+            });
+
+            return structHeader + rewritten + "}";
+        });
+    }
+
+    private static bool TryParseTexcoordIndex(string semantic, out int index)
+    {
+        index = 0;
+        if (!semantic.StartsWith("TEXCOORD", StringComparison.Ordinal)) return false;
+        return int.TryParse(semantic.AsSpan(8), out index);
     }
 
     // Variant key rules:
