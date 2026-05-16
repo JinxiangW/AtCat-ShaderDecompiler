@@ -583,6 +583,14 @@ public static class UnityShaderLabWriter
         // which together cover the syntactic surface SPIRV-Cross emits.
         sb.AppendLine("#pragma target 5.0");
         sb.AppendLine("#pragma use_dxc");
+        // HLSLSupport.cginc is what defines `SHADER_STAGE_VERTEX/FRAGMENT/...`
+        // (see Built-in pipeline source ~line 290). Without including it, Unity
+        // does NOT set those macros for plain HLSLPROGRAM blocks, so any
+        // `#ifdef SHADER_STAGE_*` guard hides every stage's code and the d3d11
+        // compiler errors with "Did not find shader kernel 'main'". The file is
+        // tiny (just preprocessor symbols + a few API helpers) and ships with
+        // every Unity install, so the include cost is negligible.
+        sb.AppendLine("#include \"HLSLSupport.cginc\"");
 
         foreach ((string stage, _) in pass.EnumerateProgramSlots())
         {
@@ -610,31 +618,16 @@ public static class UnityShaderLabWriter
         }
 
         sb.AppendLine(string.Empty);
-
-        // Buffer per-stage output so we can post-process before flushing to the
-        // outer StringBuilder. Cross-stage `cbuffer` deduplication needs to see
-        // the full text from every stage; doing it inline would force each stage
-        // to know about earlier ones' cbuffers.
-        IndentedStringBuilder stagesScratch = new();
+        // Cross-stage isolation is handled by the `#ifdef SHADER_STAGE_*`
+        // guard inside WriteStageSubPrograms (made reliable by the
+        // `#include "HLSLSupport.cginc"` above). No cross-stage cbuffer or
+        // resource deduplication is needed — each stage's compile pass only
+        // sees its own block, and within a stage's `#if/#elif/#else` chain
+        // exactly one variant's declarations are visible per permutation.
         foreach ((string stage, UnitySerializedProgram program) in pass.EnumerateProgramSlots())
         {
-            WriteStageSubPrograms(stagesScratch, keywordNames, stage, program.SubPrograms, subShaderIndex, passIndex, ctx, passKeywords);
+            WriteStageSubPrograms(sb, keywordNames, stage, program.SubPrograms, subShaderIndex, passIndex, ctx, passKeywords);
         }
-        string stagesText = stagesScratch.ToString();
-        // Cross-stage cbuffer & resource deduplication: spirv-cross emits the
-        // same cbuffer / texture / sampler declaration in every stage that
-        // touches it, but in Unity all stages of a Pass share one HLSL TU so a
-        // duplicate declaration is a redefinition error. We collapse every
-        // `cbuffer Name { ... };` block to its first occurrence (members
-        // unioned across all occurrences so no stage loses a binding) and
-        // every `Texture<Dim> _Name : register(...);` / `SamplerState
-        // sampler_Name : register(...);` line to its first.
-        stagesText = DeduplicateCrossStageDeclarations(stagesText);
-        foreach (string line in SplitLines(stagesText))
-        {
-            sb.AppendLine(line);
-        }
-
         sb.AppendLine("ENDHLSL");
     }
 
@@ -754,25 +747,29 @@ public static class UnityShaderLabWriter
         sb.AppendLine($"// Stage: {stage}");
         sb.AppendLine($"// ============================================================");
 
-        // No `#ifdef SHADER_STAGE_*` outer guard: Unity does NOT define those
-        // macros in plain HLSLPROGRAM blocks (they're only set when a shader
-        // includes `HLSLSupport.cginc` from the Built-in / SRP packages).
-        // Without the macro, the guard hides every variant of every stage and
-        // Unity reports "Did not find shader kernel 'main' to compile".
+        // OUTER guard: only the matching stage's compile sees this block.
+        // Without this, the file-scope declarations spirv-cross emits per
+        // stage (`static <type> <gl_Foo|TEXCOORD|…>;`,
+        // `struct SPIRV_Cross_Input/Output`, `cbuffer SPIRV_Cross_VertexInfo`,
+        // and the per-stage cbuffers spirv-cross dead-codes against each
+        // stage's actual usage) collide. The `#include "HLSLSupport.cginc"`
+        // emitted by WriteProgramsBlock makes SHADER_STAGE_* available; with
+        // the include in place the guard cleanly hides wrong-stage decls
+        // from each compile pass without needing the per-stage rename trick.
         //
-        // Stage isolation is instead handled by `AdaptHlslForUnity` which
-        // renames the spirv-cross-emitted identifiers that collide across
-        // stages (`SPIRV_Cross_Input/Output`, file-scope statics, the
-        // `vertex_info` cbuffer, the entry `main`) with a stage-specific
-        // suffix. After the rename, vertex and fragment can sit next to each
-        // other in the same translation unit without redefinition errors,
-        // and Unity's `#pragma vertex <X>Main` / `#pragma fragment <X>Main`
-        // pin the right entry per compile.
-        //
-        // Per-variant inner guards still run: `#if defined(KEYWORD_COMBO)`
-        // chains gate which subprogram body is visible per compile permutation.
-        // `#pragma multi_compile_local _ <KW>` (emitted by WriteProgramsBlock)
-        // tells Unity to actually iterate the cross-product.
+        // INNER guards (per variant): inside the stage block we walk every
+        // SubProgram and gate it on its `KeywordIndices` so only one variant
+        // is active per (stage, keyword combination) compile permutation.
+        // The pass-level `#pragma multi_compile_local _ <KW>` lines (emitted
+        // by WriteProgramsBlock) tell Unity to actually iterate the cross-
+        // product; an `#if/#elif/#else` chain (closed below) ensures every
+        // permutation hits a body so `Did not find shader kernel 'main'`
+        // never fires.
+        string? stageMacro = GetShaderStageMacro(stage);
+        if (stageMacro != null)
+        {
+            sb.AppendLine($"#ifdef {stageMacro}");
+        }
 
         // Pre-compute the keyword universe relevant to *this* stage so the per-
         // variant condition only mentions keywords this stage actually uses.
@@ -792,6 +789,11 @@ public static class UnityShaderLabWriter
             sb.AppendLine($"// Stage: {stage}, Blob: {only.BlobIndex}, ParamBlob: {(only.ParameterBlobIndex.HasValue ? only.ParameterBlobIndex.Value.ToString() : "<none>")}, Language: {only.SourceLanguage}");
             WriteSubProgramBody(sb, stage, only, keywordNames, subShaderIndex, passIndex, ctx, effectiveSplit: false);
             sb.AppendLine(string.Empty);
+            if (stageMacro != null)
+            {
+                sb.AppendLine("#endif");
+                sb.AppendLine(string.Empty);
+            }
             return;
         }
 
@@ -855,37 +857,31 @@ public static class UnityShaderLabWriter
             WriteSubProgramBody(sb, stage, primary, keywordNames, subShaderIndex, passIndex, ctx, effectiveSplit);
         }
         sb.AppendLine("#endif");
+        if (stageMacro != null)
+        {
+            sb.AppendLine("#endif");
+        }
         sb.AppendLine(string.Empty);
     }
 
-    // Stage entry-point name: spirv-cross emits `void main(...)` for every
-    // stage; renaming to a stage-unique name lets vertex + fragment + … live
-    // inside the same HLSLPROGRAM block without colliding on `main`. The
-    // matching `#pragma vertex <X>Main` / `#pragma fragment <X>Main` lines
-    // pin Unity's stage compile to the right entry.
-    private static string GetStageEntryName(string stage) => stage switch
+    private static string? GetShaderStageMacro(string stage) => stage switch
     {
-        "Vertex" => "vertMain",
-        "Fragment" => "fragMain",
-        "Geometry" => "geomMain",
-        "Hull" => "hullMain",
-        "Domain" => "domainMain",
-        "RayTracing" => "rayMain",
-        _ => "main",
+        "Vertex" => "SHADER_STAGE_VERTEX",
+        "Fragment" => "SHADER_STAGE_FRAGMENT",
+        "Geometry" => "SHADER_STAGE_GEOMETRY",
+        "Hull" => "SHADER_STAGE_HULL",
+        "Domain" => "SHADER_STAGE_DOMAIN",
+        "RayTracing" => "SHADER_STAGE_RAY_TRACING",
+        _ => null,
     };
 
-    // 3-letter stage tag used to suffix the spirv-cross-generated identifiers
-    // that would otherwise collide across stages (struct/static/cbuffer names).
-    private static string GetStageIdSuffix(string stage) => stage switch
-    {
-        "Vertex" => "_v",
-        "Fragment" => "_f",
-        "Geometry" => "_g",
-        "Hull" => "_h",
-        "Domain" => "_d",
-        "RayTracing" => "_r",
-        _ => "",
-    };
+    // Every stage's `main` entry stays named `main`. With `SHADER_STAGE_*`
+    // guards (made reliable via the HLSLSupport.cginc include) wrapping each
+    // stage block, only one stage's `main` is visible per compile permutation
+    // so there's nothing to disambiguate. Unity's d3d11 compiler also chokes
+    // on some non-`main` entry names ("Did not find shader kernel
+    // 'fragMain'") in plain HLSLPROGRAM blocks, so the rename was a net loss.
+    private static string GetStageEntryName(string stage) => "main";
 
     private static void WriteSubProgramBody(IndentedStringBuilder sb, string stage, UnitySerializedSubProgram sp, List<string> keywordNames, int subShaderIndex, int passIndex, WriteContext ctx, bool effectiveSplit)
     {
@@ -1036,27 +1032,19 @@ public static class UnityShaderLabWriter
             return body;
         }
 
-        // Pass 0 — make spirv-cross's per-stage identifiers stage-unique. Every
-        // stage spirv-cross emits standalone has the same `SPIRV_Cross_Input` /
-        // `SPIRV_Cross_Output` struct names, the same `cbuffer
-        // SPIRV_Cross_VertexInfo` (vertex stage only but still namespaced the
-        // same way), and the same `static <type> <name>;` file-scope variables
-        // backing each Location. Once two stages live in one TU these all
-        // collide. We rename in place by suffixing the recognised
-        // spirv-cross-generated identifiers with `_v` / `_f` / … and rewrite
-        // every reference to them in the body.
+        // No per-stage identifier rename is needed: stage isolation is
+        // achieved via the `#ifdef SHADER_STAGE_*` guard around each stage
+        // block in WriteStageSubPrograms. With `HLSLSupport.cginc` included
+        // at the HLSLPROGRAM top, those macros are reliably set per stage
+        // compile, so spirv-cross's `SPIRV_Cross_Input/Output` / file-scope
+        // statics / etc never appear in the wrong stage's TU.
         //
-        // We deliberately skip `vert_main` / `frag_main` — those are already
-        // stage-prefixed by spirv-cross. We also skip user-facing names
-        // (textures, cbuffer members, samplers) — the rename is gated on
-        // identifiers that match a fixed allowlist of spirv-cross emit
-        // patterns so user names don't get touched.
-        if (!string.IsNullOrEmpty(stage))
-        {
-            string entryName = GetStageEntryName(stage);
-            string suffix = GetStageIdSuffix(stage);
-            body = RenameStageScopedIdentifiers(body, entryName, suffix);
-        }
+        // Past attempts at per-stage suffixing (`_v` / `_f` / …) caused
+        // cross-variant cbuffer member redefinitions when we then tried to
+        // hoist+merge cbuffers across stages — different variants legitimately
+        // declare the same cbuffer member at different packoffsets, and the
+        // merged set kept both with conflicting offsets. Reverting to plain
+        // SHADER_STAGE_* gating sidesteps the whole class of issues.
 
         // Pass 1 — sampler decl + refs.
         body = MaterialSamplerDeclRegex.Replace(body, "sampler_${n}");
