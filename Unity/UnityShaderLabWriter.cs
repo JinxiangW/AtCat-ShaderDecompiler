@@ -1087,7 +1087,103 @@ public static class UnityShaderLabWriter
         // across stages without needing cross-stage state.
         body = DeduplicateInterstageSemantics(body);
 
+        // Pass 5 (vertex stage only) — rewrite vertex-input semantics so Unity's
+        // mesh binding actually finds the right stream. spirv-cross emits every
+        // SPIR-V Input as `<Name> : TEXCOORD<Location>`, e.g.
+        //   float4 POSITION : TEXCOORD0;   <-- WRONG, Unity binds the first UV
+        //                                       stream into the position input
+        //   float3 NORMAL   : TEXCOORD2;   <-- WRONG
+        //   float4 TANGENT  : TEXCOORD3;   <-- WRONG
+        //   float4 COLOR    : TEXCOORD4;   <-- WRONG
+        //   float2 TEXCOORD : TEXCOORD1;
+        //   float4 TEXCOORD_3 : TEXCOORD7;
+        // Unity's MeshRenderer feeds vertex attributes by *semantic name*, not
+        // by location index. With the above, the position stream lands at the
+        // TEXCOORD0 input slot — the shader renders complete garbage.
+        //
+        // The field name is already the original SPIR-V variable name (HLSL/
+        // GLSL author named it `POSITION` / `NORMAL` / `TEXCOORD_<N>` etc.), so
+        // we map field name → matching Unity vertex semantic and overwrite the
+        // semantic only.
+        if (string.Equals(stage, "Vertex", StringComparison.Ordinal))
+        {
+            body = FixVertexInputSemantics(body);
+        }
+
         return body;
+    }
+
+    // Map each spirv-cross input field name to its Unity-canonical vertex
+    // semantic. Unrecognised names are left as TEXCOORD<location> — those are
+    // typically game-specific instance attributes that the original GLSL/HLSL
+    // author already named after their stream slot, so the existing semantic is
+    // already correct.
+    private static string FixVertexInputSemantics(string body)
+    {
+        return SpirvCrossStructRegex.Replace(body, m =>
+        {
+            // Only the *Input* struct of the vertex stage carries mesh-stream
+            // bindings; SPIRV_Cross_Output's semantics are interstage and stay
+            // as TEXCOORD<n> so vertex output and fragment input agree.
+            if (m.Groups[1].Value != "Input") return m.Value;
+
+            string structHeader = m.Value.Substring(0, m.Value.IndexOf('{') + 1);
+            string structBody = m.Groups["body"].Value;
+            string rewritten = StructFieldSemanticRegex.Replace(structBody, fm =>
+            {
+                string fieldName = fm.Groups["lhs"].Value.Trim();
+                string? canon = MapVertexInputSemantic(fieldName);
+                if (canon == null) return fm.Value;
+                return $"{fm.Groups["lhs"].Value} : {canon}{fm.Groups["tail"].Value}";
+            });
+            return structHeader + rewritten + "}";
+        });
+    }
+
+    // Returns the canonical Unity vertex-input semantic for a spirv-cross-
+    // emitted field name, or null if the field's name doesn't map to a
+    // standard slot (in which case we leave the semantic alone).
+    private static string? MapVertexInputSemantic(string fieldName)
+    {
+        // Strip whitespace and any leading type tokens caught by the loose
+        // `\b\w[\w\s]*\b` lhs match — only the trailing identifier matters.
+        int lastSpace = fieldName.LastIndexOf(' ');
+        string ident = lastSpace >= 0 ? fieldName.Substring(lastSpace + 1) : fieldName;
+
+        // spirv-cross conventions:
+        //   POSITION         → POSITION0
+        //   NORMAL           → NORMAL0
+        //   TANGENT          → TANGENT0
+        //   COLOR            → COLOR0
+        //   TEXCOORD         → TEXCOORD0   (first uv)
+        //   TEXCOORD_<N>     → TEXCOORD<N> (additional uvs / generic streams)
+        //   BLENDINDICES, BLENDWEIGHT — pass through with index 0
+        //   PSIZE — same
+        // Anything else (game-custom instance attributes) returns null — the
+        // existing TEXCOORD<location> semantic is what the asset bundle's mesh
+        // already streams, so leave it untouched.
+        switch (ident)
+        {
+            case "POSITION": return "POSITION0";
+            case "NORMAL": return "NORMAL0";
+            case "TANGENT": return "TANGENT0";
+            case "COLOR": return "COLOR0";
+            case "TEXCOORD": return "TEXCOORD0";
+            case "BLENDINDICES": return "BLENDINDICES0";
+            case "BLENDWEIGHT": return "BLENDWEIGHT0";
+            case "PSIZE": return "PSIZE0";
+        }
+        if (ident.StartsWith("TEXCOORD_", StringComparison.Ordinal)
+            && int.TryParse(ident.AsSpan(9), out int n))
+        {
+            return "TEXCOORD" + n;
+        }
+        if (ident.StartsWith("COLOR_", StringComparison.Ordinal)
+            && int.TryParse(ident.AsSpan(6), out int cn))
+        {
+            return "COLOR" + cn;
+        }
+        return null;
     }
 
     private static readonly System.Text.RegularExpressions.Regex SpirvCrossStructRegex =
