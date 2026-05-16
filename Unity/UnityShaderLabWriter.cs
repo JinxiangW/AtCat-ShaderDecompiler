@@ -564,6 +564,14 @@ public static class UnityShaderLabWriter
     {
         sb.AppendLine("HLSLPROGRAM");
 
+        // The decompiled HLSL uses SM5.1+ features (register(spaceN), templated
+        // ByteAddressBuffer.Load<T>(), etc.) that Unity's default FXC path
+        // doesn't accept. Enabling DXC routes the program through the modern
+        // compiler stack and lifts the target to 5.0 (Unity's max for DX11),
+        // which together cover the syntactic surface SPIRV-Cross emits.
+        sb.AppendLine("#pragma target 5.0");
+        sb.AppendLine("#pragma use_dxc");
+
         foreach ((string stage, _) in pass.EnumerateProgramSlots())
         {
             if (TryGetStagePragma(stage, out string pragma))
@@ -572,11 +580,11 @@ public static class UnityShaderLabWriter
             }
         }
 
-        foreach (string keyword in BuildPassKeywordSymbols(keywordNames, pass))
-        {
-            sb.AppendLine($"#pragma multi_compile_local __ {keyword}");
-        }
-
+        // Single-variant mode: each stage emits only the first SubProgram,
+        // so the chain-of-`#if defined(VARIANT_*)` no longer applies and we
+        // skip the cross-product multi_compile_local pragmas entirely. With
+        // them in place Unity generates 2^N variant permutations and the
+        // ones where neither stage's `main` is defined fail to compile.
         sb.AppendLine(string.Empty);
         foreach ((string stage, UnitySerializedProgram program) in pass.EnumerateProgramSlots())
         {
@@ -592,102 +600,72 @@ public static class UnityShaderLabWriter
             return;
         }
 
-        // Stage delimiter is a comment block, not a `#if defined(SHADER_STAGE_*)`
-        // wrapper. The per-stage HLSL bodies under this banner each have their
-        // own globals/types/entry function and won't compile concatenated, but
-        // ShaderLab readers consume this file as documentation rather than feed
-        // it to a compiler — comments make the structure obvious without
-        // implying the file is a single compilable translation unit, and
-        // SHADER_STAGE_* isn't a real Unity-defined keyword anyway.
         sb.AppendLine($"// ============================================================");
         sb.AppendLine($"// Stage: {stage}");
         sb.AppendLine($"// ============================================================");
 
-        // Per-stage split decision: distribution to per-variant .hlsl files
-        // is only useful when there's more than one variant in the stage —
-        // a single-variant stage has no chain to slim down, so it stays inline
-        // regardless of the global VariantFolderStem.
+        // Wrap each stage body in `#ifdef SHADER_STAGE_*` so VS-only and PS-only
+        // declarations (entry `main`, SPIRV_Cross_Input/Output structs, statics,
+        // cbuffers) don't collide when Unity compiles a single TU per stage.
+        // SHADER_STAGE_VERTEX/FRAGMENT/etc are Unity-provided macros set per
+        // stage compile, so the preprocessor naturally strips the other stage's
+        // declarations.
+        string? stageMacro = GetShaderStageMacro(stage);
+        if (stageMacro != null)
+        {
+            sb.AppendLine($"#ifdef {stageMacro}");
+        }
+
+        // Single-variant mode for v0 of Unity output: each stage emits only
+        // its FIRST SubProgram. Multi-variant requires either per-pass pairing
+        // (vertex+fragment paired into individual Pass blocks) or stage-aware
+        // `multi_compile_local` keyword sets, which still produce most of an
+        // invalid cross-product. v0 keeps the dev loop tight by trading variant
+        // coverage for a clean compile.
+        UnitySerializedSubProgram primary = subPrograms[0];
+        sb.AppendLine($"// Stage: {stage}, Blob: {primary.BlobIndex}, ParamBlob: {(primary.ParameterBlobIndex.HasValue ? primary.ParameterBlobIndex.Value.ToString() : "<none>")}, Language: {primary.SourceLanguage}");
+        if (subPrograms.Count > 1)
+        {
+            sb.AppendLine($"// Note: {subPrograms.Count - 1} additional variant(s) elided (single-variant emit mode).");
+        }
+
         bool effectiveSplit = !string.IsNullOrEmpty(ctx.VariantFolderStem) && subPrograms.Count > 1;
+        WriteSubProgramBody(sb, stage, primary, keywordNames, subShaderIndex, passIndex, ctx, effectiveSplit);
+        sb.AppendLine(string.Empty);
 
-        // Single-variant short-circuit: emit the body directly with no
-        // `#if defined(KEYWORD)` wrapper. Single-variant stages with the
-        // empty keyword list would otherwise produce no condition at all
-        // and a malformed `#if` line.
-        if (subPrograms.Count == 1)
+        if (stageMacro != null)
         {
-            UnitySerializedSubProgram only = subPrograms[0];
-            sb.AppendLine($"// Stage: {stage}, Blob: {only.BlobIndex}, ParamBlob: {(only.ParameterBlobIndex.HasValue ? only.ParameterBlobIndex.Value.ToString() : "<none>")}, Language: {only.SourceLanguage}");
-            WriteSubProgramBody(sb, stage, only, keywordNames, subShaderIndex, passIndex, ctx, effectiveSplit);
-            sb.AppendLine(string.Empty);
-            return;
-        }
-
-        List<ushort> stageKeywordIndices = CollectDistinctKeywordIndices(subPrograms);
-
-        List<UnitySerializedSubProgram> conditionalPrograms = [];
-        List<UnitySerializedSubProgram> unconditionalPrograms = [];
-
-        foreach (UnitySerializedSubProgram sp in subPrograms)
-        {
-            if (sp.KeywordIndices.Count == 0) unconditionalPrograms.Add(sp);
-            else conditionalPrograms.Add(sp);
-        }
-
-        bool wroteConditionalHeader = false;
-        for (int i = 0; i < conditionalPrograms.Count; i++)
-        {
-            UnitySerializedSubProgram sp = conditionalPrograms[i];
-            string keywordCondition = BuildKeywordCondition(keywordNames, stageKeywordIndices, sp.KeywordIndices) ?? string.Empty;
-            sb.AppendLine($"// Stage: {stage}, Blob: {sp.BlobIndex}, ParamBlob: {(sp.ParameterBlobIndex.HasValue ? sp.ParameterBlobIndex.Value.ToString() : "<none>")}, Language: {sp.SourceLanguage}");
-            sb.AppendLine($"{(wroteConditionalHeader ? "#elif" : "#if")} {keywordCondition}");
-            wroteConditionalHeader = true;
-            WriteSubProgramBody(sb, stage, sp, keywordNames, subShaderIndex, passIndex, ctx, effectiveSplit);
-            sb.AppendLine(string.Empty);
-        }
-
-        if (unconditionalPrograms.Count > 0)
-        {
-            for (int i = 0; i < unconditionalPrograms.Count; i++)
-            {
-                UnitySerializedSubProgram sp = unconditionalPrograms[i];
-                sb.AppendLine($"// Stage: {stage}, Blob: {sp.BlobIndex}, ParamBlob: {(sp.ParameterBlobIndex.HasValue ? sp.ParameterBlobIndex.Value.ToString() : "<none>")}, Language: {sp.SourceLanguage}");
-                if (wroteConditionalHeader && i == 0)
-                {
-                    sb.AppendLine("#else");
-                }
-                WriteSubProgramBody(sb, stage, sp, keywordNames, subShaderIndex, passIndex, ctx, effectiveSplit);
-                sb.AppendLine(string.Empty);
-            }
-        }
-
-        if (wroteConditionalHeader)
-        {
-            sb.AppendLine("#endif");
+            sb.AppendLine($"#endif");
             sb.AppendLine(string.Empty);
         }
     }
 
+    private static string? GetShaderStageMacro(string stage) => stage switch
+    {
+        "Vertex" => "SHADER_STAGE_VERTEX",
+        "Fragment" => "SHADER_STAGE_FRAGMENT",
+        "Geometry" => "SHADER_STAGE_GEOMETRY",
+        "Hull" => "SHADER_STAGE_HULL",
+        "Domain" => "SHADER_STAGE_DOMAIN",
+        "RayTracing" => "SHADER_STAGE_RAY_TRACING",
+        _ => null,
+    };
+
     private static void WriteSubProgramBody(IndentedStringBuilder sb, string stage, UnitySerializedSubProgram sp, List<string> keywordNames, int subShaderIndex, int passIndex, WriteContext ctx, bool effectiveSplit)
     {
-        // Variant-split mode: spool the body into a sibling .hlsl file and
-        // emit a single `#include` line. Keeps the .shader file compact and
-        // gives each variant its own diffable artifact. The caller decides
-        // whether split applies for THIS stage (it's gated on stage having
-        // more than one variant — single-variant stages always inline so
-        // there's no chain to slim down).
         if (effectiveSplit && sp.Success && !string.IsNullOrWhiteSpace(sp.SourceCode))
         {
             string variantKey = BuildVariantKey(subShaderIndex, passIndex, stage, sp, keywordNames);
             string fileName = variantKey + (string.IsNullOrWhiteSpace(sp.SourceFileExtension) ? ".hlsl" : sp.SourceFileExtension);
             string includePath = $"{ctx.VariantFolderStem}/{fileName}";
-            ctx.VariantFiles[fileName] = BuildVariantFileContent(stage, sp, variantKey, TrimTrailingWhitespace(sp.SourceCode!));
+            ctx.VariantFiles[fileName] = BuildVariantFileContent(stage, sp, variantKey, AdaptHlslForUnity(TrimTrailingWhitespace(sp.SourceCode!)));
             sb.AppendLine($"#include \"{includePath}\"");
             return;
         }
 
         if (sp.Success && !string.IsNullOrWhiteSpace(sp.SourceCode))
         {
-            WriteRawBlock(sb, TrimTrailingWhitespace(sp.SourceCode!));
+            WriteRawBlock(sb, AdaptHlslForUnity(TrimTrailingWhitespace(sp.SourceCode!)));
             return;
         }
 
@@ -699,6 +677,64 @@ public static class UnityShaderLabWriter
                 sb.AppendLine($"// {line}");
             }
         }
+    }
+
+    // Adapts spirv-cross emitted HLSL so Unity's ShaderLab pipeline accepts it
+    // without further hand-edits:
+    //   * Texture bindings named `Material_<X>` → `_<X>` so the Properties
+    //     declaration (Unity uses `_X` convention) auto-binds to the HLSL var.
+    //   * Sampler bindings `Material_<X>Sampler` → `sampler_<X>` so Unity's
+    //     "must match a texture or contain inline mode names" heuristic accepts
+    //     them and pairs them with the matching texture.
+    //   * Aliased ByteAddressBuffer dup `T<N>_<M>` at the SAME slot as `T<N>`
+    //     — spirv-cross emits both names when two SSA values touch the same
+    //     descriptor; collapse the alias declaration and rewrite call sites.
+    //
+    // The replacements preserve cbuffer member names that happen to share the
+    // `Material_<X>` prefix by anchoring on the texture/sampler type token.
+    private static readonly System.Text.RegularExpressions.Regex MaterialSamplerDeclRegex =
+        new(@"\bMaterial_(?<n>[A-Za-z0-9_]+)Sampler\b", System.Text.RegularExpressions.RegexOptions.Compiled);
+    private static readonly System.Text.RegularExpressions.Regex MaterialTextureDeclRegex =
+        new(@"(?<t>Texture(?:2D|2DArray|Cube|CubeArray|3D)(?:<[^>]+>)?)\s+Material_(?<n>[A-Za-z0-9_]+)\s*:\s*register", System.Text.RegularExpressions.RegexOptions.Compiled);
+    private static readonly System.Text.RegularExpressions.Regex AliasedByteAddressDeclRegex =
+        new(@"^\s*ByteAddressBuffer\s+T(?<n>\d+)_\d+\s*:\s*register\(t\k<n>[^\)]*\);\s*$",
+            System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.Multiline);
+    private static readonly System.Text.RegularExpressions.Regex AliasedByteAddressRefRegex =
+        new(@"\bT(\d+)_\d+\b", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    public static string AdaptHlslForUnity(string body)
+    {
+        if (string.IsNullOrEmpty(body))
+        {
+            return body;
+        }
+
+        // Pass 1 — sampler decl + refs.
+        body = MaterialSamplerDeclRegex.Replace(body, "sampler_${n}");
+
+        // Pass 2 — texture decl. Collect the renamed roots so we only rewrite
+        // body references that correspond to a renamed texture (cbuffer scalar
+        // members like `Material_SelectionColor` must NOT get renamed to
+        // `_SelectionColor` — Unity properties exist for textures only here).
+        HashSet<string> renamedTextures = new(StringComparer.Ordinal);
+        body = MaterialTextureDeclRegex.Replace(body, m =>
+        {
+            renamedTextures.Add(m.Groups["n"].Value);
+            return $"{m.Groups["t"].Value} _{m.Groups["n"].Value} : register";
+        });
+        foreach (string name in renamedTextures)
+        {
+            string from = "Material_" + name;
+            string to = "_" + name;
+            body = System.Text.RegularExpressions.Regex.Replace(body, $@"\b{System.Text.RegularExpressions.Regex.Escape(from)}\b", to);
+        }
+
+        // Pass 3 — drop aliased ByteAddressBuffer redeclarations (same register
+        // as the primary T<N>) and rewrite T<N>_<M> references to T<N>.
+        body = AliasedByteAddressDeclRegex.Replace(body, string.Empty);
+        body = AliasedByteAddressRefRegex.Replace(body, "T$1");
+
+        return body;
     }
 
     // Variant key rules:
