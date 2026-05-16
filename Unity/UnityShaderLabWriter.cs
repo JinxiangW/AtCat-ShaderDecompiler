@@ -90,10 +90,18 @@ public static class UnityShaderLabWriter
                         sb.AppendLine(command);
                     }
                 }
-                WriteTags(sb, pass.State.Tags.Tags);
+                // SubShader-level Tags inherit into every Pass per ShaderLab
+                // semantics, so a Pass-level Tags entry whose key+value matches
+                // the SubShader's is pure noise. Dedup before writing — Pass
+                // emits only the entries it actually adds or overrides (key
+                // present in SubShader with a different value). Same dedup is
+                // applied to both `pass.State.Tags` (state-block tags) and
+                // `pass.Tags` (extra non-state tags) since they share the
+                // inheritance rule.
+                WriteTags(sb, FilterRedundantTags(pass.State.Tags.Tags, subShader.Tags.Tags));
                 if (pass.Tags.Tags.Count > 0)
                 {
-                    WriteTags(sb, pass.Tags.Tags);
+                    WriteTags(sb, FilterRedundantTags(pass.Tags.Tags, subShader.Tags.Tags));
                 }
 
                 if (HasAnyProgram(pass))
@@ -541,6 +549,39 @@ public static class UnityShaderLabWriter
         }
         sb.Unindent();
         sb.AppendLine("}");
+    }
+
+    // Strip entries from `passTags` whose key+value already appears in
+    // `subShaderTags`. Pass-level tags inherit from SubShader-level tags in
+    // ShaderLab semantics, so a literal duplicate is dead text. An entry whose
+    // key exists in SubShader with a *different* value still survives — that's
+    // a real override (e.g. SubShader sets `"Queue"="Geometry"` and one Pass
+    // overrides to `"Queue"="Transparent+10"`). Tag-key matching is case-
+    // insensitive because Unity treats `"QUEUE"` and `"Queue"` as the same
+    // tag.
+    private static List<UnityTagMapEntry> FilterRedundantTags(
+        List<UnityTagMapEntry> passTags,
+        List<UnityTagMapEntry> subShaderTags)
+    {
+        if (passTags.Count == 0 || subShaderTags.Count == 0) return passTags;
+
+        Dictionary<string, string> inheritedByKey = new(StringComparer.OrdinalIgnoreCase);
+        foreach (UnityTagMapEntry t in subShaderTags)
+        {
+            inheritedByKey[t.First] = t.Second;
+        }
+
+        List<UnityTagMapEntry> result = new(passTags.Count);
+        foreach (UnityTagMapEntry t in passTags)
+        {
+            if (inheritedByKey.TryGetValue(t.First, out string? inherited)
+                && string.Equals(inherited, t.Second, StringComparison.Ordinal))
+            {
+                continue; // already in SubShader with same value — skip.
+            }
+            result.Add(t);
+        }
+        return result;
     }
 
     private static string FormatFloat(float value)
