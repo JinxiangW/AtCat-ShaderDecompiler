@@ -556,17 +556,51 @@ public sealed class ShaderDecompiler : IDisposable
 
         // Sampler synthesis: Unity's metadata typically leaves Samplers empty and
         // expresses the link via TextureParameters[i].SamplerIndex. For each sampler
-        // variable in the SPIR-V that has not been named yet, we use:
-        //   * `sampler<TextureName>` when exactly one texture targets this slot
-        //     (e.g. `_MainTex` ⇒ `sampler_MainTex`, the prevailing Unity convention)
-        //   * `sampler_<slot>` when multiple textures share the slot — there's no
-        //     unambiguous texture to borrow a name from, so we fall back to the
-        //     register index (matches `sN` register naming).
+        // variable in the SPIR-V we synthesise a name that Unity ShaderLab accepts
+        // — anything else triggers
+        //   `Unrecognized sampler 'sampler_N' - does not match any texture and is
+        //    not a recognized inline name (should contain filter and wrap modes).`
+        // when Unity's shader importer sees the SamplerState declaration.
+        //
+        // Two valid forms:
+        //   * `sampler<TextureName>` — pairs the sampler with that texture's
+        //     import-settings sampler state (Unity's default convention; multiple
+        //     SampleN calls in HLSL can still reference it from any texture).
+        //   * `sampler<filter><wrap>` inline name (e.g. `sampler_LinearClamp`) —
+        //     Unity creates a static sampler with the named filter/wrap combo.
+        // When the SPIR-V sampler binds N>=1 textures we pick the *first* (lowest
+        // metadata index) texture's name; the sampler is shared in HLSL anyway.
+        // When no texture targets the slot at all, fall back to the inline form
+        // `sampler_LinearClamp` — Unity always accepts it and gives sane defaults.
+        //
+        // We override any earlier patch on a sampler id: AzurPromilia (and
+        // potentially other Unity custom-engine builds) carries samplers in
+        // metadata with names like `"sampler_3"` straight from the bytecode
+        // reflection. Those names are accurate at the SPIR-V level but Unity's
+        // shader importer rejects them, so we always replace with a synthesised
+        // Unity-compatible name regardless of whether the main resource loop
+        // already wrote a metadata name for the sampler.
+        // Track names already given to a sampler in this shader so multiple
+        // texture-less samplers don't all collapse to the same inline fallback —
+        // spirv-cross would uniquify them as `sampler_LinearClamp_1` /
+        // `_LinearClamp_2`, and Unity's shader importer rejects any sampler
+        // whose name isn't a recognised inline filter+wrap combo.
+        HashSet<string> samplerNamesUsed = new(StringComparer.Ordinal);
         foreach (SpirvBindingInfo binding in bindings.Where(b => b.DescriptorType == "Sampler"))
         {
-            if (patchedIds.Contains(binding.Id)) continue;
             string? name = DeriveSamplerName(binding.Set, binding.Binding, metadata);
             if (name is null) continue;
+            if (samplerNamesUsed.Contains(name))
+            {
+                name = NextInlineSamplerName(samplerNamesUsed);
+            }
+            samplerNamesUsed.Add(name);
+            // Strip any earlier patch and re-emit so the synthesised name wins.
+            if (patchedIds.Contains(binding.Id))
+            {
+                int existing = result.FindIndex(p => p.Id == binding.Id);
+                if (existing >= 0) result.RemoveAt(existing);
+            }
             result.Add((binding.Id, name));
             patchedIds.Add(binding.Id);
         }
@@ -576,15 +610,68 @@ public sealed class ShaderDecompiler : IDisposable
 
     private static string? DeriveSamplerName(int set, int binding, SerializedProgramData metadata)
     {
+        // Texture binding metadata may carry textures from multiple `set`s; we want
+        // the texture(s) whose own set + SamplerIndex matches this sampler binding.
         List<TextureParameter> linked = metadata.TextureParameters
             .Where(t => metadata.GetSetIdFor(t.Index, ShaderResourceType.Texture) == set && t.SamplerIndex == binding && !string.IsNullOrWhiteSpace(t.Name))
+            .OrderBy(t => t.Index)
             .ToList();
-        if (linked.Count == 1)
+        if (linked.Count > 0)
         {
+            // Pair-with-texture form. Pick the first (lowest-index) texture so the
+            // choice is deterministic across re-runs even when the slot is shared.
             string texName = linked[0].Name;
             return texName.StartsWith('_') ? "sampler" + texName : "sampler_" + texName;
         }
-        return $"sampler_{binding}";
+        // Inline-form fallback. Anything else (`sampler_<binding>`, `sampler<i>`)
+        // gets rejected by Unity's shader importer; the inline name is the only
+        // way to keep an unattached sampler compilable.
+        return "sampler_LinearClamp";
+    }
+
+    // Pool of Unity-recognised inline sampler names — pairs of Filter (Point /
+    // Linear / Trilinear) and Wrap (Clamp / Repeat / Mirror / MirrorOnce). Unity
+    // parses each name verbatim to build the static sampler state, so any name
+    // outside this pool fails the importer's "is not a recognized inline name"
+    // check. We walk them in order so the first unbound sampler gets the safest
+    // default (`sampler_LinearClamp`); only when that's taken do we move on.
+    private static readonly string[] InlineSamplerPool =
+    {
+        "sampler_LinearClamp",
+        "sampler_LinearRepeat",
+        "sampler_LinearMirror",
+        "sampler_LinearMirrorOnce",
+        "sampler_PointClamp",
+        "sampler_PointRepeat",
+        "sampler_PointMirror",
+        "sampler_PointMirrorOnce",
+        "sampler_TrilinearClamp",
+        "sampler_TrilinearRepeat",
+        "sampler_TrilinearMirror",
+        "sampler_TrilinearMirrorOnce",
+    };
+
+    private static string NextInlineSamplerName(HashSet<string> usedNames)
+    {
+        foreach (string candidate in InlineSamplerPool)
+        {
+            if (!usedNames.Contains(candidate)) return candidate;
+        }
+        // Past the pool: anisotropic variants are also recognised, but we
+        // arrive here only when 12 distinct unbound samplers already exist —
+        // exceedingly rare. Anisotropic + level form lets us keep growing.
+        for (int aniso = 2; aniso <= 16; aniso *= 2)
+        {
+            foreach (string filterWrap in InlineSamplerPool)
+            {
+                string candidate = filterWrap + "_aniso" + aniso;
+                if (!usedNames.Contains(candidate)) return candidate;
+            }
+        }
+        // Beyond that we give up — appended counter is non-recognised but at
+        // least uniqueness is preserved. Unity will still error, but the
+        // diagnostic will point at the count rather than at a silent collision.
+        return "sampler_LinearClamp_overflow_" + usedNames.Count;
     }
 
     private List<(uint TypeId, uint MemberIndex, string Name)> BuildMemberPatches(IReadOnlyList<SpirvBindingInfo> bindings, SerializedProgramData metadata)
