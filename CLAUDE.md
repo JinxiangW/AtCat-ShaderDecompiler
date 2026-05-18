@@ -1,8 +1,7 @@
 # Ruri.ShaderDecompiler — 当前任务、问题、目标
 
 > 单一事实来源。`Source/Ruri.ShaderDecompiler/` 下的 `README.md` /
-> `CURRENT_LIMITATIONS.md` / `SHADER_MAPPING_RESEARCH.md` /
-> `UE_SHIPPING_NAME_TRUTH.md` / `Targets/Oni_Valley_VFX.md` 已合并至本
+> `CURRENT_LIMITATIONS.md` / `SHADER_MAPPING_RESEARCH.md` 已合并至本
 > 文件。后续修改只更新这里。
 >
 > **SPIR-V 阶段调试与修复方法论 → [SPIRV_DEBUG_PLAYBOOK.md](SPIRV_DEBUG_PLAYBOOK.md)**。
@@ -10,9 +9,14 @@
 > "看 stderr → spirv-dis → 比对 → 定位 → 修复 → 回归"工作流、SPIR-V 操
 > 作数布局速查、bug archetype 速查表、和已踩过的所有坑清单。
 >
-> **UE 贴图/采样器 binding 名字还原 → [UE_TEXTURE_BINDING_TRUTH.md](UE_TEXTURE_BINDING_TRUTH.md)**。
-> SRT token 流的语义、`FUniformExpressionSet::CreateBufferStruct()` 重放、
-> 引擎 UB / loose param 的 closed-world 上限,全在那。
+> **UE 符号来源真理(closed-world 矩阵 + 外部 metadata 方案)→
+> [UE_SYMBOL_SOURCES.md](UE_SYMBOL_SOURCES.md)**。
+> 该文件取代旧 `UE_SHIPPING_NAME_TRUTH.md` + `UE_TEXTURE_BINDING_TRUTH.md`
+> (两份均已删除)。覆盖 UE 5.1.1 + UE 5.4.4 双引擎版本验证、
+> `'u'`/`'p'`/`'n'` 等 optional block 持久化裁定、Material `.uasset` UB
+> 重放、`ResourceTableLayoutHash` 作为外部 metadata 文件 key 的依据、
+> UE 5.4 SM6 `DXC_PART_REFLECTION_DATA` 残留路径(strip gate 在 5.4
+> 退化为只在有 PDB 时触发)。
 
 ---
 
@@ -280,11 +284,45 @@ struct layout**(目前是从 `CBParams` 单源读取,没问题)。reader 端不
 
 - **绝不硬编码 UE C++ 源码里的 UB 成员表** —— 不同 UE 版本/魔改版会偏
   移,硬编码会静默捏造名字。所有名字必须能追到 cooked 数据中真实存在的
-  字节。
-- 加新名字来源前,先在 §4 的 "持久化裁定矩阵" 加一条带 UE 源码引用的条
-  目;查不到的,gap 就是 gap,留 anonymous 占位,不许猜。
+  字节,**或**追到外部 metadata 文件且该文件的 `layoutHash` 与 cook 中的
+  `ResourceTableLayoutHashes[i]` 严格匹配。
+- 加新名字来源前,先在 [UE_SYMBOL_SOURCES.md](UE_SYMBOL_SOURCES.md) 矩阵
+  里加一条带 UE 源码引用的条目;查不到的,gap 就是 gap,留 anonymous 占
+  位,不许猜。
 - placeholder 一定带 `_SRV`/`_Sampler`/`_UAV`/`_Resource` 中缀,从 HLSL
   上一眼能看出"未完全恢复"。
+- **新增**: 引擎 UB 名字通过 `<exeDir>/EngineUbMetadata/<UBName>_<Hash:08x>_MetaData.json`
+  外部文件供给。文件不存在时降级到 placeholder(向后兼容)。文件存在时,
+  hash 必须严格匹配 cook 中的 `ResourceTableLayoutHashes[i]`,否则不命中
+  (跨引擎版本/魔改时自动避免误用)。详见
+  [UE_SYMBOL_SOURCES.md](UE_SYMBOL_SOURCES.md) §6。
+
+### 3.4 已落地的外部 metadata 架构(v16, 2026-05-18)
+
+```
+FModel/FModel/bin/Debug/.../EngineUbMetadata/
+    README.md                          ← schema + bootstrap 指南
+    View_13BB15AA_MetaData.json        ← UE 5.1.1 View, 85 资源
+    OpaqueBasePass_<hash>_MetaData.json ← TODO (nested struct 解析未做)
+    ...
+```
+
+Pipeline:
+- `EngineUbMetadataLoader.Load(dir)` → `EngineUbMetadataRegistry`
+  (`Source/Ruri.FModelHook/Game/SBUE/ShaderDecompiler/EngineUbMetadataLoader.cs`)
+- `RuntimeSymbolReader.Read(unrealMeta, materialLayout, registry)` →
+  per-UB lookup by `(name, ResourceTableLayoutHashes[i])`,命中时:
+  1. `ConstantBufferParameter` 加入 `SerializedProgramData.ConstantBufferParameters`
+     (让 StructuredCBufferRewriter 拆 `<UB>_1_m0[N]` 数组)
+  2. `ShaderResourceTableSymbolizer.ResolveResourceName` 优先使用
+     `engineMeta.Resources[i].Name` 而非 placeholder
+- 测试覆盖: Oni_Valley UE 5.1.1 完整跑过,View 槽位 0 anonymous 残留,
+  527 命名 `View_*` 跨 5 sample shader 出现,0 反编译失败。
+
+UE 5.4 SM6 增强(deferred): per agent 2 finding, `DXC_PART_REFLECTION_DATA`
+在 5.4 strip gate 退化后残留在每个 SM6 shader 容器内,可通过
+`IDxcContainerReflection` 直接拉名字,bypass 外部 metadata。实现在
+`DxcReflectionExtractor` (planned)。
 
 ---
 
