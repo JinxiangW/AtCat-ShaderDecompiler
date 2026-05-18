@@ -59,6 +59,37 @@ internal static class LayoutBuilder
 
         layout.RequiredRegisterCount = Math.Max(1, (maxUsedByteOffset + 15) / 16);
         layout.MaxUsedRegisterCount = Math.Max(1, (maxReferencedByteOffset + 15) / 16);
+
+        // Tail-padding fill: SPIR-V's flat `_m0[N]` may extend past the last named member
+        // (compiler tail-pad, dead-code reads of rounded-up registers, etc.). Without a
+        // member covering those slots, any OpAccessChain into them fails Pass050 and we
+        // lose the named recovery for the WHOLE CB. Emit a `_pad_tail` float4[k] spanning
+        // the gap so every chain in the SPIR-V flat array has a structured target.
+        if (layout.MaxUsedRegisterCount < flatBuffer.ArrayLength)
+        {
+            int tailStart = layout.MaxUsedRegisterCount;
+            int tailRegisters = flatBuffer.ArrayLength - tailStart;
+            var tailType = new MemberLogicalType
+            {
+                Kind = LogicalTypeKind.Vector,
+                ScalarKind = ScalarKind.Float,
+                Rows = 4,
+                Columns = 1,
+                ArrayLength = tailRegisters,
+                DeclaredByteSize = tailRegisters * 16,
+                IsMatrix = false,
+            };
+            layout.Members.Add(new StructuredMemberLayout
+            {
+                Name = "_pad_tail",
+                ByteOffset = tailStart * 16,
+                LogicalType = tailType,
+                RegisterOffset = tailStart,
+                RegisterCount = tailRegisters,
+            });
+            layout.RequiredRegisterCount = flatBuffer.ArrayLength;
+        }
+
         return layout;
     }
 

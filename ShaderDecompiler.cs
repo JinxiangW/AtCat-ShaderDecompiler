@@ -995,7 +995,14 @@ public sealed class ShaderDecompiler : IDisposable
         "UniformBuffer" => registerType == 'b',
         "Sampler" => registerType == 's',
         "SampledImage" => registerType == 't',
-        "StorageBuffer" => registerType == 'u',
+        // ByteAddressBuffer / StructuredBuffer SRVs (UE LocalVF vertex-fetch
+        // buffers, GPUSkin, GeomCache, etc.) come through DXC as
+        // StorageBuffer in SPIR-V, but bind on `t` registers, not `u`. So
+        // accept both — UAVs still pick up `'u'` via the (Set,Binding)
+        // pairing the surrounding MatchBindings does, and read-only SRVs
+        // now get their names instead of falling through to spirv-cross's
+        // synthetic `T<n>` defaults.
+        "StorageBuffer" => registerType == 't' || registerType == 'u',
         "StorageImage" => registerType == 'u',
         _ => false,
     };
