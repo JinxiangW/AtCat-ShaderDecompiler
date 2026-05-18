@@ -261,6 +261,70 @@ Implementation: `DxcReflectionExtractor.cs` (planned) parses the `DXBC`/`DXIL` c
 - Per Agent C: Material PS specifically has NO `FParameters` block (`TBasePassPS<...>` uses `DECLARE_SHADER_TYPE`, not `SHADER_USE_PARAMETER_STRUCT`). Material PS textures come from `FMaterialUniformExpressionSet` per-material, already extracted via the existing Material UB layout replay path.
 - For UE 5.4 SM6 (NOT 5.1 / NOT 5.4 SM5) — `DXC_PART_REFLECTION_DATA` survives in the DXIL container (gate regression in `D3DShaderCompilerDXC.cpp:734-744`); a DXC reflection extractor would recover loose-param names directly from cook. See §7. Deferred work item.
 
+### 9.1 Residual gap — Material textures sampled with shared samplers (UE 5.1 SM5)
+
+**Reproducer**: `Oni_Valley_VFX` cook, e.g. `SM03A0481B3FB3_Xray/Fragment_E20AED9A.hlsl` lines 209-217:
+
+```hlsl
+Texture2D<float4> T3 : register(t3, space0);   // unresolved
+Texture2D<float4> T4 : register(t4, space0);   // unresolved
+Texture2D<float4> T5 : register(t5, space0);   // unresolved
+SamplerState sampler_LinearClamp  : register(s0, space0);
+SamplerState sampler_LinearRepeat : register(s1, space0);
+SamplerState sampler_LinearMirror : register(s2, space0);
+```
+
+`Material_m0[4]` IS present (line 204), confirming the shader uses the Material UB. T3..T5 are
+sampled with shared samplers (`SSM_Wrap_WorldGroupSettings` / `SSM_Clamp_WorldGroupSettings` etc.,
+emitted by `HLSLMaterialTranslator.cpp:6108-6128`) which compile to bare `SamplerState` slots that
+spirv-cross renames `sampler_LinearClamp` etc. — **not** `Material_<TexName>Sampler`.
+
+**Why neither existing mechanism fires**:
+1. **SRT path (`MaterialUniformBufferLayout.ResolveResourceName`, line 22)** — names textures only
+   when the SRT 4-map token references `(Material UB, ResourceIndex i)`. For shared-sampler MIs,
+   the texture token IS in `ShaderResourceViewMap` but the sampler token is in `View` UB
+   (`Wrap_WorldGroupSettingsSampler`), so the texture's `(SamplerIndex,Sampler)` pair on the C# side
+   ends up `(-1, _)` and the texture name resolution still works — UNLESS the cook drops the SRT
+   bit for this UB on this permutation, which happens when the Material UB's resource is referenced
+   only through preshader-evaluated indirection (rare but present in this cook ~10% of MI variants).
+2. **SPV-pair inference (`MaterialTextureNameInferrer.cs:159-200`)** — requires sampler name to
+   start with `Material_` and end with `Sampler`. Shared samplers fail both gates → returns 0.
+
+**Can ByteOffset bridge to `UniformTextureExpressions[Type][i]` index?** No.
+`FShaderParameterBindings.ResourceParameters[].ByteOffset` is an offset into the **`FParameters`
+struct** declared by `SHADER_USE_PARAMETER_STRUCT`. `TBasePassPS<...>` uses `DECLARE_SHADER_TYPE`
+(`BasePassRendering.h:519`) and therefore does NOT participate in
+`FShaderParameterBindings::BindForLegacyShaderParameters` (`ShaderParameterStruct.cpp:242`). The
+`ResourceParameters[]` array for a Material PS contains only the resources the `FMaterialShader`
+base macros bind via `LAYOUT_FIELD(FShaderResourceParameter, ...)` — which is essentially empty for
+shared-sampler Material textures because the Material UB is bound as a whole CB, with per-texture
+binds coming out of `FUniformExpressionSet::FillUniformBuffer` at draw time, not the cook's
+`ParameterMap`. Empirically confirmed by reading the unified DTO at `Pass030_ScanMaterialPackages.cs:899`
+on this cook: `ResourceParameters[]` is empty for the affected Material PS shaders.
+
+**The actual bridge that works**: SRT `ResourceIndex` → `UniformBufferLayoutInitializer.Resources[i].MemberOffset`
+→ `MaterialUniformBufferLayout.AppendTextureSamplerPairs` (already implemented). The recovery
+failures we see are NOT a missing bridge — they're SRT records whose tokens decode to
+`(UB=Material, ResourceIndex=N)` where N is out of range of the `UniformTextureExpressions[Type][*]`
+arrays the .uasset declares. Root cause: `MaterialUniformBufferLayout.cs` 5.1 layout reader
+misaligns when the material's `UniformExpressionSet` has dynamic VT count (`Resources[2]` returns
+null — already noted as the 30-placeholder bug in §9 above).
+
+**Conclusion**: For UE 5.1.1 SM5 these shared-sampler MI textures are NOT closed-world unrecoverable.
+They are recoverable through the existing `MaterialUniformBufferLayout` path once the VT/SVT-aware
+fix in §9 ships. No new mechanism required, no ByteOffset bridge needed. The user sees `T3..T13`
+today because the SRT records ARE present in cook but the layout reader returns null for them.
+
+**T0/T1/T2 (Texture3D)** — these are engine resources (`View_VolumetricLightmapBrickAmbientVector`,
+`View_IndirectLightingCacheTexture0`, `View_GlobalDistanceFieldTexture0` family) bound via the
+**View UB's SRT entries** (`SceneView.h:1016+ FViewUniformShaderParameters`). They are the same
+SRT-driven mechanism as Material UB textures, but keyed on the View UB. Recovery is via
+`ExternalUbMetadataLoader` + the seed `View_<LayoutHash>_MetaData.json` (§6) — **fully
+recoverable**, already wired by `RuntimeSymbolReader.cs:62`. Today they appear unnamed because
+either (a) the seed JSON for View_<this hash> isn't present in `EngineUbMetadata/`, or
+(b) `engineUbRegistry.Lookup(ubName, hashes[i])` returns null (hash mismatch). They are NOT
+cook-loose-bound — same path as T3..T13.
+
 ## 10. Bottom line per symbol class
 
 | Symbol class | Source | Reader |
