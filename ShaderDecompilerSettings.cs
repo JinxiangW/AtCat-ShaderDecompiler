@@ -42,4 +42,14 @@ public sealed class ShaderDecompilerSettings
     /// export setups that never load mappings on purpose).
     /// </summary>
     public bool WarnIfNoMappings { get; set; } = true;
+
+    /// <summary>
+    /// When true (default), if no engine-UB metadata folder matches the
+    /// game's exact EGame name (e.g. GAME_InfinityNikki), the loader falls
+    /// back to the base UE folder (e.g. GAME_UE5_4). Most games (~99%)
+    /// don't customize CB layouts, so this fallback is virtually always
+    /// correct and significantly reduces the amount of manual seeding
+    /// required.
+    /// </summary>
+    public bool TryMatchBaseEngineVersion { get; set; } = true;
 }
