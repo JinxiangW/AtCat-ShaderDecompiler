@@ -241,7 +241,27 @@ Implementation: `DxcReflectionExtractor.cs` (planned) parses the `DXBC`/`DXIL` c
 - All printed names must be reproducible from either (a) cooked bytes via documented UE semantics, or (b) a metadata file whose `layoutHash` matches the cooked `ResourceTableLayoutHashes[i]`.
 - Placeholders must carry an `_SRV` / `_Sampler` / `_UAV` / `_Resource` infix (or `_f_<offset>` for anonymous numeric) so an unrecovered slot is visually obvious.
 
-## 9. Bottom line per symbol class
+## 9. Validation — Oni_Valley_VFX UE 5.1.1 cook (4121 shaders, 6122 variants)
+
+| Symbol class | Before metadata loader | After 23 seed files | Recovery rate |
+| --- | --- | --- | --- |
+| Engine UB resource bindings (`<UB>_SRV/Sampler/UAV<N>` placeholders) | 8207 (View only) + 1577 OpaqueBasePass + … = **~12000** | **54 remaining** (98.7% reduction) | ✅ |
+| Engine UB resource bindings named (`View_PerlinNoise3DTexture`, etc.) | 0 | **11219** | ✅ |
+| Material UB SRT-bound resources (`Material_Texture2D_<N>`) | 3874 | 3874 unchanged | ✅ (existing path) |
+| Anonymous `T#` (loose params + Material loose textures) | 36010 | 36010 unchanged | ⏳ closed-world for UE 5.1 SM5 |
+| Decompile failures | 0 | 0 | ✅ no regression |
+
+**Remaining 54 placeholders** breakdown:
+- 30 `Material_*` — Material UB layout reader bug (`Resources[2]` returns null for certain VT/SVT material configs — separate work item, not closed-world)
+- 24 `RenderVolumetricCloudParameters_*` — needs nested-struct expansion of `FVolumetricCloudCommonShaderParameters` + `FSceneTextureUniformParameters` + `FVolumeShadowingShaderParametersGlobal0` (not done; defer to a follow-up seed)
+
+**Eight agents confirm** the 36010 anonymous `T#` (loose textures) cannot be recovered from a default UE 5.1.1 SM5 cook:
+- `FShaderParameterBindings.ResourceParameters[]` is frozen-image `(ByteOffset, BaseIndex, BaseType)` only — names dropped at `FShader::BuildParameterMapInfo` (`Shader.cpp:612`).
+- `FShaderType.HashedName` IS in cook (64-bit CityHash of C++ class name) but reverse-mapping would require a precomputed `(HashedName → class name → BEGIN_SHADER_PARAMETER_STRUCT layout)` table generated offline from engine source — a substantial separate undertaking.
+- Per Agent C: Material PS specifically has NO `FParameters` block (`TBasePassPS<...>` uses `DECLARE_SHADER_TYPE`, not `SHADER_USE_PARAMETER_STRUCT`). Material PS textures come from `FMaterialUniformExpressionSet` per-material, already extracted via the existing Material UB layout replay path.
+- For UE 5.4 SM6 (NOT 5.1 / NOT 5.4 SM5) — `DXC_PART_REFLECTION_DATA` survives in the DXIL container (gate regression in `D3DShaderCompilerDXC.cpp:734-744`); a DXC reflection extractor would recover loose-param names directly from cook. See §7. Deferred work item.
+
+## 10. Bottom line per symbol class
 
 | Symbol class | Source | Reader |
 | --- | --- | --- |
