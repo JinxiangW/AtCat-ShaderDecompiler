@@ -60,11 +60,16 @@ internal static class LayoutBuilder
         layout.RequiredRegisterCount = Math.Max(1, (maxUsedByteOffset + 15) / 16);
         layout.MaxUsedRegisterCount = Math.Max(1, (maxReferencedByteOffset + 15) / 16);
 
-        // Tail-padding fill: SPIR-V's flat `_m0[N]` may extend past the last named member
-        // (compiler tail-pad, dead-code reads of rounded-up registers, etc.). Without a
-        // member covering those slots, any OpAccessChain into them fails Pass050 and we
-        // lose the named recovery for the WHOLE CB. Emit a `_pad_tail` float4[k] spanning
-        // the gap so every chain in the SPIR-V flat array has a structured target.
+        // Tail fill: SPIR-V's flat `_m0[N]` may extend past the last named member,
+        // which means our metadata is INCOMPLETE for this UB — there are real fields the
+        // engine's UB struct declares but our seed didn't capture. Without a member
+        // covering those slots, any OpAccessChain into them fails Pass050 and we lose the
+        // named recovery for the WHOLE CB.
+        //
+        // Emit a marker `_TODO_missing_seed_field` member so the gap is bridged AND the
+        // shader source visibly cries out "this seed needs updating" — these slots being
+        // referenced in shader code is a contradiction with "padding"; they're real
+        // engine fields that simply aren't in the JSON yet.
         if (layout.MaxUsedRegisterCount < flatBuffer.ArrayLength)
         {
             int tailStart = layout.MaxUsedRegisterCount;
@@ -81,7 +86,7 @@ internal static class LayoutBuilder
             };
             layout.Members.Add(new StructuredMemberLayout
             {
-                Name = "_pad_tail",
+                Name = "_TODO_missing_seed_field",
                 ByteOffset = tailStart * 16,
                 LogicalType = tailType,
                 RegisterOffset = tailStart,
