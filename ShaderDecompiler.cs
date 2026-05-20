@@ -585,16 +585,28 @@ public sealed class ShaderDecompiler : IDisposable
         // spirv-cross would uniquify them as `sampler_LinearClamp_1` /
         // `_LinearClamp_2`, and Unity's shader importer rejects any sampler
         // whose name isn't a recognised inline filter+wrap combo.
+        // Two passes over the sampler bindings:
+        //   * Pass 1 assigns each sampler the NEXT available inline-form name
+        //     from `InlineSamplerPool` (sampler_LinearClamp, sampler_LinearRepeat,
+        //     sampler_LinearMirror, …). This guarantees Unity's shader-importer
+        //     filter+wrap parser can still recognise the prefix even for
+        //     samplers we'll go on to pair with a texture.
+        //   * Pass 2 appends the paired texture's name when the sampler binds
+        //     N>=1 textures (deterministic across re-runs because we pick the
+        //     lowest-Index texture).
+        //
+        // Combining both gives `sampler_LinearRepeat_Material_Normal` form —
+        // the wrap-mode prefix the user wants to keep, plus the texture
+        // association so the rewritten HLSL is still self-documenting.
+        // Samplers with no texture link stay at the bare inline form.
+        List<SpirvBindingInfo> samplerBindings = bindings.Where(b => b.DescriptorType == "Sampler").ToList();
         HashSet<string> samplerNamesUsed = new(StringComparer.Ordinal);
-        foreach (SpirvBindingInfo binding in bindings.Where(b => b.DescriptorType == "Sampler"))
+        foreach (SpirvBindingInfo binding in samplerBindings)
         {
-            string? name = DeriveSamplerName(binding.Set, binding.Binding, metadata);
-            if (name is null) continue;
-            if (samplerNamesUsed.Contains(name))
-            {
-                name = NextInlineSamplerName(samplerNamesUsed);
-            }
-            samplerNamesUsed.Add(name);
+            string inlineName = NextInlineSamplerName(samplerNamesUsed);
+            samplerNamesUsed.Add(inlineName);
+            string? pairedSuffix = DerivePairedTextureSuffix(binding.Set, binding.Binding, metadata);
+            string name = pairedSuffix is null ? inlineName : $"{inlineName}_{pairedSuffix}";
             // Strip any earlier patch and re-emit so the synthesised name wins.
             if (patchedIds.Contains(binding.Id))
             {
@@ -608,25 +620,19 @@ public sealed class ShaderDecompiler : IDisposable
         return result;
     }
 
-    private static string? DeriveSamplerName(int set, int binding, SerializedProgramData metadata)
+    // Look up the texture(s) bound to this sampler slot and return the
+    // SUFFIX (no `sampler_` prefix) — the caller stitches it onto the
+    // inline form. Returns null when no texture targets this sampler;
+    // the caller leaves the bare inline form in that case.
+    private static string? DerivePairedTextureSuffix(int set, int binding, SerializedProgramData metadata)
     {
-        // Texture binding metadata may carry textures from multiple `set`s; we want
-        // the texture(s) whose own set + SamplerIndex matches this sampler binding.
         List<TextureParameter> linked = metadata.TextureParameters
             .Where(t => metadata.GetSetIdFor(t.Index, ShaderResourceType.Texture) == set && t.SamplerIndex == binding && !string.IsNullOrWhiteSpace(t.Name))
             .OrderBy(t => t.Index)
             .ToList();
-        if (linked.Count > 0)
-        {
-            // Pair-with-texture form. Pick the first (lowest-index) texture so the
-            // choice is deterministic across re-runs even when the slot is shared.
-            string texName = linked[0].Name;
-            return texName.StartsWith('_') ? "sampler" + texName : "sampler_" + texName;
-        }
-        // Inline-form fallback. Anything else (`sampler_<binding>`, `sampler<i>`)
-        // gets rejected by Unity's shader importer; the inline name is the only
-        // way to keep an unattached sampler compilable.
-        return "sampler_LinearClamp";
+        if (linked.Count == 0) return null;
+        string texName = linked[0].Name;
+        return texName.StartsWith('_') ? texName[1..] : texName;
     }
 
     // Pool of Unity-recognised inline sampler names — pairs of Filter (Point /
