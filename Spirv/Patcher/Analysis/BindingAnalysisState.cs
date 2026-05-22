@@ -28,6 +28,14 @@ internal sealed class BindingAnalysisState
     public HashSet<uint> SampledImageTypeIds { get; } = new();
     public Dictionary<uint, string> IdToName { get; } = new();
 
+    // Existing OpMemberName decorations: (structTypeId, memberIndex) -> name.
+    // Captured during Pass010 so callers (e.g. ShaderDecompiler.BuildMemberPatches)
+    // can preserve cook-baked names that our seed CB doesn't override AND
+    // ensure that EVERY member-index of a covered cbuffer type gets a NEW
+    // patched name (otherwise dxil-spirv's pre-existing OpMemberName with
+    // duplicate / unsanitised values would leak through into the HLSL).
+    public Dictionary<(uint StructTypeId, int MemberIndex), string> MemberNames { get; } = new();
+
     // Pass020 output.
     public List<SpirvBindingInfo> Bindings { get; set; } = new();
 }

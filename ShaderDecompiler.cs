@@ -705,12 +705,116 @@ public sealed class ShaderDecompiler : IDisposable
         if (binding.StructMemberCount == 1 && all.Count > 0 && all.All(static p => p.IsMatrix && p.RowCount == 4 && p.ColumnCount == 4))
             return new[] { (binding.StructTypeId!.Value, 0u, string.Join("_", all.Select(static p => p.Name ?? string.Empty))) };
 
+        // BLANKET-FILTER + DEDUPE pass: walk EVERY member-index of this cbuffer
+        // struct type, choose its final name, then apply sanitize-first
+        // collision dedup ACROSS THE WHOLE CBUFFER.
+        //
+        // Naming priority per member-index:
+        //   1. Seed CB name at the matching byte offset (StructParameter or
+        //      AllNumericParameters with non-whitespace Name)
+        //   2. Existing OpMemberName from the input module (sanitised)
+        //   3. Stable placeholder `f_<offset>` when the cook stripped the
+        //      member name AND seed metadata doesn't cover this offset
+        //
+        // After name selection we run a per-cbuffer-type dedup so any
+        // collisions (two seed entries with the same author name, or two
+        // cook names that collapse to the same HLSL identifier after
+        // sanitisation) get an `_at_<offset>` disambiguator. The dedup
+        // applies to EVERY cbuffer with seed CB metadata uniformly — no
+        // hardcoded UB-name filter; the decision to blanket-process is
+        // gated purely on whether `cb` is non-null at the caller.
+        uint typeId = binding.StructTypeId!.Value;
+        Dictionary<int, string?> seedByOffset = new();
+        foreach (StructParameter p in cb.StructParameters)
+        {
+            if (!string.IsNullOrWhiteSpace(p.Name) && !seedByOffset.ContainsKey(p.Index)) seedByOffset[p.Index] = p.Name;
+        }
+        foreach (NumericShaderParameter p in cb.AllNumericParameters)
+        {
+            if (!string.IsNullOrWhiteSpace(p.Name) && !seedByOffset.ContainsKey(p.Index)) seedByOffset[p.Index] = p.Name;
+        }
+
         List<(uint TypeId, uint MemberIndex, string Name)> result = new();
-        foreach (StructParameter p in cb.StructParameters.Where(static p => !string.IsNullOrWhiteSpace(p.Name)))
-            if (FindMemberIndex(binding, p.Index) is int i) result.Add((binding.StructTypeId!.Value, (uint)i, p.Name));
-        foreach (NumericShaderParameter p in cb.AllNumericParameters.Where(static p => !string.IsNullOrWhiteSpace(p.Name)))
-            if (FindMemberIndex(binding, p.Index) is int i) result.Add((binding.StructTypeId!.Value, (uint)i, p.Name!));
+        HashSet<string> seenNames = new(StringComparer.Ordinal);
+        // Visit members in member-index order so dedup `_at_<offset>` is
+        // deterministic and matches the SPIR-V emit order.
+        IEnumerable<KeyValuePair<int, uint>> ordered = binding.MemberOffsets.OrderBy(static kv => kv.Key);
+        foreach (KeyValuePair<int, uint> kv in ordered)
+        {
+            int memberIndex = kv.Key;
+            int byteOffset = (int)kv.Value;
+
+            string? candidate = null;
+            if (seedByOffset.TryGetValue(byteOffset, out string? seedName)) candidate = seedName;
+            else if (binding.CurrentMemberNames.TryGetValue(memberIndex, out string? cookName) && !string.IsNullOrEmpty(cookName)) candidate = cookName;
+
+            string sanitized = SanitizeHlslMember(candidate);
+            if (string.IsNullOrEmpty(sanitized)) sanitized = $"f_{byteOffset}";
+
+            string final;
+            if (seenNames.Add(sanitized)) final = sanitized;
+            else
+            {
+                string disamb = $"{sanitized}_at_{byteOffset}";
+                seenNames.Add(disamb);
+                final = disamb;
+            }
+            result.Add((typeId, (uint)memberIndex, final));
+        }
         return result;
+    }
+
+    // Sanitize candidate to a HLSL-safe identifier MATCHING spirv-cross's
+    // own emit-side rule: non-alphanumeric chars become `_`, then runs of
+    // consecutive underscores collapse to a single `_`, and trailing `_`
+    // is trimmed. CRITICAL: spirv-cross collapses underscore runs in HLSL
+    // output. Without mirroring that here, dedup keyed on the raw replaced
+    // string sees `AO_________` (CJK author name "AO对自发光的遮蔽强度") and
+    // `AO__` ("AO强度") as DIFFERENT, but spirv-cross emits both as `AO_`
+    // and the HLSL gets duplicate `Material_AO_` declarations — an actual
+    // compile error in the user-facing artifact. By collapsing here, both
+    // collapse to `AO_` at dedup time, the collision is caught, and the
+    // second occurrence gets `_at_<offset>` disambiguation.
+    //
+    // Encoding-agnostic: any non-alphanumeric character (CJK, Arabic,
+    // emoji, punctuation, whitespace) goes through the same `_`
+    // replacement → collapse pipeline. No hardcoded character lists.
+    private static string SanitizeHlslMember(string? raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return string.Empty;
+        var sb = new System.Text.StringBuilder(raw.Length);
+        bool lastUnderscore = false;
+        foreach (char c in raw)
+        {
+            bool isAlnum = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+            if (isAlnum)
+            {
+                sb.Append(c);
+                lastUnderscore = false;
+            }
+            else if (!lastUnderscore)
+            {
+                sb.Append('_');
+                lastUnderscore = true;
+            }
+            // else: skip — runs collapse to single `_`
+        }
+        // Trim leading AND trailing `_`. spirv-cross's HLSL emit also
+        // collapses underscore runs ACROSS the cbuffer-variable prefix
+        // boundary, so `<Var>_<Member>` with Member="_AO" comes out as
+        // `<Var>_AO` — the leading `_` of the member name gets fused into
+        // the prefix-member separator. Trimming both sides of the member
+        // form makes dedup see what spirv-cross will produce.
+        int start = 0;
+        while (start < sb.Length && sb[start] == '_') start++;
+        int end = sb.Length;
+        while (end > start && sb[end - 1] == '_') end--;
+        if (end == start) return string.Empty;
+        string body = sb.ToString(start, end - start);
+        // Leading-digit guard for HLSL: prefix `_` so the identifier stays
+        // valid. Dedup still sees the original collision shape because all
+        // numeric-prefixed names get the same prefix uniformly.
+        return (body[0] >= '0' && body[0] <= '9') ? "_" + body : body;
     }
 
     private static List<NumericShaderParameter> AllNumericParameters(ConstantBufferParameter cb)

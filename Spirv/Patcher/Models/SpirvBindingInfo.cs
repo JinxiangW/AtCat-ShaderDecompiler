@@ -19,5 +19,15 @@ public class SpirvBindingInfo
     public uint? StructTypeId { get; set; }
     public int StructMemberCount { get; set; }
     public Dictionary<int, uint> MemberOffsets { get; set; } = new();
+    // Existing OpMemberName decorations from the input module, keyed by
+    // member-index. Populated by the analysis pipeline so the symbol
+    // patcher (which writes NEW OpMemberName entries) can read what the
+    // cook / dxil-spirv had baked in and either preserve it (when our
+    // metadata doesn't override) or override it (when seed naming wins).
+    // Critical for cbuffers where the cook emitted duplicate member
+    // names (e.g. two `AO ` parameters that sanitise to the same `AO_`
+    // HLSL identifier) — without seeing the cook's existing decorations
+    // we couldn't blanket-dedupe across them at patch time.
+    public Dictionary<int, string> CurrentMemberNames { get; set; } = new();
     public string? CurrentName { get; set; }
 }

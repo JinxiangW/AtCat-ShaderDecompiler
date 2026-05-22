@@ -68,6 +68,20 @@ internal static class Pass020_BuildBindingInfos
             {
                 info.MemberOffsets = offsets;
             }
+            // Capture every existing OpMemberName decoration on this struct
+            // type so the symbol patcher can choose between (a) overriding
+            // with seed-CB names where available and (b) preserving cook
+            // names (after sanitisation + dedup) for slots the seed didn't
+            // cover. Without this snapshot the patcher silently lets the
+            // cook's pre-baked decorations win at any slot we don't override,
+            // which is the source of HLSL duplicate-member compile errors.
+            foreach (var kv in state.MemberNames)
+            {
+                if (kv.Key.StructTypeId == pointedType)
+                {
+                    info.CurrentMemberNames[kv.Key.MemberIndex] = kv.Value;
+                }
+            }
             return;
         }
 

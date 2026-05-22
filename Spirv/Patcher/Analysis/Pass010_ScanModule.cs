@@ -72,6 +72,18 @@ internal static class Pass010_ScanModule
                         }
                         break;
                     }
+                case SpvOpCode.OpMemberName when wordCount >= 4:
+                    {
+                        uint typeId = words[offset + 1];
+                        int memberIndex = (int)words[offset + 2];
+                        string? mname = SpirvWordIo.ReadLiteralString(words, offset + 3, wordCount - 3);
+                        // Allow empty member names too — they're a legitimate
+                        // signal that the cook explicitly stripped this slot's
+                        // identity. The dedup pass downstream will replace
+                        // them with `f_<offset>` placeholders.
+                        state.MemberNames[(typeId, memberIndex)] = mname ?? string.Empty;
+                        break;
+                    }
                 case SpvOpCode.OpVariable when wordCount >= 4:
                     state.VariableTypeMap[words[offset + 2]] = words[offset + 1];
                     break;
