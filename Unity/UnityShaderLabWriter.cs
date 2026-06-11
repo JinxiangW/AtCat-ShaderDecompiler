@@ -928,10 +928,18 @@ public static class UnityShaderLabWriter
     {
         if (effectiveSplit && sp.Success && !string.IsNullOrWhiteSpace(sp.SourceCode))
         {
-            string variantKey = BuildVariantKey(subShaderIndex, passIndex, stage, sp, keywordNames);
-            string fileName = variantKey + (string.IsNullOrWhiteSpace(sp.SourceFileExtension) ? ".hlsl" : sp.SourceFileExtension);
+            // Name the file by (subshader, pass, stage, blob) only — short and
+            // bounded — so the path never trips Windows' 255-char filename /
+            // 260-char MAX_PATH limit. The keyword combo used to be baked into
+            // the name and ran to hundreds of chars on heavily multi_compile'd
+            // shaders (e.g. the CharacterNPR fragment), crashing the export with
+            // ERROR_INVALID_NAME. It now lives in the file's `// Keywords:`
+            // header, so a plain-text search for a keyword still finds the file.
+            string ext = string.IsNullOrWhiteSpace(sp.SourceFileExtension) ? ".hlsl" : sp.SourceFileExtension;
+            string fileName = ResolveUniqueVariantFileName(ctx, BuildVariantKey(subShaderIndex, passIndex, stage, sp), ext);
             string includePath = $"{ctx.VariantFolderStem}/{fileName}";
-            ctx.VariantFiles[fileName] = BuildVariantFileContent(stage, sp, variantKey, AdaptHlslForUnity(TrimTrailingWhitespace(sp.SourceCode!), stage));
+            string keywordList = BuildVariantKeywordList(sp, keywordNames);
+            ctx.VariantFiles[fileName] = BuildVariantFileContent(stage, sp, System.IO.Path.GetFileNameWithoutExtension(fileName), keywordList, AdaptHlslForUnity(TrimTrailingWhitespace(sp.SourceCode!), stage));
             sb.AppendLine($"#include \"{includePath}\"");
             return;
         }
@@ -1380,43 +1388,57 @@ public static class UnityShaderLabWriter
         return int.TryParse(semantic.AsSpan(8), out index);
     }
 
-    // Variant key rules:
-    //   Sub<N>_Pass<M>_<Stage>_<KeywordCombo>_b<BlobIndex>
+    // Variant *file-name* stem. Deliberately short and bounded:
+    //   Sub<N>_Pass<M>_<Stage>_b<BlobIndex>
     //
-    // KeywordCombo is `_`-joined active keyword names. When no keywords
-    // are set we use `DEFAULT` so the file path stays human-readable.
-    // BlobIndex tiebreaks across distinct binaries that share the same
-    // (subshader, pass, stage, keyword set) — happens when Unity emits
-    // platform variants under one keyword combo. Without that tail we'd
-    // get filename collisions and the dictionary write would lose data.
-    private static string BuildVariantKey(int subShaderIndex, int passIndex, string stage, UnitySerializedSubProgram sp, List<string> keywordNames)
+    // The keyword combo is intentionally NOT in the name. On shaders with many
+    // multi_compile toggles it ran to hundreds of chars and pushed the path past
+    // Windows' 255-char filename limit, crashing the export with
+    // ERROR_INVALID_NAME ("文件名、目录名或卷标语法不正确"). The full combo is
+    // recorded as a `// Keywords:` comment inside the file (see
+    // BuildVariantFileContent) so it stays searchable.
+    //
+    // (Subshader, pass, stage, blob) uniquely identifies an emitted variant in
+    // the common case. Every variant file for one shader shares a single folder,
+    // so subshader+pass+stage must stay in the name to avoid cross-pass clashes;
+    // BlobIndex separates the distinct binaries within one (sub, pass, stage).
+    // On the rare blob collision (two keyword combos Unity deduped onto one
+    // bytecode blob) ResolveUniqueVariantFileName appends a numeric tail.
+    private static string BuildVariantKey(int subShaderIndex, int passIndex, string stage, UnitySerializedSubProgram sp)
     {
         StringBuilder sb = new();
         sb.Append("Sub").Append(subShaderIndex);
         sb.Append("_Pass").Append(passIndex);
         sb.Append('_').Append(stage);
-        sb.Append('_');
-        if (sp.KeywordIndices.Count == 0)
-        {
-            sb.Append("DEFAULT");
-        }
-        else
-        {
-            // Sorted to keep filename stable across reorderings of
-            // KeywordIndices that may differ between exporter runs.
-            List<string> kws = new(sp.KeywordIndices.Count);
-            foreach (ushort idx in sp.KeywordIndices)
-            {
-                kws.Add(BuildKeywordSymbol(keywordNames, idx));
-            }
-            kws.Sort(StringComparer.Ordinal);
-            sb.Append(string.Join('_', kws));
-        }
         sb.Append("_b").Append(sp.BlobIndex);
         return SanitizeFileStem(sb.ToString());
     }
 
-    private static string BuildVariantFileContent(string stage, UnitySerializedSubProgram sp, string variantKey, string body)
+    // Resolve a collision-free file name for a variant. The (subshader, pass,
+    // stage, blob) stem is unique per emitted variant in almost every shader;
+    // the only way two variants land on the same stem is when Unity deduped two
+    // distinct keyword combos onto one bytecode blob. In that case append `_v2`,
+    // `_v3`, … so neither body is silently dropped from the VariantFiles map
+    // (a dictionary keyed by file name). Single-threaded writer, so the
+    // check-then-add below is race-free.
+    private static string ResolveUniqueVariantFileName(WriteContext ctx, string stem, string ext)
+    {
+        string candidate = stem + ext;
+        if (!ctx.VariantFiles.ContainsKey(candidate))
+        {
+            return candidate;
+        }
+        for (int n = 2; ; n++)
+        {
+            candidate = $"{stem}_v{n}{ext}";
+            if (!ctx.VariantFiles.ContainsKey(candidate))
+            {
+                return candidate;
+            }
+        }
+    }
+
+    private static string BuildVariantFileContent(string stage, UnitySerializedSubProgram sp, string variantKey, string keywordList, string body)
     {
         StringBuilder sb = new();
         sb.AppendLine("// =============================================================");
@@ -1425,11 +1447,34 @@ public static class UnityShaderLabWriter
         sb.AppendLine($"// Blob: {sp.BlobIndex}");
         sb.AppendLine($"// ParamBlob: {(sp.ParameterBlobIndex.HasValue ? sp.ParameterBlobIndex.Value.ToString() : "<none>")}");
         sb.AppendLine($"// Language: {sp.SourceLanguage}");
+        // The full keyword combo lives here, not in the file name, so the
+        // on-disk name stays short while a plain-text search for any keyword
+        // still lands on this variant.
+        sb.AppendLine($"// Keywords: {keywordList}");
         sb.AppendLine("// =============================================================");
         sb.AppendLine();
         sb.Append(body);
         if (!body.EndsWith('\n')) sb.AppendLine();
         return sb.ToString();
+    }
+
+    // Space-joined active keyword symbols for the in-file `// Keywords:` header.
+    // Each symbol is a standalone, plain-text-searchable token; sorted for stable
+    // diffs across exporter runs. An empty keyword set is the default / catch-all
+    // variant and renders as a sentinel.
+    private static string BuildVariantKeywordList(UnitySerializedSubProgram sp, List<string> keywordNames)
+    {
+        if (sp.KeywordIndices.Count == 0)
+        {
+            return "<none> (default / catch-all variant)";
+        }
+        List<string> kws = new(sp.KeywordIndices.Count);
+        foreach (ushort idx in sp.KeywordIndices)
+        {
+            kws.Add(BuildKeywordSymbol(keywordNames, idx));
+        }
+        kws.Sort(StringComparer.Ordinal);
+        return string.Join(' ', kws);
     }
 
     // Filename-safe form of the variant key. Builds a stem that survives
