@@ -40,6 +40,8 @@ public static class SpvOpCode
     public const ushort OpLoad = 61;
     public const ushort OpStore = 62;
     public const ushort OpVariable = 59;
+    public const ushort OpShiftRightLogical = 194;
+    public const ushort OpBitwiseAnd = 199;
     public const ushort OpDecorate = 71;
     public const ushort OpMemberDecorate = 72;
     public const ushort OpBitcast = 124;

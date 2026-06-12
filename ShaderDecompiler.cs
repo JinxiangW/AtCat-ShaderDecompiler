@@ -163,7 +163,6 @@ public sealed class ShaderDecompiler : IDisposable
     {
         if (options is null) throw new ArgumentNullException(nameof(options));
         if (binary == null || binary.Length == 0) return Fail("Shader binary is empty.");
-        if (string.IsNullOrWhiteSpace(_toolsDir)) return Fail("Decompiler native libraries not found. Expected dxil-spirv-c-shared.dll and dxilconv.dll under Tools/.");
 
         _lastToolFailureLog = null;
         SerializedProgramData metadata = options.Metadata ?? new SerializedProgramData();
@@ -231,6 +230,10 @@ public sealed class ShaderDecompiler : IDisposable
         {
             failedStage = "format-to-spirv";
             byte[] spv = ConvertToSpirv(format, binary);
+            // Normalise dxbc-spirv's scalar cbuffer arrays (float[4N], stride 4) into float4[N]
+            // so the rewriter / patcher / spirv-cross handle them exactly like the DXIL path.
+            // No-op when the cbuffers are already vec4 (DXIL / SM6 front-end).
+            spv = ScalarCbufferVectorizer.Vectorize(spv);
             preRewrite = spv;
 
             byte[] rewritten;
@@ -380,18 +383,18 @@ public sealed class ShaderDecompiler : IDisposable
         return sb.ToString();
     }
 
+    // All native libraries (spirv-cross + dxil-spirv) now come from NuGet and resolve from
+    // runtimes/win-x64/native via NativeToolsLoader — there is no longer any required file under
+    // Tools/. Returns a directory hint only (the app base dir), never null.
     public static string? FindToolsDirectory(string? overridePath = null)
-        => !string.IsNullOrWhiteSpace(overridePath) && Directory.Exists(overridePath) && HasDirectTools(overridePath)
+        => !string.IsNullOrWhiteSpace(overridePath) && Directory.Exists(overridePath)
             ? overridePath
-            : new[] { Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Tools"), AppDomain.CurrentDomain.BaseDirectory }
-                .FirstOrDefault(static dir => !string.IsNullOrWhiteSpace(dir) && Directory.Exists(dir) && HasDirectTools(dir));
+            : AppDomain.CurrentDomain.BaseDirectory;
 
-    // Tools/ now hosts only dxilconv.dll (Microsoft's DXBC→DXIL converter, no NuGet
-    // distribution). spirv-cross.dll and dxil-spirv-c-shared.dll come from NuGet
-    // (Silk.NET.SPIRV.Cross.Native / AssetRipper.Bindings.DxilSpirV) and resolve from
-    // runtimes/win-x64/native, so they are intentionally NOT required here.
+    // Retained for API compatibility. The decompiler needs no specific file under `dir` — its
+    // natives are NuGet-resolved — so any existing directory is sufficient.
     public static bool HasDirectTools(string dir)
-        => File.Exists(Path.Combine(dir, "dxilconv.dll"));
+        => !string.IsNullOrWhiteSpace(dir);
 
     private static ShaderArchitecture Detect(ShaderArchitecture format, byte[] code)
         => format switch
@@ -414,22 +417,13 @@ public sealed class ShaderDecompiler : IDisposable
             _ => throw new InvalidOperationException($"Unsupported shader format: {format}"),
         };
 
-    // SM5.x DXBC → DXIL (in-process via dxilconv.dll) → SPIR-V (in-process via dxil-spirv).
+    // Legacy SM5.x DXBC → SPIR-V, handled directly by dxil-spirv's bundled dxbc-spirv
+    // translator (no separate dxbc2dxil / dxilconv step). dxil-spirv detects the TPF/DXBC
+    // envelope and routes it through dxbc-spirv.
     private byte[] DxbcToSpv(byte[] dxbc)
     {
         if (!IsDxbc(dxbc)) throw new InvalidOperationException("Input does not contain a valid DXBC payload.");
-        byte[]? dxil = DxbcConverterNative.Convert(dxbc, out string? convError);
-        if (dxil != null)
-            return DxilToSpv(dxil, rawLlvm: false);
-        // dxbc2dxil couldn't convert it: fall back to handing the container straight to
-        // dxil-spirv (covers an SM6 DXIL container that was mislabelled as plain DXBC).
-        byte[]? spv = DxilSpirvNative.Convert(dxbc, rawLlvm: false, out string? spvError);
-        if (spv == null)
-        {
-            _lastToolFailureLog = Join(convError, spvError);
-            throw new InvalidOperationException($"Failed to convert DXBC to SPIR-V. {_lastToolFailureLog}");
-        }
-        return spv;
+        return DxilToSpv(dxbc, rawLlvm: false);
     }
 
     // DXIL container (or raw LLVM bitcode) → SPIR-V, in-process via dxil-spirv-c-shared.dll.
@@ -447,9 +441,6 @@ public sealed class ShaderDecompiler : IDisposable
         }
         return spv;
     }
-
-    private static string Join(string? a, string? b)
-        => string.Join(Environment.NewLine, new[] { a, b }.Where(static s => !string.IsNullOrWhiteSpace(s)));
 
     // Bare LLVM bitcode magic `BC\xC0\xDE` → dxil-spirv's raw-LLVM parse path; everything else
     // (DXBC/DXContainer-wrapped DXIL) goes through the DXContainer blob parser.

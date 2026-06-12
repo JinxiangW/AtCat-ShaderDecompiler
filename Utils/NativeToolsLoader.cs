@@ -4,21 +4,17 @@ using System.Runtime.InteropServices;
 namespace Ruri.ShaderTools.Native;
 
 /// <summary>
-/// Resolves the in-process native libraries the decompiler P/Invokes into. There are no
-/// child processes and no disk round-trips any more — every stage runs in-process:
+/// Resolves the in-process native libraries the decompiler P/Invokes into. There are no child
+/// processes, no disk round-trips, and no loose binaries any more — both natives come from NuGet:
 /// <list type="bullet">
-///   <item><c>spirv-cross.dll</c> — supplied by the <c>Silk.NET.SPIRV.Cross.Native</c>
-///   NuGet package (kept current via the package), restored under
-///   <c>runtimes/win-x64/native</c>.</item>
-///   <item><c>dxil-spirv-c-shared.dll</c> — DXIL→SPIR-V (Hans-Kristian Arntzen's dxil-spirv).
-///   No NuGet distribution exists upstream, so the shared library ships under <c>Tools/</c>
-///   and is loaded in-process here.</item>
-///   <item><c>dxilconv.dll</c> — Microsoft's DXBC→DXIL converter, ships under <c>Tools/</c>.</item>
+///   <item><c>spirv-cross.dll</c> — <c>Silk.NET.SPIRV.Cross.Native</c> (SPIR-V → HLSL/GLSL).</item>
+///   <item><c>dxil-spirv-c-shared.dll</c> — <c>AssetRipper.Bindings.DxilSpirV</c> (legacy DXBC and
+///   DXIL → SPIR-V; its bundled dxbc-spirv handles SM5 DXBC directly, so no Microsoft dxilconv).</item>
 /// </list>
-/// A single <see cref="NativeLibrary.SetDllImportResolver"/> hook probes the package's
-/// runtimes folder and the Tools folder, loading each library by full path. On Windows a
-/// rooted-path load uses <c>LOAD_WITH_ALTERED_SEARCH_PATH</c>, so a library's own transitive
-/// dependencies (e.g. <c>dxilconv.dll</c> → <c>dxil.dll</c>) resolve from the same directory.
+/// Both are restored under <c>runtimes/&lt;rid&gt;/native</c>. A single
+/// <see cref="NativeLibrary.SetDllImportResolver"/> hook probes that folder (plus the app base
+/// dir) and loads each library by full path; on Windows a rooted-path load uses
+/// <c>LOAD_WITH_ALTERED_SEARCH_PATH</c> so any transitive dependency resolves from the same dir.
 /// </summary>
 internal static class NativeToolsLoader
 {

@@ -26,23 +26,24 @@
 ## 1. 反编译管线一览(失败定位时心里要有的图)
 
 ```
-.dxbc.bin
-   │  dxbc2dxil.exe                       (Tools/dxbc2dxil.exe)
-   ▼
-.dxil
-   │  dxil-spirv.exe --raw-llvm          (Tools/dxil-spirv.exe)
+.dxbc / .dxil  (内存字节,无落盘)
+   │  DxilSpirvNative.Convert            (Utils/DxilSpirvNative.cs — dxil-spirv-c-shared.dll P/Invoke)
+   │      DXBC(SM5) 由捆绑的 dxbc-spirv 直译;DXIL 走常规路。无 dxbc2dxil / dxilconv。
    ▼
 .spv  (raw — 未打名字、未拆 cbuffer)
+   │  ScalarCbufferVectorizer.Vectorize  (Spirv/ScalarCbufferVectorizer.cs)
+   │      - dxbc-spirv 出的 scalar cbuffer float[4N] → float4[N](否则 spirv-cross HLSL 拒,见 §5.G)
+   │      - DXIL 路本就 float4 → no-op
    │  StructuredCBufferRewriter.Rewrite   (Spirv/StructuredCBufferRewriter.cs)
    │      - 把 cb._m0[N] 重写为命名结构成员访问
    │  SpirvPatcher.PatchByIds             (Spirv/SpirvPatcher.cs)
    │      - 注入 OpName / OpMemberName
    ▼
-.spv  (patched — 喂给 spirv-cross)
-   │  spirv-cross.exe --hlsl              (Tools/spirv-cross.exe)
-   │      └ tess/geom 阶段失败时回退 --vulkan-glsl
+.spv  (patched)
+   │  SpirvCrossNative.EmitHlsl           (Utils/SpirvCrossNative.cs — spirv-cross.dll spvc_* P/Invoke)
+   │      └ tess/geom/RT builtin 失败时回退 GLSL(--vulkan-semantics)
    ▼
-.hlsl 或 .glsl
+.hlsl 或 .glsl  (string,无落盘)
 ```
 
 每一步都可能失败,且失败信号不同:
@@ -57,14 +58,18 @@
 
 ## 2. 工具箱
 
-### 2.1 必须本机可用的二进制
+### 2.1 native(全部 NuGet,in-process,无 exe / 无 Tools/)
 
-| 工具 | 路径 | 用途 |
+反编译三件套已全部 in-process 化,无独立 exe、无落盘、无 `Tools/` 目录:
+
+| 库 | 来源 | 用途 |
 | --- | --- | --- |
-| `dxbc2dxil.exe` | `Source/Ruri.ShaderDecompiler/bin/Debug/Tools/` | DXBC → DXIL |
-| `dxil-spirv.exe` | 同上 | DXIL → SPIR-V |
-| `spirv-cross.exe` | 同上 | SPIR-V → HLSL/GLSL,带 `--reflect` 子模式 |
-| `spirv-dis.exe` | 同上 | SPIR-V → 可读汇编(本 playbook 的核心工具) |
+| `dxil-spirv-c-shared.dll` | NuGet `AssetRipper.Bindings.DxilSpirV` | DXBC(dxbc-spirv 直译)+ DXIL → SPIR-V |
+| `spirv-cross.dll` | NuGet `Silk.NET.SPIRV.Cross.Native` | SPIR-V → HLSL/GLSL |
+
+⚠ 没有 `spirv-dis.exe` 了 —— 调试 patched/raw SPV 用 §6 的 Python 裸字节读法。
+⚠ 想拿"未经 rewriter 改动"的对照 SPV(原 §3 的手工三步),改用 `--debug-dump <dir>`,它落
+`.01.pre-rewrite.spv`(= dxil-spirv 输出,已含 vectorizer 归一)/ `.02.post-rewrite` / `.03.post-patch`。
 
 ### 2.2 反编译器自身的诊断产物
 
@@ -370,6 +375,22 @@ KeyValuePair 是 struct,不命中时返回 `(0, 0)`,`.Key == 0` 隐式转 `int?`
 
 **修法**: 永远存 `SpirvInstruction` 引用(class,引用稳定),不存 index。
 已修于 `RewrittenLoadInfo.Instruction`。
+
+### G. dxbc-spirv 的 scalar cbuffer → spirv-cross HLSL 拒(DXBC-direct 专属)
+
+**症状**: `cbuffer ID N (name: _T_V), member index 0 (name: _m0) cannot be expressed
+with either HLSL packing layout or packoffset.` → 退 GLSL、丢符号。GLSL 产物里 cbuffer
+长这样: `layout(..., scalar) uniform { float _m0[436]; }`。
+
+**根因**: legacy DXBC 走 dxil-spirv 捆绑的 dxbc-spirv 直译时,cbuffer 出成 **scalar `float[4N]`**
+(ArrayStride 4 + `GL_EXT_scalar_block_layout`)。HLSL cbuffer 是 float4 对齐的,表达不了这种
+标量紧打包数组。DXIL 路出的是 `float4[N]`(stride 16)所以没这问题。
+
+**修法**: `Spirv/ScalarCbufferVectorizer.cs`(在 rewriter 之前跑)把 Uniform cbuffer 的 scalar
+`float[4N]`(stride 4)归一成 `float4[N]`(stride 16),access chain `_m0[j]` 改 `_m0[j>>2][j&3]`
+(常量直接折叠成 `_m0[k][c]`,动态插 `OpShiftRightLogical`/`OpBitwiseAnd`)。底层 buffer 字节布局
+不变,只改 SPIR-V 类型/索引表示。归一后下游(rewriter / patcher / spirv-cross)与 DXIL 路完全
+一致,符号注入照常。**别靠 GLSL fallback 躲**(§0/§6 第二条铁律)。
 
 ---
 

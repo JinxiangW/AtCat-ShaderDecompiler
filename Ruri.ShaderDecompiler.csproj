@@ -22,23 +22,12 @@
          kept current via the package; the decompiler P/Invokes the stable spvc_* C ABI directly. -->
     <PackageReference Include="Silk.NET.SPIRV.Cross.Native" Version="2.23.0" />
     <!-- In-process dxil-spirv. AssetRipper's binding bundles dxil-spirv-c-shared.dll
-         (runtimes/<rid>/native) cross-platform; we P/Invoke the dxil_spv_* C ABI directly. -->
+         (runtimes/<rid>/native) cross-platform; we P/Invoke the dxil_spv_* C ABI directly. Its
+         bundled dxbc-spirv translates legacy SM5 DXBC directly (no Microsoft dxilconv). Pinned for
+         reproducibility across the synced dual-machine workspace and because ScalarCbufferVectorizer
+         is validated against this build — bump deliberately. -->
     <PackageReference Include="AssetRipper.Bindings.DxilSpirV" Version="1.1.1-nightly.129" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Compile Remove="Tools\Compat\**\*.cs" />
-    <Compile Remove="Tools\src\**\*.cs" />
-    <Compile Remove="Tools\build\**\*.cs" />
-    <EmbeddedResource Remove="Tools\Compat\**\*.resx" />
-    <EmbeddedResource Remove="Tools\src\**\*.resx" />
-    <EmbeddedResource Remove="Tools\build\**\*.resx" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Update="Tools\**\*">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-  </ItemGroup>
 
 </Project>

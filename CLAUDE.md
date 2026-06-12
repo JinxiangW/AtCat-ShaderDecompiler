@@ -570,24 +570,27 @@ Ruri.ShaderDecompiler.exe \
 4. `UeShaderResourceTableSymbolizer` 把 SRT 解码出的 (UBIndex,
    ResourceIndex, BindIndex, RegisterType) + UB layout 翻成命名 binding。
 5. `UeShaderSymbolBuilder` 合流为最终的输入 `ShaderSymbolData`。
-6. 走核心 pipeline: `dxbc → dxbc2dxil → dxil-spirv → SpirvPatcher` 注入
-   符号 → `StructuredCBufferRewriter` 重写 cbuffer 结构 → `spirv-cross`
-   → HLSL。**三个原生工具已全部 in-process 化(2026-06,零 exe 零落盘):**
-   `dxbc2dxil`→`Utils/DxbcConverterNative.cs`(`dxilconv.dll` 的 `IDxbcConverter` COM,
-   `DxcCreateInstance` 直开)、`dxil-spirv`→`Utils/DxilSpirvNative.cs`(`dxil-spirv-c-shared.dll`
-   P/Invoke,内建复刻 CLI 的 `--ssbo-uav/--ssbo-srv` SRV/UAV remapper)、`spirv-cross`→
-   `Utils/SpirvCrossNative.cs`(`spvc_*` P/Invoke)。native 解析见 `Utils/NativeToolsLoader.cs`:
-   native 全部走 NuGet/runtimes,`Tools/` 只剩 `dxilconv.dll`(微软 DXBC→DXIL,**无 NuGet 分发**,
-   且 `dxilconv` 不依赖 `dxcompiler.dll`/`dxil.dll` —— 那俩只是已删 `dxc.exe` 的后端,已验):
-   `spirv-cross.dll`←`Silk.NET.SPIRV.Cross.Native`、`dxil-spirv-c-shared.dll`←
-   `AssetRipper.Bindings.DxilSpirV`(nightly pin,跨平台,跟包保持最新),均还原到
-   `runtimes/<rid>/native/`,由 `Utils/NativeToolsLoader.cs` 按全路径加载(传递依赖就地解析)。
-   等价性已对 9 个 `Test/UnityBinary` 带符号 fixture 逐 byte 验:对旧 Tools DLL 版 **post-patch SPIR-V
-   9/9 byte-identical、HLSL 行内容一致**(仅 LF/CRLF);换 NuGet nightly 后 4/9 完全一致、5/9 仅
-   **等价 codegen 差异**(新版出 `~x`/`-x`,旧版出 `x ^ 0xFFFFFFFFu`/`0u - x`,行数/变量号/cbuffer
-   符号名全同),非退化。实现走 Span/pin/stackalloc/`delegate* unmanaged`,热路径 0-GC(只剩结果 payload)。
-   ⚠ 想 drop `dxilconv`:新版 dxil-spirv 含 dxbc-spirv 理论可直吃 DXBC,但那是另一条翻译路径会大改输出,
-   未做(当前 DXBC 仍走 `dxilconv→DXIL→dxil-spirv`,已验等价)。
+6. 走核心 pipeline: `dxbc/dxil → dxil-spirv → ScalarCbufferVectorizer → SpirvPatcher` 注入
+   符号 → `StructuredCBufferRewriter` 重写 cbuffer 结构 → `spirv-cross` → HLSL。
+   **全程 in-process,零 exe / 零落盘 / 零 `Tools/` 文件(2026-06):**
+   - `dxil-spirv`→`Utils/DxilSpirvNative.cs`(`dxil-spirv-c-shared.dll` P/Invoke,内建复刻 CLI 的
+     `--ssbo-uav/--ssbo-srv` SRV/UAV remapper)。**DXBC(SM5)直接喂 dxil-spirv** —— 其捆绑的
+     dxbc-spirv 直译 legacy DXBC,**不再需要 dxbc2dxil/dxilconv**(`DxbcConverterNative` 已删,
+     `Tools/` 连同 dxilconv/dxcompiler/dxil.dll 整个删掉)。
+   - `spirv-cross`→`Utils/SpirvCrossNative.cs`(`spvc_*` P/Invoke)。
+   - native 全来自 NuGet,还原到 `runtimes/<rid>/native/`,`Utils/NativeToolsLoader.cs` 按全路径加载:
+     `spirv-cross.dll`←`Silk.NET.SPIRV.Cross.Native`、`dxil-spirv-c-shared.dll`←
+     `AssetRipper.Bindings.DxilSpirV`(nightly **钉死** = 可复现 + vectorizer 按此版验过;跨平台)。
+   - ⚠ **`ScalarCbufferVectorizer`(`Spirv/ScalarCbufferVectorizer.cs`)是 DXBC-direct 的关键**:
+     dxbc-spirv 把 cbuffer 出成 scalar `float[4N]`(ArrayStride 4 + scalar block layout),spirv-cross
+     HLSL 后端拒(`cbuffer member 0 (_m0) cannot be expressed ... packing/packoffset`)→ 退 GLSL +
+     丢符号。vectorizer 在 rewriter 前把它归一成 `float4[N]`(stride 16),access chain `_m0[j]` 改
+     `_m0[j>>2][j&3]`(常量折叠,动态插 shr/and)。归一后下游与 DXIL 路完全一致。已对 9 个带符号
+     fixture 验:**9/9 OK、7/9 HLSL**(f06/f07 是 tess/RT builtin 限制走 GLSL,见 §4.3)、**注入符号集
+     9/9 与旧 dxilconv 路逐一相同**。SM6 DXIL 本就 float4,vectorizer 自动 no-op。
+   - 实现走 Span/pin/stackalloc/`delegate* unmanaged`,热路径 0-GC(只剩结果 payload)。
+   - ⚠ 改 csproj 的 PackageReference 或删 `Tools/` 后**必须 clean rebuild**(删 obj+bin)——增量构建会
+     留 stale 态,表现为 `dxil_spv_parse_dxil_blob failed (-4)`,clean 一次即恢复。
 
 ### 7.3 一次完整自测试(参考)
 
