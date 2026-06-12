@@ -31,7 +31,7 @@
 | FModel 二进制 + 导出根 | `FModel\FModel\bin\Debug\net8.0-windows\win-x64\Output\Exports` |
 | Oni Valley 导出 | `…\Output\Exports\Oni_Valley_VFX\` |
 | 反编译器二进制 | `Source\Ruri.ShaderDecompiler\bin\Debug\Ruri.ShaderDecompiler.exe` |
-| FModel 自动导出钩子 | `Source\Ruri.FModelHook\Game\SBUE\AutoExport\UE_ShaderDecompiler_AutoExport_Hook.cs` |
+| 无头导出 CLI(唯一入口) | `Source\Ruri.FModelHook.CLI\` → `Ruri.FModelHook.CLI.exe --game-config <AppSettings.json>` |
 | 游戏目录 | `D:\GameStudy\OniValleyDemo` |
 | UE 5.1 源码 | `D:\GameStudy\UnrealEngine-5.1.1-release` |
 
@@ -543,14 +543,18 @@ cooked 落盘只剩 `Bindings.ResourceParameters` 和 `ParameterMapInfo`,
 `.assetinfo.json` / `.stableinfo.json` / `.ushaderlib` /
 `.ushaderbytecode`。
 
-非交互模式:
+无头模式(唯一入口,无 WPF / 无 FModel 窗口 / 无 dispatcher):
 ```
-Ruri.FModelHook.exe --auto-export-cook [--shader-only] [--no-quit] [--ready-timeout-sec <int>]
+Ruri.FModelHook.CLI.exe --game-config <AppSettings(_Debug).json>
+    [--archive-filter <名字子串,逗号分隔>] [--skip-global]
+    [--split-variants | --no-split-variants] [--export-only]
 ```
-hook `[RetargetMethod(typeof(MainWindow), "OnLoaded", true, false)]` 在
-WPF 主窗口载入完成时,off-thread poll 直到 CUE4Parse provider `Files.Count`
-稳定,然后 dispatcher 调 `vm.ExportData(...)` 触发现有 shader 钩子。
-hook 文件: `Source\Ruri.FModelHook\Game\SBUE\AutoExport\UE_ShaderDecompiler_AutoExport_Hook.cs`。
+`Ruri.FModelHook.CLI`(`Source\Ruri.FModelHook.CLI\Program.cs`)直接从 `--game-config`
+的 AppSettings 读全部 AES 动态键 + mappings + EGame 版本(`HeadlessGameConfig`),挂 CUE4Parse
+provider,跑完整 export+decompile 管线。**导出级别全由命令行参数控制**:`--split-variants`
+把每个 stage 的全部变体落成并列 `.hlsl`(默认单变体内联,见 §7.x);`--export-only` 只写
+sidecar 不反编译;`--skip-global` 跳过 global archive;`--archive-filter` 选归档。
+旧的 `--auto-export-cook` WPF 自动导出钩子(detour `MainWindow.OnLoaded` 驱动 `vm.ExportData`)已**删除**。
 
 ### 7.2 离线反编译
 
@@ -598,8 +602,8 @@ Ruri.ShaderDecompiler.exe \
 dotnet build "D:/Ruri/Github/FractalTools/Ruri-RipperHook/Source/Ruri.ShaderDecompiler/Ruri.ShaderDecompiler.csproj" -c Debug
 dotnet build "D:/Ruri/Github/FractalTools/Ruri-RipperHook/Source/Ruri.FModelHook/Ruri.FModelHook.csproj" -c Debug
 
-# 若导出根缺 UnifiedShaderMetadata.json:
-"D:/Ruri/Github/FractalTools/Ruri-RipperHook/Source/Ruri.FModelHook/bin/Debug/Ruri.FModelHook.exe" --auto-export-cook --shader-only
+# 若导出根缺 UnifiedShaderMetadata.json(无头导出;AES/mappings/版本全从 --game-config 读):
+"D:/Ruri/Github/FractalTools/Ruri-RipperHook/FModel/FModel/bin/Debug/net8.0-windows/win-x64/Ruri.FModelHook.CLI.exe" --game-config "<AppSettings_Debug.json>" --skip-global
 
 # 反编译 SM5 lib:
 "D:/Ruri/Github/FractalTools/Ruri-RipperHook/Source/Ruri.ShaderDecompiler/bin/Debug/Ruri.ShaderDecompiler.exe" \
@@ -671,8 +675,10 @@ Unity 回归保证:
   - DXBC RDEF 在 shipping `STRIP_REFLECTION_DATA` 后丢失,`Material_Texture2D_0`
     等编译期资源名 **不在 bytecode**,只能从材质 `.uasset` 重建。
   - `'n'` shader 源文件名 shipping 默认关。
-- **It. 4** — `UE_ShaderDecompiler_AutoExport_Hook` 落地。无头驱动 FModel
-  导出与 UI 完全等价,`UnifiedShaderMetadata.json` 字节相同。
+- **It. 4** — `UE_ShaderDecompiler_AutoExport_Hook` 落地(无头驱动 FModel
+  导出与 UI 完全等价,`UnifiedShaderMetadata.json` 字节相同)。**已废弃(2026-06)**:
+  WPF 自动导出钩子整个删除,改为纯无头 `Ruri.FModelHook.CLI`(直接挂 CUE4Parse,
+  不再 `new FModel.App()`;导出级别全走命令行参数,见 §7.1)。
 - **It. 6** — 删除 `EngineUniformBuffers.cs` 硬编码表(违反项目规则);
   新增 `UeUnifiedMaterialReader.cs` 直接从 `UnifiedShaderMetadata.json`
   读取 UES,不再要求逐材质 `*.uasset.json`(FModel UI 默认不写);
