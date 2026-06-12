@@ -577,11 +577,17 @@ Ruri.ShaderDecompiler.exe \
    `DxcCreateInstance` 直开)、`dxil-spirv`→`Utils/DxilSpirvNative.cs`(`dxil-spirv-c-shared.dll`
    P/Invoke,内建复刻 CLI 的 `--ssbo-uav/--ssbo-srv` SRV/UAV remapper)、`spirv-cross`→
    `Utils/SpirvCrossNative.cs`(`spvc_*` P/Invoke)。native 解析见 `Utils/NativeToolsLoader.cs`:
-   `dxil-spirv-c-shared.dll`/`dxilconv.dll`/`dxil.dll` 无 NuGet 分发仍放 `Tools/`,
-   `spirv-cross.dll` 由 `Silk.NET.SPIRV.Cross.Native` NuGet 还原到 `runtimes/win-x64/native/`。
-   等价性已对 9 个 `Test/UnityBinary` 带符号 fixture 验证:**post-patch SPIR-V 全部 byte-identical、
-   HLSL 行内容完全一致(仅 LF vs CRLF 差异)**。实现走 Span/pin/stackalloc/`delegate* unmanaged`,
-   热路径 0-GC(只剩结果 payload 分配)。
+   native 全部走 NuGet/runtimes,`Tools/` 只剩 `dxilconv.dll`(微软 DXBC→DXIL,**无 NuGet 分发**,
+   且 `dxilconv` 不依赖 `dxcompiler.dll`/`dxil.dll` —— 那俩只是已删 `dxc.exe` 的后端,已验):
+   `spirv-cross.dll`←`Silk.NET.SPIRV.Cross.Native`、`dxil-spirv-c-shared.dll`←
+   `AssetRipper.Bindings.DxilSpirV`(nightly pin,跨平台,跟包保持最新),均还原到
+   `runtimes/<rid>/native/`,由 `Utils/NativeToolsLoader.cs` 按全路径加载(传递依赖就地解析)。
+   等价性已对 9 个 `Test/UnityBinary` 带符号 fixture 逐 byte 验:对旧 Tools DLL 版 **post-patch SPIR-V
+   9/9 byte-identical、HLSL 行内容一致**(仅 LF/CRLF);换 NuGet nightly 后 4/9 完全一致、5/9 仅
+   **等价 codegen 差异**(新版出 `~x`/`-x`,旧版出 `x ^ 0xFFFFFFFFu`/`0u - x`,行数/变量号/cbuffer
+   符号名全同),非退化。实现走 Span/pin/stackalloc/`delegate* unmanaged`,热路径 0-GC(只剩结果 payload)。
+   ⚠ 想 drop `dxilconv`:新版 dxil-spirv 含 dxbc-spirv 理论可直吃 DXBC,但那是另一条翻译路径会大改输出,
+   未做(当前 DXBC 仍走 `dxilconv→DXIL→dxil-spirv`,已验等价)。
 
 ### 7.3 一次完整自测试(参考)
 

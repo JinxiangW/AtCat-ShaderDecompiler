@@ -386,12 +386,12 @@ public sealed class ShaderDecompiler : IDisposable
             : new[] { Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Tools"), AppDomain.CurrentDomain.BaseDirectory }
                 .FirstOrDefault(static dir => !string.IsNullOrWhiteSpace(dir) && Directory.Exists(dir) && HasDirectTools(dir));
 
-    // The Tools/ folder now hosts only the in-process native libraries (no NuGet distribution
-    // exists for them). spirv-cross.dll comes from the Silk.NET.SPIRV.Cross.Native package, so
-    // it is intentionally NOT required here.
+    // Tools/ now hosts only dxilconv.dll (Microsoft's DXBC→DXIL converter, no NuGet
+    // distribution). spirv-cross.dll and dxil-spirv-c-shared.dll come from NuGet
+    // (Silk.NET.SPIRV.Cross.Native / AssetRipper.Bindings.DxilSpirV) and resolve from
+    // runtimes/win-x64/native, so they are intentionally NOT required here.
     public static bool HasDirectTools(string dir)
-        => File.Exists(Path.Combine(dir, "dxil-spirv-c-shared.dll"))
-        && File.Exists(Path.Combine(dir, "dxilconv.dll"));
+        => File.Exists(Path.Combine(dir, "dxilconv.dll"));
 
     private static ShaderArchitecture Detect(ShaderArchitecture format, byte[] code)
         => format switch

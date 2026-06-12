@@ -19,9 +19,11 @@
 
   <ItemGroup>
     <!-- In-process spirv-cross. Ships the native spirv-cross.dll (runtimes/win-x64/native),
-         kept current via the package; the decompiler P/Invokes the stable spvc_* C ABI directly.
-         dxil-spirv-c-shared.dll and dxilconv.dll have no NuGet distribution and ship under Tools/. -->
+         kept current via the package; the decompiler P/Invokes the stable spvc_* C ABI directly. -->
     <PackageReference Include="Silk.NET.SPIRV.Cross.Native" Version="2.23.0" />
+    <!-- In-process dxil-spirv. AssetRipper's binding bundles dxil-spirv-c-shared.dll
+         (runtimes/<rid>/native) cross-platform; we P/Invoke the dxil_spv_* C ABI directly. -->
+    <PackageReference Include="AssetRipper.Bindings.DxilSpirV" Version="1.1.1-nightly.129" />
   </ItemGroup>
 
   <ItemGroup>
