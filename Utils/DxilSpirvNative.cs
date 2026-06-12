@@ -33,6 +33,11 @@ internal static unsafe class DxilSpirvNative
     // dxil_spv_vulkan_descriptor_type
     private const int DESC_IDENTITY = 0;
     private const int DESC_SSBO = 1;
+    // dxil_spv_option (subset; values from dxil_spirv_c.h) — the three options the DXBC→SPIR-V
+    // reference driver (dxbc_spirv_sandbox.cpp) enables before converter_run.
+    private const int OPT_SHADER_DEMOTE_TO_HELPER = 1;
+    private const int OPT_SSBO_ALIGNMENT = 9;
+    private const int OPT_MIN_PRECISION_NATIVE_16BIT = 16;
 
     /// <summary>
     /// Convert a DXIL container (DXBC archive holding a DXIL chunk) or raw LLVM bitcode to SPIR-V.
@@ -44,6 +49,11 @@ internal static unsafe class DxilSpirvNative
     {
         error = null;
         if (dxil.Length < 4) { error = "DXIL input too small."; return null; }
+
+        // Capture dxil-spirv's own diagnostics for this conversion so a converter
+        // failure carries the concrete reason instead of an opaque code.
+        EnsureLogCallback();
+        ResetThreadLog();
 
         // Required by the API: every dxil_spv_* call on this thread must run inside an allocator
         // context. Per-call begin/end keeps native scratch memory bounded across a long batch.
@@ -63,13 +73,25 @@ internal static unsafe class DxilSpirvNative
             if (dxil_spv_create_converter(blob, out converter) != 0 || converter == IntPtr.Zero)
             { error = "dxil_spv_create_converter failed."; return null; }
 
+            // Converter options — reproduced from dxil-spirv's own DXBC→SPIR-V reference driver
+            // (dxbc_spirv_sandbox.cpp), in its order. `ssbo_alignment = 1` is REQUIRED: dxil-spirv
+            // tests `(resource_alignment & (ssbo_alignment - 1)) != 0` to decide an SSBO needs the
+            // bindless-only offset buffer; the default 0 makes that mask 0xFFFFFFFF, so EVERY
+            // directly-bound (non-bindless) structured/raw SSBO is rejected with "SSBO offset is
+            // only supported for bindless SSBOs." — alignment 1 makes the mask 0, so a directly
+            // bound SSBO never demands an offset buffer. demote-to-helper and native-16-bit mirror
+            // the reference's remaining two options so SM5 discard / min-precision lower identically.
+            AddOption(converter, new SsboAlignmentOption { Base = { Type = OPT_SSBO_ALIGNMENT }, Alignment = 1 });
+            AddOption(converter, new BoolOption { Base = { Type = OPT_SHADER_DEMOTE_TO_HELPER }, Value = 1 });
+            AddOption(converter, new BoolOption { Base = { Type = OPT_MIN_PRECISION_NATIVE_16BIT }, Value = 1 });
+
             // --ssbo-uav --ssbo-srv: route structured/raw SRV & UAV buffers through SSBO storage
             // (fixes "raw 64-bit load-store must be SSBO/UBO/BDA"). Textures keep IDENTITY.
             dxil_spv_converter_set_srv_remapper(converter, &RemapSrv, null);
             dxil_spv_converter_set_uav_remapper(converter, &RemapUav, null);
 
             if (dxil_spv_converter_run(converter) != 0)
-            { error = "dxil_spv_converter_run failed."; return null; }
+            { error = $"dxil_spv_converter_run failed.{Detail()}"; return null; }
 
             if (dxil_spv_converter_get_compiled_spirv(converter, out CompiledSpirv compiled) != 0 ||
                 compiled.Data == IntPtr.Zero || compiled.Size == 0)
@@ -110,6 +132,9 @@ internal static unsafe class DxilSpirvNative
         if (binding->Kind == KIND_STRUCTURED_BUFFER || binding->Kind == KIND_RAW_BUFFER)
             vk->Buffer.DescriptorType = DESC_SSBO;
 
+        // "In case it's needed, place offset buffer here" — verbatim from the reference remapper.
+        // With the converter's ssbo_alignment option = 1 (see Convert) the offset buffer is never
+        // actually engaged for a directly-bound SSBO, so this is a harmless reservation.
         vk->Offset.Set = 15;
         vk->Offset.Binding = 0;
         return 1; // DXIL_SPV_TRUE
@@ -136,6 +161,8 @@ internal static unsafe class DxilSpirvNative
         if (d3d->Kind == KIND_STRUCTURED_BUFFER || d3d->Kind == KIND_RAW_BUFFER)
             vk->Buffer.DescriptorType = DESC_SSBO;
 
+        // "In case it's needed, place offset buffer here" — verbatim from the reference remapper.
+        // ssbo_alignment = 1 (see Convert) means it is never engaged for a directly-bound SSBO.
         vk->Offset.Set = 15;
         vk->Offset.Binding = 0;
 
@@ -208,6 +235,29 @@ internal static unsafe class DxilSpirvNative
         public nuint Size;
     }
 
+    // dxil_spv_option_base { dxil_spv_option type; } and the three concrete option structs the
+    // DXBC reference driver builds. dxil_spv_converter_add_option copies the option, so passing
+    // the address of a stack temporary is safe.
+    [StructLayout(LayoutKind.Sequential)]
+    private struct OptionBase { public int Type; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SsboAlignmentOption   // dxil_spv_option_ssbo_alignment { base; unsigned alignment; }
+    {
+        public OptionBase Base;
+        public uint Alignment;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BoolOption   // shader_demote_to_helper / min_precision_native_16bit { base; dxil_spv_bool; }
+    {
+        public OptionBase Base;
+        public int Value;
+    }
+
+    private static void AddOption<T>(IntPtr converter, T option) where T : unmanaged
+        => dxil_spv_converter_add_option(converter, &option);
+
     // === P/Invoke (dxil_spirv_c.h). ===
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
     private static extern void dxil_spv_begin_thread_allocator_context();
@@ -219,6 +269,8 @@ internal static unsafe class DxilSpirvNative
     private static extern int dxil_spv_parse_dxil(byte* data, nuint size, out IntPtr blob);
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
     private static extern int dxil_spv_create_converter(IntPtr blob, out IntPtr converter);
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int dxil_spv_converter_add_option(IntPtr converter, void* option);
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
     private static extern void dxil_spv_converter_set_srv_remapper(
         IntPtr converter, delegate* unmanaged[Cdecl]<void*, D3DBinding*, SrvVulkanBinding*, int> remapper, void* userdata);
@@ -233,4 +285,43 @@ internal static unsafe class DxilSpirvNative
     private static extern void dxil_spv_converter_free(IntPtr converter);
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
     private static extern void dxil_spv_parsed_blob_free(IntPtr blob);
+
+    // dxil-spirv's per-thread diagnostic sink. Without it a converter failure is an
+    // opaque non-zero return; with it dxil-spirv reports the concrete reason
+    // ("Unsupported opcode ...", "Resource ... could not be allocated", etc.),
+    // which is the only way to act on a `dxil_spv_converter_run` failure. This build
+    // exports ONLY the thread-local setter (there is no global `dxil_spv_set_log_callback`),
+    // which suits the parallel batch perfectly: every worker thread installs its own sink
+    // into its own [ThreadStatic] buffer, so the shaders' diagnostics never interleave.
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void dxil_spv_set_thread_log_callback(delegate* unmanaged[Cdecl]<void*, int, byte*, void> callback, void* userdata);
+
+    [ThreadStatic] private static System.Text.StringBuilder? _threadLog;
+    [ThreadStatic] private static bool _threadCallbackInstalled;
+
+    [System.Runtime.InteropServices.UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvCdecl) })]
+    private static void OnDxilSpvLog(void* userdata, int level, byte* message)
+    {
+        if (message == null) return;
+        try
+        {
+            string? text = Marshal.PtrToStringUTF8((IntPtr)message);
+            if (!string.IsNullOrWhiteSpace(text))
+                (_threadLog ??= new System.Text.StringBuilder()).Append(text!.Trim()).Append("; ");
+        }
+        catch { /* a diagnostic must never throw across the native boundary */ }
+    }
+
+    // Install the log sink once, and return the messages captured on THIS thread
+    // since the last reset (call ResetThreadLog() before the operation).
+    private static void EnsureLogCallback()
+    {
+        if (_threadCallbackInstalled) return;
+        _threadCallbackInstalled = true;   // mark first so a missing export can never retry-throw per call
+        try { dxil_spv_set_thread_log_callback(&OnDxilSpvLog, null); }
+        catch { /* a diagnostic sink is best-effort — never fail a conversion over it */ }
+    }
+    private static void ResetThreadLog() => _threadLog?.Clear();
+    private static string ThreadLog() => _threadLog is { Length: > 0 } sb ? sb.ToString().Trim() : string.Empty;
+    private static string Detail() { string l = ThreadLog(); return l.Length > 0 ? " dxil-spirv: " + l : string.Empty; }
 }

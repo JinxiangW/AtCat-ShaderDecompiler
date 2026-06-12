@@ -35,10 +35,20 @@ internal static class NativeToolsLoader
                 dirs.Add(d!);
         }
 
-        Add(toolsDir);
-        Add(Path.Combine(baseDir, "Tools"));
+        // NuGet is the single source of truth for both in-process natives
+        // (AssetRipper.Bindings.DxilSpirV → dxil-spirv-c-shared.dll, whose bundled dxbc-spirv
+        // parses SM5 DXBC directly; Silk.NET.SPIRV.Cross.Native → spirv-cross.dll). Both restore
+        // under runtimes/<rid>/native, so that folder MUST be probed FIRST — ahead of any legacy
+        // Tools/ dir. A stale loose dxil-spirv-c-shared.dll left in Tools/ from the retired
+        // dxilconv route is the older, DXIL-only build; if it shadows the NuGet native it parses
+        // every DXBC blob as -4 (the whole archive collapses to a handful of decompiles).
+        string rid = "win-" + RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant(); // win-x64 / win-arm64
+        Add(Path.Combine(baseDir, "runtimes", rid, "native"));
         Add(Path.Combine(baseDir, "runtimes", "win-x64", "native"));
         Add(baseDir);
+        // Legacy fallbacks (loose binaries) — only reached when the NuGet restore is absent.
+        Add(toolsDir);
+        Add(Path.Combine(baseDir, "Tools"));
         _searchDirs = dirs.ToArray();
 
         NativeLibrary.SetDllImportResolver(typeof(NativeToolsLoader).Assembly, Resolve);
