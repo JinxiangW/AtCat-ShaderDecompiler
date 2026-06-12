@@ -200,6 +200,18 @@ struct layout**(目前是从 `CBParams` 单源读取,没问题)。reader 端不
 
 ### 2.2 已知 fixture 和当前行为
 
+> **带符号 fixture + CLI 快速验证(下次别再找不到)** —— 带符号离线用例统一放在
+> `Test/UnityBinary/<Engine>/`(`Azur` / `EndField` / `Ruri`),每个 `*.dxbc.bin` 旁边
+>有**同名 `*.metadata.json`**(= 符号元数据)。直接 CLI 加载即可验证反编译 + 符号注入:
+> ```
+> bin/Debug/Ruri.ShaderDecompiler.exe "<x>.dxbc.bin" "<out>.hlsl" --metadata "<x>.metadata.json"
+> ```
+> 加 `--debug-dump <dir>` 会落各阶段 SPIR-V(`.01.pre-rewrite` / `.02.post-rewrite` /
+> `.03.post-patch`)用于逐阶段 byte 比对。构建产物在 `bin/Debug/`(**无 TFM 子目录**,
+> 见 `Source/Directory.Build.props`,不是 `bin/Debug/net10.0/`)。
+> ⚠ `Test/Output/dump-*` 是失败转储快照(metadata 被 strip,**不驱动符号注入**),
+> 别拿它当符号基准 —— 要带符号就用 `Test/UnityBinary/` 的 `.dxbc.bin`+`.metadata.json` 对。
+
 **EndField LitPoly**(本轮**正面 fixture**,不要让任何修改让它退化):
 
 - `Test/UnityBinary/EndField/litpoly.shader.sub0.pass0.blob1.HGBuffer.dxbc.bin` + `.metadata.json` (vertex)
@@ -560,7 +572,16 @@ Ruri.ShaderDecompiler.exe \
 5. `UeShaderSymbolBuilder` 合流为最终的输入 `ShaderSymbolData`。
 6. 走核心 pipeline: `dxbc → dxbc2dxil → dxil-spirv → SpirvPatcher` 注入
    符号 → `StructuredCBufferRewriter` 重写 cbuffer 结构 → `spirv-cross`
-   → HLSL。
+   → HLSL。**三个原生工具已全部 in-process 化(2026-06,零 exe 零落盘):**
+   `dxbc2dxil`→`Utils/DxbcConverterNative.cs`(`dxilconv.dll` 的 `IDxbcConverter` COM,
+   `DxcCreateInstance` 直开)、`dxil-spirv`→`Utils/DxilSpirvNative.cs`(`dxil-spirv-c-shared.dll`
+   P/Invoke,内建复刻 CLI 的 `--ssbo-uav/--ssbo-srv` SRV/UAV remapper)、`spirv-cross`→
+   `Utils/SpirvCrossNative.cs`(`spvc_*` P/Invoke)。native 解析见 `Utils/NativeToolsLoader.cs`:
+   `dxil-spirv-c-shared.dll`/`dxilconv.dll`/`dxil.dll` 无 NuGet 分发仍放 `Tools/`,
+   `spirv-cross.dll` 由 `Silk.NET.SPIRV.Cross.Native` NuGet 还原到 `runtimes/win-x64/native/`。
+   等价性已对 9 个 `Test/UnityBinary` 带符号 fixture 验证:**post-patch SPIR-V 全部 byte-identical、
+   HLSL 行内容完全一致(仅 LF vs CRLF 差异)**。实现走 Span/pin/stackalloc/`delegate* unmanaged`,
+   热路径 0-GC(只剩结果 payload 分配)。
 
 ### 7.3 一次完整自测试(参考)
 

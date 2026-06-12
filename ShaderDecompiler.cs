@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using Newtonsoft.Json;
+using Ruri.ShaderTools.Native;
 using Ruri.ShaderTools.Spirv;
 
 namespace Ruri.ShaderTools;
@@ -74,8 +75,6 @@ public sealed class DecompileResult
 
 public sealed class ShaderDecompiler : IDisposable
 {
-    private const int TimeoutMs = 30000;
-
     private readonly SpirvPatcher _patcher = new();
     private readonly StructuredCBufferRewriter _rewriter = new();
     private readonly string? _toolsDir;
@@ -107,13 +106,13 @@ public sealed class ShaderDecompiler : IDisposable
         Task,
         Mesh,
     }
-    private readonly record struct TempFiles(string Dxbc, string Dxil, string Spirv, string Hlsl, string Glsl);
     private readonly record struct Source(string Text, string Language, string Extension);
 
     public ShaderDecompiler(string? tempDir = null, string? toolsDir = null)
     {
         TempDir = tempDir ?? AppDomain.CurrentDomain.BaseDirectory;
         _toolsDir = FindToolsDirectory(toolsDir);
+        NativeToolsLoader.EnsureInitialized(_toolsDir);
     }
 
     public DecompileResult Decompile(byte[] binary, ShaderArchitecture format = ShaderArchitecture.Unknown, SerializedProgramData? metadata = null, uint shaderModel = 51)
@@ -164,7 +163,7 @@ public sealed class ShaderDecompiler : IDisposable
     {
         if (options is null) throw new ArgumentNullException(nameof(options));
         if (binary == null || binary.Length == 0) return Fail("Shader binary is empty.");
-        if (string.IsNullOrWhiteSpace(_toolsDir)) return Fail("Decompiler tools not found. Expected dxbc2dxil.exe, dxil-spirv.exe, and spirv-cross.exe.");
+        if (string.IsNullOrWhiteSpace(_toolsDir)) return Fail("Decompiler native libraries not found. Expected dxil-spirv-c-shared.dll and dxilconv.dll under Tools/.");
 
         _lastToolFailureLog = null;
         SerializedProgramData metadata = options.Metadata ?? new SerializedProgramData();
@@ -224,7 +223,6 @@ public sealed class ShaderDecompiler : IDisposable
             shaderModel = 67;
         }
 
-        TempFiles temp = Temps();
         byte[]? preRewrite = null;
         byte[]? postRewrite = null;
         byte[]? postPatch = null;
@@ -232,7 +230,7 @@ public sealed class ShaderDecompiler : IDisposable
         try
         {
             failedStage = "format-to-spirv";
-            byte[] spv = ConvertToSpirv(format, binary, temp);
+            byte[] spv = ConvertToSpirv(format, binary);
             preRewrite = spv;
 
             byte[] rewritten;
@@ -273,7 +271,7 @@ public sealed class ShaderDecompiler : IDisposable
             try
             {
                 failedStage = "spirv-cross-emit";
-                src = Emit(patched, metadata.EntryPoint, shaderModel, temp);
+                src = Emit(patched, metadata.EntryPoint, shaderModel);
             }
             catch (Exception ex)
             {
@@ -326,10 +324,6 @@ public sealed class ShaderDecompiler : IDisposable
             }
 
             return fail;
-        }
-        finally
-        {
-            Delete(temp.Dxbc); Delete(temp.Dxil); Delete(temp.Spirv); Delete(temp.Hlsl); Delete(temp.Glsl);
         }
     }
 
@@ -392,16 +386,12 @@ public sealed class ShaderDecompiler : IDisposable
             : new[] { Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Tools"), AppDomain.CurrentDomain.BaseDirectory }
                 .FirstOrDefault(static dir => !string.IsNullOrWhiteSpace(dir) && Directory.Exists(dir) && HasDirectTools(dir));
 
+    // The Tools/ folder now hosts only the in-process native libraries (no NuGet distribution
+    // exists for them). spirv-cross.dll comes from the Silk.NET.SPIRV.Cross.Native package, so
+    // it is intentionally NOT required here.
     public static bool HasDirectTools(string dir)
-        => File.Exists(Path.Combine(dir, "dxbc2dxil.exe"))
-        && File.Exists(Path.Combine(dir, "dxil-spirv.exe"))
-        && File.Exists(Path.Combine(dir, "spirv-cross.exe"));
-
-    private TempFiles Temps()
-    {
-        string id = $"temp_{Guid.NewGuid():N}";
-        return new(Path.Combine(TempDir, id + ".dxbc"), Path.Combine(TempDir, id + ".dxil"), Path.Combine(TempDir, id + ".spv"), Path.Combine(TempDir, id + ".hlsl"), Path.Combine(TempDir, id + ".glsl"));
-    }
+        => File.Exists(Path.Combine(dir, "dxil-spirv-c-shared.dll"))
+        && File.Exists(Path.Combine(dir, "dxilconv.dll"));
 
     private static ShaderArchitecture Detect(ShaderArchitecture format, byte[] code)
         => format switch
@@ -415,69 +405,56 @@ public sealed class ShaderDecompiler : IDisposable
             _ => ShaderArchitecture.Unknown,
         };
 
-    private byte[] ConvertToSpirv(ShaderArchitecture format, byte[] code, TempFiles temp)
+    private byte[] ConvertToSpirv(ShaderArchitecture format, byte[] code)
         => format switch
         {
-            ShaderArchitecture.Dxbc => DxbcToSpv(code, temp),
-            ShaderArchitecture.Dxil => DxilToSpv(code, temp.Dxil, temp.Spirv, false),
+            ShaderArchitecture.Dxbc => DxbcToSpv(code),
+            ShaderArchitecture.Dxil => DxilToSpv(code, rawLlvm: IsRawLlvmBitcode(code)),
             ShaderArchitecture.SpirV => code,
             _ => throw new InvalidOperationException($"Unsupported shader format: {format}"),
         };
 
-    private byte[] DxbcToSpv(byte[] dxbc, TempFiles temp)
+    // SM5.x DXBC → DXIL (in-process via dxilconv.dll) → SPIR-V (in-process via dxil-spirv).
+    private byte[] DxbcToSpv(byte[] dxbc)
     {
         if (!IsDxbc(dxbc)) throw new InvalidOperationException("Input does not contain a valid DXBC payload.");
-        File.WriteAllBytes(temp.Dxbc, dxbc);
-        if (Run(new[] { Tool("dxbc2dxil.exe"), temp.Dxbc, "-o", temp.Dxil, "-emit-bc" }, "dxbc2dxil") && File.Exists(temp.Dxil))
-            return DxilToSpv(File.ReadAllBytes(temp.Dxil), temp.Dxil, temp.Spirv, true);
-        if (!Run(BuildDxilSpirvArgs(Tool("dxil-spirv.exe"), temp.Dxbc, temp.Spirv, rawLlvm: false), "dxil-spirv (DXBC fallback)") || !File.Exists(temp.Spirv))
-            throw new InvalidOperationException("Failed to convert DXBC to SPIR-V.");
-        return File.ReadAllBytes(temp.Spirv);
-    }
-
-    private byte[] DxilToSpv(byte[] dxil, string tempDxil, string tempSpv, bool rawLlvm)
-    {
-        File.WriteAllBytes(tempDxil, dxil);
-        if (!Run(BuildDxilSpirvArgs(Tool("dxil-spirv.exe"), tempDxil, tempSpv, rawLlvm), "dxil-spirv") || !File.Exists(tempSpv))
-            throw new InvalidOperationException("dxil-spirv did not produce a SPIR-V file.");
-        return File.ReadAllBytes(tempSpv);
-    }
-
-    // Centralised dxil-spirv command-line builder. The `--ssbo-uav` and
-    // `--ssbo-srv` flags force UAV/SRV resources to be emitted as
-    // `StorageClassStorageBuffer` (SSBOs) rather than typed buffers.
-    // This is the workaround for the "Raw 64-bit load-store was used,
-    // which must be implemented with SSBO, UBO or BDA" error that
-    // dxil-spirv throws when a shader (most commonly raygen RT shaders
-    // performing 64-bit atomic counter / hit-record load-store) uses
-    // 64-bit raw access on a resource the default lowering can't fit
-    // into the typed-buffer/BDA path.
-    //
-    // The fix lives in dxil-spirv's `emit_raw_buffer_load_instruction` /
-    // `emit_raw_buffer_store_instruction` (opcodes/dxil/dxil_buffer.cpp):
-    // 64-bit raw access requires either StorageBuffer storage class OR
-    // PhysicalStorageBuffer (BDA). When `--ssbo-uav --ssbo-srv` route
-    // both classes through SSBO, the conversion succeeds.
-    //
-    // Verified harmless for shaders that DON'T need this — dxil-spirv
-    // produces byte-identical SPV output (13684 bytes pre/post on a
-    // sample SM 6.0 compute shader). spirv-cross's downstream HLSL emit
-    // is also unaffected (same 7973-byte HLSL out).
-    //
-    // This used to be the last-stuck-failure of the whole X6Game cook
-    // (`Ungrouped_RG_005416`, raw 64-bit BDA-blocked raygen). Now fixed
-    // at the engine layer so every caller benefits without per-call
-    // tuning.
-    private static string[] BuildDxilSpirvArgs(string toolPath, string inputPath, string outputPath, bool rawLlvm)
-    {
-        var args = new List<string>
+        byte[]? dxil = DxbcConverterNative.Convert(dxbc, out string? convError);
+        if (dxil != null)
+            return DxilToSpv(dxil, rawLlvm: false);
+        // dxbc2dxil couldn't convert it: fall back to handing the container straight to
+        // dxil-spirv (covers an SM6 DXIL container that was mislabelled as plain DXBC).
+        byte[]? spv = DxilSpirvNative.Convert(dxbc, rawLlvm: false, out string? spvError);
+        if (spv == null)
         {
-            toolPath, inputPath, "--output", outputPath,
-            "--ssbo-uav", "--ssbo-srv",
-        };
-        if (rawLlvm) args.Add("--raw-llvm");
-        return args.ToArray();
+            _lastToolFailureLog = Join(convError, spvError);
+            throw new InvalidOperationException($"Failed to convert DXBC to SPIR-V. {_lastToolFailureLog}");
+        }
+        return spv;
     }
+
+    // DXIL container (or raw LLVM bitcode) → SPIR-V, in-process via dxil-spirv-c-shared.dll.
+    // DxilSpirvNative always applies the --ssbo-uav/--ssbo-srv resource remapping: it routes
+    // 64-bit-raw-access UAV/SRV buffers through SSBO storage — the long-standing fix for
+    // "Raw 64-bit load-store was used, which must be implemented with SSBO, UBO or BDA" (e.g.
+    // the X6Game `Ungrouped_RG_005416` raygen). Harmless for shaders that don't need it.
+    private byte[] DxilToSpv(byte[] dxil, bool rawLlvm)
+    {
+        byte[]? spv = DxilSpirvNative.Convert(dxil, rawLlvm, out string? error);
+        if (spv == null)
+        {
+            _lastToolFailureLog = error;
+            throw new InvalidOperationException($"dxil-spirv did not produce a SPIR-V module. {error}");
+        }
+        return spv;
+    }
+
+    private static string Join(string? a, string? b)
+        => string.Join(Environment.NewLine, new[] { a, b }.Where(static s => !string.IsNullOrWhiteSpace(s)));
+
+    // Bare LLVM bitcode magic `BC\xC0\xDE` → dxil-spirv's raw-LLVM parse path; everything else
+    // (DXBC/DXContainer-wrapped DXIL) goes through the DXContainer blob parser.
+    private static bool IsRawLlvmBitcode(byte[] data)
+        => data.Length >= 4 && data[0] == 0x42 && data[1] == 0x43 && data[2] == 0xC0 && data[3] == 0xDE;
 
     private byte[] Patch(byte[] spirv, SerializedProgramData metadata)
     {
@@ -832,9 +809,9 @@ public sealed class ShaderDecompiler : IDisposable
         return null;
     }
 
-    private Source Emit(byte[] spirv, string? preferredEntryPoint, uint shaderModel, TempFiles temp)
+    private Source Emit(byte[] spirv, string? preferredEntryPoint, uint shaderModel)
     {
-        (SpirvStage stage, string? entryPoint) = ResolveEntry(spirv, preferredEntryPoint);
+        (SpirvStage stage, string? entryPoint, uint executionModel) = ResolveEntry(spirv, preferredEntryPoint);
         // spirv-cross's HLSL backend has well-documented gaps that GLSL covers:
         //   * tess / geom — InvocationId / TessCoord / TessLevel* / patch-constant emission
         //   * raytracing (rgen/rint/rahit/rchit/rmiss/rcall) — RT builtins (5321/5322/5326/...)
@@ -856,7 +833,7 @@ public sealed class ShaderDecompiler : IDisposable
 
         if (!requiresGlsl)
         {
-            if (TryEmit(spirv, temp.Spirv, temp.Hlsl, entryPoint, stage, shaderModel, hlsl: true, quiet: true, out string? hlsl))
+            if (TryEmit(spirv, entryPoint, executionModel, shaderModel, hlsl: true, quiet: true, out string? hlsl))
                 return new(hlsl!, "hlsl", ".hlsl");
             // HLSL failed. Surface the captured stderr through Console.Error so
             // the diagnostic crumbs (which `quiet: true` above suppressed) still
@@ -874,58 +851,45 @@ public sealed class ShaderDecompiler : IDisposable
             Console.Error.WriteLine(note);
         }
 
-        if (TryEmit(spirv, temp.Spirv, temp.Glsl, entryPoint, stage, shaderModel, hlsl: false, quiet: false, out string? glsl))
+        if (TryEmit(spirv, entryPoint, executionModel, shaderModel, hlsl: false, quiet: false, out string? glsl))
             return new(glsl!, "glsl", ".glsl");
 
         throw new InvalidOperationException("Failed to decompile patched SPIR-V.");
     }
 
-    private bool TryEmit(byte[] spirv, string tempSpv, string outputPath, string? entryPoint, SpirvStage stage, uint shaderModel, bool hlsl, bool quiet, out string? source)
+    // In-process spirv-cross emit. HLSL: --hlsl --shader-model M --force-zero-initialized-variables.
+    // GLSL: always the modern Vulkan profile (--version 460 --vulkan-semantics) — UE shipping SPV
+    // is Vulkan-flavoured and 460 is the lowest version accepting every feature spirv-cross might
+    // emit (RT builtins, mesh-shader EXT, descriptor indexing, shader_clock, ...). The entry point
+    // and its raw SpvExecutionModel reproduce the old --entry/--stage pair.
+    private bool TryEmit(byte[] spirv, string? entryPoint, uint executionModel, uint shaderModel, bool hlsl, bool quiet, out string? source)
     {
-        source = null;
-        File.WriteAllBytes(tempSpv, spirv);
-        List<string> args = new() { Tool("spirv-cross.exe"), tempSpv, "--output", outputPath, hlsl ? "--hlsl" : "-V" };
-        AppendStageArgs(args, entryPoint, stage);
-        if (hlsl)
-        {
-            args.Add("--shader-model");
-            args.Add(shaderModel.ToString());
-            args.Add("--force-zero-initialized-variables");
-        }
-        else
-        {
-            // GLSL emission: always go through the modern Vulkan profile
-            // (GLSL 460 + --vulkan-semantics). UE shipping SPV is
-            // vulkan-flavoured anyway, and GLSL 460 is the lowest version
-            // that accepts every SPIR-V feature spirv-cross might emit
-            // (raytracing builtins, mesh-shader EXT, descriptor indexing,
-            // shader_clock, control_flow_attribute, etc.). Without these
-            // flags GLSL emit falls back to a pre-Vulkan profile that
-            // rejects most of UE's bindless / RT shaders, defeating the
-            // point of the HLSL-failure fallback.
-            args.Add("--version");
-            args.Add("460");
-            args.Add("--vulkan-semantics");
-        }
-        if (!Run(args.ToArray(), "spirv-cross", quiet: quiet) || !File.Exists(outputPath)) { Delete(outputPath); return false; }
-        source = File.ReadAllText(outputPath, Encoding.UTF8);
-        Delete(outputPath);
-        return true;
+        string? error;
+        source = hlsl
+            ? SpirvCrossNative.EmitHlsl(spirv, entryPoint, executionModel, shaderModel, out error)
+            : SpirvCrossNative.EmitGlsl(spirv, entryPoint, executionModel, glslVersion: 460, out error);
+        if (source != null) return true;
+        // Cache the upstream message even when quiet, so the per-shader failure dump can include
+        // it; only echo to the console when not quiet.
+        _lastToolFailureLog = $"spirv-cross {(hlsl ? "HLSL" : "GLSL")} emission failed: {error}";
+        if (!quiet) Log(_lastToolFailureLog);
+        return false;
     }
 
-    private static (SpirvStage Stage, string? EntryPoint) ResolveEntry(byte[] spirv, string? preferred)
+    private static (SpirvStage Stage, string? EntryPoint, uint ExecutionModel) ResolveEntry(byte[] spirv, string? preferred)
     {
         SpirvModule module = SpirvModule.Parse(spirv);
-        (SpirvStage Stage, string? EntryPoint)? first = null;
+        (SpirvStage Stage, string? EntryPoint, uint Model)? first = null;
         foreach (SpirvInstruction i in module.Instructions)
         {
             if (i.OpCode != SpvOpCode.OpEntryPoint || i.Words.Length < 3) continue;
             string entry = ReadString(i.Words, 3);
-            SpirvStage stage = ClassifyExecutionModel(i[1]);
-            first ??= (stage, entry);
-            if (!string.IsNullOrWhiteSpace(preferred) && string.Equals(entry, preferred, StringComparison.Ordinal)) return (stage, entry);
+            uint model = i[1];
+            SpirvStage stage = ClassifyExecutionModel(model);
+            first ??= (stage, entry, model);
+            if (!string.IsNullOrWhiteSpace(preferred) && string.Equals(entry, preferred, StringComparison.Ordinal)) return (stage, entry, model);
         }
-        return first ?? (SpirvStage.Unknown, preferred);
+        return first ?? (SpirvStage.Unknown, preferred, 0u);
     }
 
     // Numeric values come from the SPIR-V execution model enum. 0..6 are core graphics +
@@ -963,7 +927,28 @@ public sealed class ShaderDecompiler : IDisposable
         or SpirvStage.Task
         or SpirvStage.Mesh;
 
+    // Hot path: decode the NUL-terminated, little-endian-word-packed SPIR-V literal into a
+    // stackalloc scratch buffer — no GC heap traffic for normal-length entry-point names.
     private static string ReadString(IReadOnlyList<uint> words, int start)
+    {
+        Span<byte> buffer = stackalloc byte[256];
+        int len = 0;
+        for (int i = start; i < words.Count; i++)
+        {
+            uint word = words[i];
+            for (int shift = 0; shift < 32; shift += 8)
+            {
+                byte value = (byte)((word >> shift) & 0xFF);
+                if (value == 0) return Encoding.UTF8.GetString(buffer[..len]);
+                if (len == buffer.Length) return ReadStringSlow(words, start);
+                buffer[len++] = value;
+            }
+        }
+        return Encoding.UTF8.GetString(buffer[..len]);
+    }
+
+    // Cold fallback for the vanishingly rare >256-byte SPIR-V literal string.
+    private static string ReadStringSlow(IReadOnlyList<uint> words, int start)
     {
         List<byte> bytes = new();
         for (int i = start; i < words.Count; i++)
@@ -974,30 +959,6 @@ public sealed class ShaderDecompiler : IDisposable
                 bytes.Add(value);
             }
         return Encoding.UTF8.GetString(bytes.ToArray());
-    }
-
-    private static void AppendStageArgs(List<string> args, string? entryPoint, SpirvStage stage)
-    {
-        if (!string.IsNullOrWhiteSpace(entryPoint)) { args.Add("--entry"); args.Add(entryPoint); }
-        string? stageArg = stage switch
-        {
-            SpirvStage.Vertex => "vert",
-            SpirvStage.TessControl => "tesc",
-            SpirvStage.TessEvaluation => "tese",
-            SpirvStage.Geometry => "geom",
-            SpirvStage.Fragment => "frag",
-            SpirvStage.Compute => "comp",
-            SpirvStage.RayGeneration => "rgen",
-            SpirvStage.Intersection => "rint",
-            SpirvStage.AnyHit => "rahit",
-            SpirvStage.ClosestHit => "rchit",
-            SpirvStage.Miss => "rmiss",
-            SpirvStage.Callable => "rcall",
-            SpirvStage.Task => "task",
-            SpirvStage.Mesh => "mesh",
-            _ => null,
-        };
-        if (stageArg != null) { args.Add("--stage"); args.Add(stageArg); }
     }
 
     private string DescribePatchPlan(byte[] spirv, SerializedProgramData metadata)
@@ -1058,47 +1019,7 @@ public sealed class ShaderDecompiler : IDisposable
             : "BuiltIn decorations:" + Environment.NewLine + string.Join(Environment.NewLine, lines);
     }
 
-    private bool Run(string[] args, string name, bool quiet = false)
-    {
-        ProcessStartInfo psi = new()
-        {
-            FileName = args[0],
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            WorkingDirectory = _toolsDir,
-        };
-
-        for (int i = 1; i < args.Length; i++) psi.ArgumentList.Add(args[i]);
-        psi.Environment["PATH"] = _toolsDir + Path.PathSeparator + (psi.Environment.ContainsKey("PATH") ? psi.Environment["PATH"] : string.Empty);
-
-        using Process? process = Process.Start(psi);
-        if (process == null) return Log($"Failed to start {name}.");
-
-        StringBuilder stderr = new();
-        process.ErrorDataReceived += (_, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
-        process.BeginErrorReadLine();
-        string stdout = process.StandardOutput.ReadToEnd();
-
-        if (!process.WaitForExit(TimeoutMs))
-        {
-            try { process.Kill(true); } catch { }
-            return Log($"{name} timed out after {TimeoutMs}ms.");
-        }
-
-        if (process.ExitCode == 0) return true;
-
-        string failureLog = $"{name} failed (exit={process.ExitCode}): {Trim(stderr.ToString())}{(string.IsNullOrWhiteSpace(stdout) ? string.Empty : Environment.NewLine + Trim(stdout))}";
-        // Always cache the failure log even when `quiet`, so a downstream
-        // dump can include the actual upstream message even though the
-        // console suppression skipped logging it.
-        _lastToolFailureLog = failureLog;
-        return quiet || Log(failureLog);
-    }
-
     private bool Log(string error) { Debug.WriteLine(error); Console.Error.WriteLine(error); return false; }
-    private string Tool(string name) => Path.Combine(_toolsDir!, name);
 
     private static bool DescriptorMatches(char registerType, string? descriptorType) => descriptorType switch
     {
@@ -1158,8 +1079,6 @@ public sealed class ShaderDecompiler : IDisposable
     }
 
     private static DecompileResult Fail(string message) => new() { Success = false, ErrorMessage = message };
-    private static string Trim(string text) => string.IsNullOrEmpty(text) || text.Length <= 1000 ? text : text[..1000];
-    private static void Delete(string path) { if (File.Exists(path)) File.Delete(path); }
 
     public void Dispose()
     {
