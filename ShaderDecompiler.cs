@@ -203,21 +203,21 @@ public sealed class ShaderDecompiler : IDisposable
         //   * "Variable-rate shading requires SM 6.4 or higher"
         // ...etc. Every gate is "intrinsic emission requires SM ≥ N".
         //
-        // We bump to **67** unconditionally for the HLSL emit path
-        // because:
+        // We bump non-DXBC inputs to **67** for the HLSL emit path because:
         //   1. spirv-cross's SM gates only EXPAND what's emittable — there
         //      is no gate that REQUIRES SM ≤ N to function. So bumping
         //      can't lose us a feature, only unlock more.
-        //   2. The shader-model number lands in `register(t0, space0)` /
-        //      `[shader("compute")]`-style annotations that consumers
-        //      rarely care about; the HLSL syntax produced is otherwise
-        //      identical to SM5 for shaders that don't use SM6+ intrinsics.
+        //   2. DXBC is the exception: D3D11 live replacement recompiles with
+        //      the original SM5 profile, where register spaces are illegal.
         //   3. Any caller that wants a specific newer model (6.6 / 6.8 /
         //      future) can ASK for it via DecompileOptions.ShaderModel
         //      and we keep that — the bump is bounded by `< 67`.
         // Environment override `RURI_SHADER_DEBUG=1` traces what fires.
         uint shaderModel = options.ShaderModel;
-        if (shaderModel < 67)
+        // Keep raw DXBC at the requested model. D3D11 live shader replacement
+        // commonly recompiles as ps_5_0/vs_5_0, where `register(..., space0)`
+        // emitted for SM 5.1+ is illegal.
+        if (format != ShaderArchitecture.Dxbc && shaderModel < 67)
         {
             shaderModel = 67;
         }
@@ -270,6 +270,13 @@ public sealed class ShaderDecompiler : IDisposable
                 throw new InvalidOperationException($"SPIR-V patch failed.{Environment.NewLine}{DescribePatchPlan(rewritten, metadata)}{Environment.NewLine}{DescribeBuiltInDecorations(rewritten)}", ex);
             }
 
+            if (format == ShaderArchitecture.Dxbc)
+            {
+                failedStage = "dxbc-sm5-spirv-legalize";
+                patched = DxbcUtofNormalizer.Normalize(patched);
+                postPatch = patched;
+            }
+
             Source src;
             try
             {
@@ -279,6 +286,22 @@ public sealed class ShaderDecompiler : IDisposable
             catch (Exception ex)
             {
                 throw new InvalidOperationException($"SPIR-V emission failed after patch.{Environment.NewLine}{DescribePatchPlan(patched, metadata)}{Environment.NewLine}{DescribeBuiltInDecorations(patched)}", ex);
+            }
+
+            if (format == ShaderArchitecture.Dxbc && src.Language == "hlsl")
+            {
+                failedStage = "dxbc-sm5-hlsl-normalize";
+                try
+                {
+                    src = new Source(
+                        DxbcHlslNormalizer.Normalize(src.Text, binary),
+                        src.Language,
+                        src.Extension);
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException("DXBC SM5 HLSL normalization failed.", ex);
+                }
             }
 
             return new DecompileResult

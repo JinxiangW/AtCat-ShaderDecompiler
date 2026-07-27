@@ -44,6 +44,8 @@ public static class SpvOpCode
     public const ushort OpBitwiseAnd = 199;
     public const ushort OpDecorate = 71;
     public const ushort OpMemberDecorate = 72;
+    public const ushort OpConvertUToF = 112;
+    public const ushort OpUConvert = 113;
     public const ushort OpBitcast = 124;
 
     // Decoration values
